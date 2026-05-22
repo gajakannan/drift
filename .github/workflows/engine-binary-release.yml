@@ -28,6 +28,10 @@ env:
   NODE_VERSION: "22"
   PNPM_VERSION: "10.28.0"
 
+defaults:
+  run:
+    working-directory: drift v3
+
 jobs:
   preflight:
     name: Preflight
@@ -66,6 +70,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
+          cache-dependency-path: drift v3/pnpm-lock.yaml
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -93,8 +98,8 @@ jobs:
         with:
           name: drift-beta-preflight-proof
           path: |
-            beta-proof.json
-            release-proof.json
+            drift v3/beta-proof.json
+            drift v3/release-proof.json
           if-no-files-found: error
 
   build-engine:
@@ -161,6 +166,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
+          cache-dependency-path: drift v3/pnpm-lock.yaml
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -213,7 +219,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: drift-engine-${{ matrix.target }}
-          path: .release/${{ matrix.target }}
+          path: drift v3/.release/${{ matrix.target }}
           if-no-files-found: error
 
   assemble-checksums:
@@ -228,7 +234,7 @@ jobs:
       - name: Download engine artifacts
         uses: actions/download-artifact@v4
         with:
-          path: .release/artifacts
+          path: drift v3/.release/artifacts
 
       - name: Assemble checksums
         shell: bash
@@ -247,7 +253,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: drift-engine-SHA256SUMS
-          path: SHA256SUMS
+          path: drift v3/SHA256SUMS
           if-no-files-found: error
 
   pack-npm-packages:
@@ -268,7 +274,7 @@ jobs:
         with:
           pattern: drift-engine-*
           merge-multiple: false
-          path: .release/artifacts
+          path: drift v3/.release/artifacts
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -280,6 +286,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
+          cache-dependency-path: drift v3/pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -330,7 +337,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: drift-npm-tarballs
-          path: .release/npm/*.tgz
+          path: drift v3/.release/npm/*.tgz
           if-no-files-found: error
 
   registry-smoke:
@@ -346,7 +353,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: drift-npm-tarballs
-          path: .release/npm
+          path: drift v3/.release/npm
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -357,19 +364,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          RELEASE_ROOT="${GITHUB_WORKSPACE}/drift v3"
           TMP="$(mktemp -d)"
           cd "${TMP}"
           npm init -y >/dev/null
-          npm install "${GITHUB_WORKSPACE}"/.release/npm/drift-core-*.tgz \
-            "${GITHUB_WORKSPACE}"/.release/npm/drift-factgraph-*.tgz \
-            "${GITHUB_WORKSPACE}"/.release/npm/drift-query-*.tgz \
-            "${GITHUB_WORKSPACE}"/.release/npm/drift-engine-contract-*.tgz \
-            "${GITHUB_WORKSPACE}"/.release/npm/drift-storage-*.tgz \
-            "${GITHUB_WORKSPACE}"/.release/npm/drift-engine-linux-x64-gnu-*.tgz \
-            "${GITHUB_WORKSPACE}"/.release/npm/drift-cli-*.tgz
+          npm install "${RELEASE_ROOT}"/.release/npm/drift-core-*.tgz \
+            "${RELEASE_ROOT}"/.release/npm/drift-factgraph-*.tgz \
+            "${RELEASE_ROOT}"/.release/npm/drift-query-*.tgz \
+            "${RELEASE_ROOT}"/.release/npm/drift-engine-contract-*.tgz \
+            "${RELEASE_ROOT}"/.release/npm/drift-storage-*.tgz \
+            "${RELEASE_ROOT}"/.release/npm/drift-engine-linux-x64-gnu-*.tgz \
+            "${RELEASE_ROOT}"/.release/npm/drift-cli-*.tgz
           unset DRIFT_ENGINE_BIN
           ./node_modules/.bin/drift version --json
-          ./node_modules/.bin/drift scan --repo-root "${GITHUB_WORKSPACE}/test/fixtures/next-api-direct-db" --state-root "${TMP}/state" --json
+          ./node_modules/.bin/drift scan --repo-root "${RELEASE_ROOT}/test/fixtures/next-api-direct-db" --state-root "${TMP}/state" --json
 
   final-release-proof:
     name: Final release proof
@@ -389,19 +397,19 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: drift-beta-preflight-proof
-          path: .release/proof
+          path: drift v3/.release/proof
 
       - name: Download checksum manifest
         uses: actions/download-artifact@v4
         with:
           name: drift-engine-SHA256SUMS
-          path: .
+          path: drift v3
 
       - name: Download npm tarballs
         uses: actions/download-artifact@v4
         with:
           name: drift-npm-tarballs
-          path: .release/npm
+          path: drift v3/.release/npm
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -413,6 +421,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
+          cache-dependency-path: drift v3/pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -427,7 +436,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: drift-final-release-proof
-          path: .release/final-release-proof.json
+          path: drift v3/.release/final-release-proof.json
           if-no-files-found: error
 
   publish:
@@ -446,7 +455,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: drift-npm-tarballs
-          path: .release/npm
+          path: drift v3/.release/npm
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -494,13 +503,13 @@ jobs:
         with:
           pattern: drift-engine-*
           merge-multiple: true
-          path: .release/assets
+          path: drift v3/.release/assets
 
       - name: Download checksum manifest
         uses: actions/download-artifact@v4
         with:
           name: drift-engine-SHA256SUMS
-          path: .release/assets
+          path: drift v3/.release/assets
 
       - name: Create draft release
         env:

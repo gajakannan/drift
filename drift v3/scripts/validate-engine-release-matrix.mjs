@@ -53,7 +53,7 @@ const expectedTargets = [
 ];
 
 const failures = [];
-const workflow = readText(".github/workflows/engine-binary-release.yml");
+const workflow = readText("../.github/workflows/engine-binary-release.yml");
 const rootManifest = readJson("package.json");
 const cliManifest = readJson("packages/cli/package.json");
 

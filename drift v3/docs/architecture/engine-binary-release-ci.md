@@ -453,7 +453,7 @@ Do not implement these as part of this doc-only change. They are the acceptance 
    - Asserts the package manifest's embedded checksum equals the final release asset checksum.
 
 7. `test/e2e/engine-release-workflow-hygiene.test.ts`
-   - Reads `.github/workflows/engine-binary-release.yml`.
+   - Reads the root-visible workflow at `../.github/workflows/engine-binary-release.yml`.
    - Asserts the five target triples are present.
    - Asserts `permissions` are explicit.
    - Asserts `id-token: write` is present for npm provenance.
