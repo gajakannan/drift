@@ -34,19 +34,21 @@ describe("release hygiene", () => {
   });
 
   it("runs the production verification gate in CI with least repository permissions", async () => {
-    const workflow = await readFile(".github/workflows/ci.yml", "utf8");
+    const workflow = await readFile("../.github/workflows/ci.yml", "utf8");
 
     expect(workflow).toContain("permissions:");
     expect(workflow).toContain("contents: read");
     expect(workflow).toContain("concurrency:");
     expect(workflow).toContain("cancel-in-progress: true");
+    expect(workflow).toContain("working-directory: drift v3");
+    expect(workflow).toContain("cache-dependency-path: drift v3/pnpm-lock.yaml");
     expect(workflow).toContain("node-version: 22");
     expect(workflow).toContain("pnpm install --frozen-lockfile");
     expect(workflow).toContain("pnpm verify:ci");
   });
 
   it("defines a guarded engine binary release matrix", async () => {
-    const workflow = await readFile(".github/workflows/engine-binary-release.yml", "utf8");
+    const workflow = await readFile("../.github/workflows/engine-binary-release.yml", "utf8");
 
     for (const expected of [
       "name: Engine Binary Release",
@@ -77,6 +79,10 @@ describe("release hygiene", () => {
     ]) {
       expect(workflow).toContain(expected);
     }
+    expect(workflow).toContain("working-directory: drift v3");
+    expect(workflow).toContain("cache-dependency-path: drift v3/pnpm-lock.yaml");
+    expect(workflow).toContain("path: drift v3/.release/npm/*.tgz");
+    expect(workflow).toContain("path: drift v3/.release/final-release-proof.json");
     expect(workflow).toContain("DRIFT_VERIFY_CI_STATUS=passed node scripts/run-beta-proof.mjs --output beta-proof.json");
     expect(workflow).toContain("node scripts/generate-release-proof.mjs --require-clean --require-built-cli --require-beta-proof --beta-proof-file beta-proof.json --output release-proof.json");
     expect(workflow).toContain("name: Final release proof");

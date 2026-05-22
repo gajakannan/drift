@@ -722,7 +722,7 @@ Current evidence:
 - `scripts/generate-release-proof.mjs` writes `drift.release.proof.v1`.
 - `scripts/run-beta-proof.mjs` writes `drift.beta.proof.v1`.
 - The release proof generator accepts `--beta-proof-file` and enforces `--require-beta-proof` only from a `drift.beta.proof.v1` artifact.
-- The engine release workflow runs `pnpm verify:ci` and engine binary packaging steps in `.github/workflows/engine-binary-release.yml`.
+- The root-visible engine release workflow runs `pnpm verify:ci` and engine binary packaging steps in `../.github/workflows/engine-binary-release.yml`.
 - The engine release workflow generates beta preflight proof, then generates a final `drift.release.proof.v1` with `--require-complete` after checksums and npm tarballs exist.
 - Installed-flow tests already cover packaged CLI/MCP assertions in `test/e2e/installed-flow.test.ts:200`.
 
@@ -747,7 +747,7 @@ Required invariants:
 Current evidence:
 
 - `verify:ci` currently runs `pnpm verify`, Rust format check, Rust clippy, package boundary check, release matrix validation, `pnpm beta:proof`, and `git diff --check` in `package.json`.
-- CI workflow invokes `pnpm verify:ci` in `.github/workflows/ci.yml:42`.
+- The root-visible CI workflow invokes `pnpm verify:ci` in `../.github/workflows/ci.yml`.
 
 Gaps:
 
