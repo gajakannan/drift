@@ -2,7 +2,7 @@
   "name": "@drift/cli",
   "version": "0.1.0",
   "description": "Drift CLI for local repo scans, convention review, preflight, checks, and governance.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"

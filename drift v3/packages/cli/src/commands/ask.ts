@@ -4,6 +4,7 @@ import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { optionalRepoRelativeFlag,requiredValue,stringFlag } from "../args/flag-readers.js";
 import { resolveRepoId } from "../args/repo-flags.js";
 import { isActiveConvention } from "../check/rule-evaluation.js";
+import { agentEnvelopeForScan } from "../domain/agent-envelope.js";
 import { preflightGovernance } from "../domain/governance.js";
 import { askSummary,conventionsForFiles,findingsForTopic,preparedConvention,relevantFilesForTask } from "../domain/preflight.js";
 import { repoContractOrDefault } from "../domain/repo-paths.js";
@@ -72,6 +73,12 @@ export function askRepo(storage: SqliteDriftStorage, parsed: ParsedArgs): Comman
     topic,
     target_path: targetPath ?? null,
     generated_at: now,
+    agent_envelope: agentEnvelopeForScan({
+      surface: "cli-preflight",
+      policy,
+      scanStatus,
+      requireFresh
+    }),
     answer: {
       source: "deterministic_local_state",
       summary: contractReady
@@ -100,7 +107,9 @@ export function askRepo(storage: SqliteDriftStorage, parsed: ParsedArgs): Comman
     relevant_files: relevantFiles,
     redactions: {
       denied_globs: contract.context_egress.denied_globs,
-      snippets_included: false
+      snippets_included: false,
+      source_content_included: false,
+      context_truncated: false
     },
     next_commands: contractReady
       ? [

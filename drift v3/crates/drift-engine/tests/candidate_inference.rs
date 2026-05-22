@@ -233,7 +233,7 @@ fn infer_candidates_uses_graph_evidence_without_raw_import_facts() {
     );
     assert_eq!(
         direct["required_capabilities"],
-        json!(["syntax_facts", "import_resolution", "route_role_detection"])
+        json!(["syntax_facts", "import_resolution", "route_detection"])
     );
 }
 

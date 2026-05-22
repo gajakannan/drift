@@ -1,4 +1,5 @@
 import { openDriftStorage } from "@drift/storage";
+import { createAgentEnvelopeV2 } from "@drift/core";
 import { unknownCommandError,validateCommandShape } from "../args/command-shape.js";
 import { helpText,isHelpRequest,isVersionRequest } from "../args/help.js";
 import { parseArgs } from "../args/parse-args.js";
@@ -13,6 +14,7 @@ import { formatOutput,normalizeCommandResult } from "./output.js";
 import { runCommand } from "./router.js";
 
 export async function runCli(argv: string[]): Promise<CliResult> {
+  const wantsJson = argv.includes("--json");
   try {
     const parsed = parseArgs(argv);
     if (isVersionRequest(parsed)) {
@@ -93,10 +95,127 @@ export async function runCli(argv: string[]): Promise<CliResult> {
       storage.close();
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown CLI error.";
+    const failure = operationalFailureForMessage(message);
+    if (wantsJson) {
+      const staleRefusal = message.startsWith("Scan is stale");
+      return {
+        exitCode: 1,
+        stdout: `${JSON.stringify({
+          error: {
+            message,
+            type: "refusal",
+            code: failure.code
+          },
+          failure,
+          agent_envelope: createAgentEnvelopeV2({
+            surface: "cli-error",
+            policy: {
+              allowed: staleRefusal,
+              surface: "cli-preflight",
+              reason: message
+            },
+            scan: staleRefusal
+              ? {
+                required_fresh: true,
+                stale: true,
+                latest_scan_id: null
+              }
+              : undefined,
+            diagnostics: [message]
+          })
+        }, null, 2)}\n`,
+        stderr: `${message}\n`
+      };
+    }
     return {
       exitCode: 1,
       stdout: "",
-      stderr: error instanceof Error ? `${error.message}\n` : "Unknown CLI error.\n"
+      stderr: `${message}\n`
     };
   }
+}
+
+function operationalFailureForMessage(message: string): {
+  code: string;
+  surface: "cli";
+  severity: "error";
+  safe_to_retry: boolean;
+  user_action: string;
+  recovery_commands: string[];
+  diagnostics: string[];
+} {
+  if (message.startsWith("Scan is stale")) {
+    return {
+      code: "stale_scan",
+      surface: "cli",
+      severity: "error",
+      safe_to_retry: true,
+      user_action: "Refresh the scan or rerun without --require-fresh for read-only stale context.",
+      recovery_commands: extractRecoveryCommands(message, ["drift scan status --json"]),
+      diagnostics: [message]
+    };
+  }
+  if (
+    message.startsWith("No repo contract exists") ||
+    message.includes("No accepted repo contract exists") ||
+    (message.toLowerCase().includes("contract") && message.toLowerCase().includes("exist"))
+  ) {
+    return {
+      code: "missing_contract",
+      surface: "cli",
+      severity: "error",
+      safe_to_retry: true,
+      user_action: "Accept or import a repo contract before running contract-backed enforcement.",
+      recovery_commands: ["drift conventions list --status candidate --json", "drift contract import <contract.json> --dry-run --json"],
+      diagnostics: [message]
+    };
+  }
+  if (message.includes("DRIFT_ENGINE_BIN") || message.includes("Rust engine")) {
+    return {
+      code: "missing_engine",
+      surface: "cli",
+      severity: "error",
+      safe_to_retry: true,
+      user_action: "Install or point Drift at a trusted Rust engine binary.",
+      recovery_commands: ["drift doctor --json"],
+      diagnostics: [message]
+    };
+  }
+  if (message.includes("unsupported schema") || message.includes("Unsupported local state schema")) {
+    return {
+      code: "unsupported_database",
+      surface: "cli",
+      severity: "error",
+      safe_to_retry: false,
+      user_action: "Use a Drift CLI version compatible with this local database.",
+      recovery_commands: ["drift doctor --json"],
+      diagnostics: [message]
+    };
+  }
+  if (message.startsWith("Missing --db")) {
+    return {
+      code: "missing_database",
+      surface: "cli",
+      severity: "error",
+      safe_to_retry: true,
+      user_action: "Provide --db <path> or set DRIFT_DB.",
+      recovery_commands: ["drift --help"],
+      diagnostics: [message]
+    };
+  }
+  return {
+    code: "cli_error",
+    surface: "cli",
+    severity: "error",
+    safe_to_retry: false,
+    user_action: "Read the diagnostic message and rerun with corrected inputs.",
+    recovery_commands: ["drift --help"],
+    diagnostics: [message]
+  };
+}
+
+function extractRecoveryCommands(message: string, fallback: string[]): string[] {
+  const match = message.match(/Run (drift [^;]+);/);
+  return match?.[1] ? [match[1]] : fallback;
 }

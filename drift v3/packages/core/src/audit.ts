@@ -4,13 +4,17 @@ import type { AuditEvent } from "./domain.js";
 export type AuditChainFailureReason =
   | "previous_event_hash_mismatch"
   | "event_hash_missing"
-  | "event_hash_mismatch";
+  | "event_hash_mismatch"
+  | "sequence_missing"
+  | "sequence_gap";
 
 export interface AuditChainVerification {
   repo_id: string;
   valid: boolean;
+  strict?: boolean;
   event_count: number;
   verified_count: number;
+  head_sequence?: number | null;
   head_event_hash: string | null;
   broken_at_event_id: string | null;
   reasons: AuditChainFailureReason[];

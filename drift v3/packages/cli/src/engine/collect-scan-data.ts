@@ -11,12 +11,22 @@ export interface ScanData {
   facts: FactRecord[];
   snapshots: FileSnapshot[];
   engineSource: "rust" | "typescript";
+  fallbackStatus: ScanFallbackStatus;
   stats?: EngineStats;
   diagnostics: EngineDiagnostic[];
   graph_nodes: GraphNode[];
   graph_edges: GraphEdge[];
   graph_evidence: GraphEvidence[];
   graph_diagnostics: EngineDiagnostic[];
+}
+
+export interface ScanFallbackStatus {
+  engine_source: "rust" | "typescript";
+  fallback_used: boolean;
+  fallback_reason: "rust_engine_failed" | null;
+  engine_error_message: string | null;
+  degraded_capabilities: string[];
+  enforcement_degraded: boolean;
 }
 
 interface ScanDataInput {
@@ -26,15 +36,23 @@ interface ScanDataInput {
 }
 
 export async function collectScanData(input: ScanDataInput): Promise<ScanData> {
+  let rustError: unknown;
   try {
     return await collectScanDataFromRust(input);
   } catch (error) {
     if (process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK !== "1") {
       throw error;
     }
+    rustError = error;
   }
 
   const files = walkIndexableFiles(input.repoRoot);
+  const errorMessage = rustError instanceof Error ? rustError.message : "Unknown Rust engine failure.";
+  const fallbackDiagnostic: EngineDiagnostic = {
+    severity: "warning",
+    code: "typescript_fallback_used",
+    message: `Rust engine failed and DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK=1 enabled the degraded TypeScript scanner: ${errorMessage}`
+  };
   return {
     files,
     facts: files.flatMap((filePath) =>
@@ -54,11 +72,19 @@ export async function collectScanData(input: ScanDataInput): Promise<ScanData> {
       })
     ),
     engineSource: "typescript",
-    diagnostics: [],
+    fallbackStatus: {
+      engine_source: "typescript",
+      fallback_used: true,
+      fallback_reason: "rust_engine_failed",
+      engine_error_message: errorMessage,
+      degraded_capabilities: ["graph", "graph_evidence", "deterministic_enforcement"],
+      enforcement_degraded: true
+    },
+    diagnostics: [fallbackDiagnostic],
     graph_nodes: [],
     graph_edges: [],
     graph_evidence: [],
-    graph_diagnostics: [],
+    graph_diagnostics: [fallbackDiagnostic],
     stats: {
       files_seen: files.length,
       files_skipped: 0,
@@ -66,7 +92,7 @@ export async function collectScanData(input: ScanDataInput): Promise<ScanData> {
       facts_emitted: 0,
       graph_nodes: 0,
       graph_edges: 0,
-      diagnostics_emitted: 0,
+      diagnostics_emitted: 1,
       duration_ms: 0,
       truncated: false
     }
@@ -98,6 +124,7 @@ export function scanDataFromEngineScanResult(value: unknown, input: ScanDataInpu
     facts: parsed.facts.map((fact) => engineFactRecord(input, fact)),
     snapshots: parsed.file_snapshots.map((file) => engineFileSnapshot(input, file)),
     engineSource: "rust",
+    fallbackStatus: rustFallbackStatus(),
     diagnostics: parsed.diagnostics,
     graph_nodes: [],
     graph_edges: [],
@@ -161,12 +188,24 @@ export function scanDataFromEngineStreamEvents(events: EngineStreamEvent[], inpu
     facts: facts.map((fact) => engineFactRecord(input, fact)),
     snapshots: fileSnapshots.map((file) => engineFileSnapshot(input, file)),
     engineSource: "rust",
+    fallbackStatus: rustFallbackStatus(),
     diagnostics,
     graph_nodes: graphNodes,
     graph_edges: graphEdges,
     graph_evidence: graphEvidence,
     graph_diagnostics: diagnostics,
     stats
+  };
+}
+
+function rustFallbackStatus(): ScanFallbackStatus {
+  return {
+    engine_source: "rust",
+    fallback_used: false,
+    fallback_reason: null,
+    engine_error_message: null,
+    degraded_capabilities: [],
+    enforcement_degraded: false
   };
 }
 

@@ -159,6 +159,100 @@ fn check_repo_uses_resolved_graph_edges_for_direct_data_access() {
 }
 
 #[test]
+fn graph_backed_baseline_matches_legacy_import_fingerprints() {
+    let legacy_fingerprint = legacy_direct_db_fingerprint(
+        "convention_graph_db",
+        "app/api/users/route.ts",
+        "database",
+        "@/lib/db",
+    );
+    let request = json!({
+        "repo": { "repo_id": "repo_abc" },
+        "graph": {
+            "graph_nodes": [
+                graph_node("file:app/api/users/route.ts", "file", "app/api/users/route.ts", json!({ "path": "app/api/users/route.ts" })),
+                graph_node("file_role:api_route", "file_role", "api_route", json!({ "role": "api_route" })),
+                graph_node("module:app/api/users/route.ts", "module", "app/api/users/route.ts", json!({ "file_path": "app/api/users/route.ts" })),
+                graph_node("module:src/lib/db.ts", "module", "src/lib/db.ts", json!({ "file_path": "src/lib/db.ts" })),
+                graph_node(
+                    "import_decl:app/api/users/route.ts:aaaaaaaaaaaa:@/lib/db:database:1-1",
+                    "import_decl",
+                    "database from @/lib/db",
+                    json!({
+                        "file_path": "app/api/users/route.ts",
+                        "source": "@/lib/db",
+                        "local_name": "database"
+                    })
+                )
+            ],
+            "graph_edges": [
+                graph_edge("FILE_HAS_ROLE", "file:app/api/users/route.ts", "file_role:api_route"),
+                graph_edge("FILE_DEFINES_MODULE", "file:app/api/users/route.ts", "module:app/api/users/route.ts"),
+                graph_edge(
+                    "IMPORT_DECL_REFERENCES_MODULE",
+                    "import_decl:app/api/users/route.ts:aaaaaaaaaaaa:@/lib/db:database:1-1",
+                    "module:app/api/users/route.ts"
+                ),
+                graph_edge_with_evidence(
+                    "IMPORT_RESOLVES_TO_MODULE",
+                    "import_decl:app/api/users/route.ts:aaaaaaaaaaaa:@/lib/db:database:1-1",
+                    "module:src/lib/db.ts",
+                    "evidence_import"
+                )
+            ],
+            "graph_evidence": [{
+                "id": "evidence_import",
+                "repo_id": "repo_abc",
+                "scan_id": "scan_abc",
+                "artifact_id": "file_version:app/api/users/route.ts:a",
+                "file_path": "app/api/users/route.ts",
+                "file_hash": "a",
+                "start_line": 1,
+                "end_line": 1,
+                "adapter_id": "typescript",
+                "adapter_version": "0.1.0",
+                "fact_ids": [],
+                "redaction_state": "none"
+            }]
+        },
+        "scan": {
+            "scan_id": "scan_abc",
+            "facts": []
+        },
+        "contract": {
+            "conventions": [{
+                "id": "convention_graph_db",
+                "kind": "api_route_no_direct_data_access",
+                "matcher": { "forbidden_imports": ["src/lib/db"] },
+                "severity": "error",
+                "enforcement_mode": "block",
+                "enforcement_capability": "deterministic_check"
+            }]
+        },
+        "baseline": [{
+            "convention_id": "convention_graph_db",
+            "finding_fingerprint": legacy_fingerprint,
+            "status": "active"
+        }],
+        "diff": { "mode": "full", "files": [] }
+    });
+    let payload = run_check(request);
+    let findings = payload["findings"].as_array().expect("findings");
+
+    assert_eq!(findings.len(), 1, "{payload:#?}");
+    assert_eq!(findings[0]["status_hint"], "pre_existing");
+    assert_ne!(findings[0]["fingerprint"], legacy_fingerprint);
+    assert_eq!(
+        findings[0]["fingerprint"],
+        graph_direct_db_fingerprint(
+            "convention_graph_db",
+            "app/api/users/route.ts",
+            "src/lib/db.ts"
+        )
+    );
+}
+
+#[test]
 fn check_repo_allows_route_to_service_to_data_access_flow() {
     let request = json!({
         "repo": { "repo_id": "repo_abc" },
@@ -482,7 +576,11 @@ fn check_repo_uses_graph_target_fingerprint_for_alias_renames() {
     assert_eq!(findings.len(), 1, "{payload:#?}");
     assert_eq!(
         findings[0]["fingerprint"],
-        graph_direct_db_fingerprint("convention_graph_db", "app/api/users/route.ts", "src/lib/db.ts")
+        graph_direct_db_fingerprint(
+            "convention_graph_db",
+            "app/api/users/route.ts",
+            "src/lib/db.ts"
+        )
     );
 }
 
@@ -602,9 +700,34 @@ fn graph_edge_with_evidence(kind: &str, from: &str, to: &str, evidence_id: &str)
     })
 }
 
-fn graph_direct_db_fingerprint(convention_id: &str, route_file: &str, resolved_path: &str) -> String {
+fn graph_direct_db_fingerprint(
+    convention_id: &str,
+    route_file: &str,
+    resolved_path: &str,
+) -> String {
     format!(
         "{:x}",
-        Sha256::digest(format!("{convention_id}:{route_file}:graph_direct_data_access:{resolved_path}").as_bytes())
+        Sha256::digest(
+            format!("{convention_id}:{route_file}:graph_direct_data_access:{resolved_path}")
+                .as_bytes()
+        )
     )
+}
+
+fn legacy_direct_db_fingerprint(
+    convention_id: &str,
+    route_file: &str,
+    import_name: &str,
+    import_source: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"direct-data-access-v1\0");
+    hasher.update(convention_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(route_file.replace('\\', "/").as_bytes());
+    hasher.update(b"\0");
+    hasher.update(import_name.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(import_source.as_bytes());
+    format!("{:x}", hasher.finalize())
 }

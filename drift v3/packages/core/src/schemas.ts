@@ -24,6 +24,10 @@ export const FileRoleSchema = z.enum([
   "test",
   "config",
   "cli_command_module",
+  "core_module",
+  "query_module",
+  "factgraph_module",
+  "adapter_module",
   "storage_module",
   "engine_bridge_module",
   "mcp_module",
@@ -71,6 +75,12 @@ export const ConventionExceptionSchema = z.object({
   path_globs: z.array(RepoRelativePatternSchema).optional(),
   symbols: z.array(z.string().min(1)).optional(),
   imports: z.array(z.string().min(1)).optional(),
+  endpoint_paths: z.array(z.string().min(1).regex(/^\//, "endpoint paths must start with /")).optional(),
+  methods: z.array(z.string().min(1)).optional(),
+  resolved_modules: z.array(RepoRelativePatternSchema).optional(),
+  resolved_symbols: z.array(z.string().min(1)).optional(),
+  data_stores: z.array(z.string().min(1)).optional(),
+  operation_kinds: z.array(z.enum(["read", "write", "delete", "unknown"])).optional(),
   expires_at: z.string().datetime().optional(),
   created_by: z.string().min(1),
   created_at: z.string().datetime()
@@ -95,6 +105,11 @@ export const RepoRecordSchema = z.object({
   id: z.string().min(1),
   root_path: z.string().min(1),
   fingerprint: z.string().min(1),
+  vcs_provider: z.enum(["git", "none"]).optional(),
+  remote_url_hash: z.string().min(1).nullable().optional(),
+  package_manager: z.string().min(1).optional(),
+  lockfile_hashes: z.record(z.string().min(1)).optional(),
+  resolver_input_hash: z.string().min(1).optional(),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime()
 });
@@ -273,6 +288,7 @@ export const AuditEventSchema = z.object({
   target_id: z.string().min(1),
   metadata: z.record(z.unknown()),
   created_at: z.string().datetime(),
+  sequence: z.number().int().positive().optional(),
   previous_event_hash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
   event_hash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional()
 });
@@ -361,10 +377,32 @@ export const FindingDiffStatusSchema = z.enum([
   "outside_diff"
 ]);
 
+export const CheckRunStatusSchema = z.enum(["pass", "fail", "blocked"]);
+
+export const CheckRunSchema = z.object({
+  id: z.string().min(1),
+  repo_id: z.string().min(1),
+  repo_contract_id: z.string().min(1),
+  contract_fingerprint: z.string().min(1),
+  scan_id: z.string().min(1),
+  status: CheckRunStatusSchema,
+  scope: z.enum(["changed-hunks", "changed-files", "full"]),
+  engine_source: z.enum(["rust", "typescript"]),
+  fallback_used: z.boolean(),
+  stale_scan: z.boolean(),
+  capability_complete: z.boolean(),
+  findings_count: z.number().int().nonnegative(),
+  blocking_count: z.number().int().nonnegative(),
+  started_at: z.string().datetime(),
+  completed_at: z.string().datetime()
+});
+
 export const FindingSchema = z.object({
   id: z.string().min(1),
   repo_id: z.string().min(1),
   convention_id: z.string().min(1),
+  check_id: z.string().min(1).optional(),
+  repo_contract_id: z.string().min(1).optional(),
   fingerprint: z.string().min(1),
   title: z.string().min(1),
   message: z.string().min(1),
@@ -373,6 +411,11 @@ export const FindingSchema = z.object({
   status: FindingStatusSchema,
   diff_status: FindingDiffStatusSchema,
   evidence_refs: z.array(EvidenceRefSchema),
+  expected_layer: z.string().min(1).optional(),
+  actual_layer: z.string().min(1).optional(),
+  graph_path: z.array(z.string().min(1)).optional(),
+  suggested_fix: z.string().min(1).optional(),
+  related_node_ids: z.array(z.string().min(1)).optional(),
   created_at: z.string().datetime()
 });
 
@@ -400,7 +443,10 @@ export const SafeCommandSchema = z.object({
 export const RequiredCheckSchema = z.object({
   command: z.string().min(1),
   applies_to: ConventionScopeSchema,
-  reason: z.string().min(1)
+  reason: z.string().min(1),
+  source: z.enum(["contract", "graph_risk"]).optional(),
+  evidence_node_ids: z.array(z.string().min(1)).optional(),
+  risk_kinds: z.array(z.string().min(1)).optional()
 });
 
 export const ContextEgressPolicySchema = z.object({

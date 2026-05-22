@@ -432,5 +432,56 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN occurrence_kind TEXT NOT NULL DEFAULT 'reference'
         CHECK (occurrence_kind IN ('declaration', 'reference'));
     `
+  },
+  {
+    id: "010_audit_sequence",
+    sql: `
+      -- Applied by SqliteDriftStorage.applyAuditSequenceMigration so existing
+      -- databases can be backfilled idempotently before the unique index lands.
+    `
+  },
+  {
+    id: "011_check_runs_and_finding_context",
+    sql: `
+      CREATE TABLE IF NOT EXISTS check_runs (
+        id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL,
+        repo_contract_id TEXT NOT NULL,
+        contract_fingerprint TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pass', 'fail', 'blocked')),
+        scope TEXT NOT NULL CHECK (scope IN ('changed-hunks', 'changed-files', 'full')),
+        engine_source TEXT NOT NULL CHECK (engine_source IN ('rust', 'typescript')),
+        fallback_used INTEGER NOT NULL CHECK (fallback_used IN (0, 1)),
+        stale_scan INTEGER NOT NULL CHECK (stale_scan IN (0, 1)),
+        capability_complete INTEGER NOT NULL CHECK (capability_complete IN (0, 1)),
+        findings_count INTEGER NOT NULL,
+        blocking_count INTEGER NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_check_runs_repo_completed
+        ON check_runs(repo_id, completed_at);
+
+      ALTER TABLE findings ADD COLUMN check_id TEXT;
+      ALTER TABLE findings ADD COLUMN repo_contract_id TEXT;
+      ALTER TABLE findings ADD COLUMN expected_layer TEXT;
+      ALTER TABLE findings ADD COLUMN actual_layer TEXT;
+      ALTER TABLE findings ADD COLUMN graph_path_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE findings ADD COLUMN suggested_fix TEXT;
+      ALTER TABLE findings ADD COLUMN related_node_ids_json TEXT NOT NULL DEFAULT '[]';
+    `
+  },
+  {
+    id: "012_repo_identity",
+    sql: `
+      ALTER TABLE repos ADD COLUMN vcs_provider TEXT;
+      ALTER TABLE repos ADD COLUMN remote_url_hash TEXT;
+      ALTER TABLE repos ADD COLUMN package_manager TEXT;
+      ALTER TABLE repos ADD COLUMN lockfile_hashes_json TEXT;
+      ALTER TABLE repos ADD COLUMN resolver_input_hash TEXT;
+    `
   }
 ];

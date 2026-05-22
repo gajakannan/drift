@@ -2,7 +2,7 @@
   "name": "@drift/mcp",
   "version": "0.1.0",
   "description": "Read-only local MCP server for Drift repo contracts, scan status, findings, and preflight.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"

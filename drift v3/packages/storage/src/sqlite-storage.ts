@@ -5,6 +5,7 @@ import type {
   AcceptedConvention,
   BackupManifest,
   BaselineViolation,
+  CheckRun,
   ConventionCandidate,
   ConventionStatus,
   FactKind,
@@ -24,6 +25,7 @@ import {
   AcceptedConventionSchema,
   BackupManifestSchema,
   BaselineViolationSchema,
+  CheckRunSchema,
   ConventionCandidateSchema,
   FactRecordSchema,
   FileSnapshotSchema,
@@ -108,6 +110,10 @@ export class SqliteDriftStorage {
       this.applyAuditIntegrityMigration();
       return;
     }
+    if (migration.id === "010_audit_sequence") {
+      this.applyAuditSequenceMigration();
+      return;
+    }
 
     this.db.exec(migration.sql);
   }
@@ -139,6 +145,48 @@ export class SqliteDriftStorage {
     `);
   }
 
+  private applyAuditSequenceMigration(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS audit_events (
+        id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+
+    if (!this.auditEventsColumnExists("sequence")) {
+      this.db.exec("ALTER TABLE audit_events ADD COLUMN sequence INTEGER;");
+    }
+
+    const repoRows = this.db
+      .prepare("SELECT DISTINCT repo_id FROM audit_events ORDER BY repo_id")
+      .all();
+    for (const repoRow of repoRows) {
+      const repoId = rowValue<string>(repoRow, "repo_id");
+      const eventRows = this.db
+        .prepare("SELECT rowid FROM audit_events WHERE repo_id = ? ORDER BY rowid")
+        .all(repoId);
+      let sequence = 1;
+      for (const eventRow of eventRows) {
+        this.db
+          .prepare("UPDATE audit_events SET sequence = ? WHERE rowid = ? AND sequence IS NULL")
+          .run(sequence, rowValue<number>(eventRow, "rowid"));
+        sequence += 1;
+      }
+    }
+
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_repo_sequence
+        ON audit_events(repo_id, sequence)
+        WHERE sequence IS NOT NULL;
+    `);
+  }
+
   private auditEventsColumnExists(columnName: string): boolean {
     return this.db
       .prepare("PRAGMA table_info(audit_events)")
@@ -164,19 +212,37 @@ export class SqliteDriftStorage {
     const parsed = RepoRecordSchema.parse(repo);
     this.db
       .prepare(`
-        INSERT INTO repos (id, root_path, fingerprint, created_at, updated_at)
-        VALUES (@id, @root_path, @fingerprint, @created_at, @updated_at)
+        INSERT INTO repos (
+          id, root_path, fingerprint, vcs_provider, remote_url_hash, package_manager,
+          lockfile_hashes_json, resolver_input_hash, created_at, updated_at
+        )
+        VALUES (
+          @id, @root_path, @fingerprint, @vcs_provider, @remote_url_hash, @package_manager,
+          @lockfile_hashes_json, @resolver_input_hash, @created_at, @updated_at
+        )
         ON CONFLICT(id) DO UPDATE SET
           root_path = excluded.root_path,
           fingerprint = excluded.fingerprint,
+          vcs_provider = excluded.vcs_provider,
+          remote_url_hash = excluded.remote_url_hash,
+          package_manager = excluded.package_manager,
+          lockfile_hashes_json = excluded.lockfile_hashes_json,
+          resolver_input_hash = excluded.resolver_input_hash,
           updated_at = excluded.updated_at
       `)
-      .run(parsed);
+      .run({
+        ...parsed,
+        vcs_provider: parsed.vcs_provider ?? null,
+        remote_url_hash: parsed.remote_url_hash ?? null,
+        package_manager: parsed.package_manager ?? null,
+        lockfile_hashes_json: stringifyJson(parsed.lockfile_hashes ?? {}),
+        resolver_input_hash: parsed.resolver_input_hash ?? null
+      });
   }
 
   getRepo(id: string): RepoRecord | undefined {
     const row = this.db.prepare("SELECT * FROM repos WHERE id = ?").get(id);
-    return row ? RepoRecordSchema.parse(row) : undefined;
+    return row ? repoRecordFromRow(row) : undefined;
   }
 
   upsertScanManifest(manifest: ScanManifest): void {
@@ -626,17 +692,64 @@ export class SqliteDriftStorage {
       .map(symbolOccurrenceFromRow);
   }
 
+  upsertCheckRun(checkRun: CheckRun): void {
+    const parsed = CheckRunSchema.parse(checkRun);
+    this.db
+      .prepare(`
+        INSERT INTO check_runs (
+          id, repo_id, repo_contract_id, contract_fingerprint, scan_id, status, scope,
+          engine_source, fallback_used, stale_scan, capability_complete, findings_count,
+          blocking_count, started_at, completed_at
+        )
+        VALUES (
+          @id, @repo_id, @repo_contract_id, @contract_fingerprint, @scan_id, @status, @scope,
+          @engine_source, @fallback_used, @stale_scan, @capability_complete, @findings_count,
+          @blocking_count, @started_at, @completed_at
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          repo_contract_id = excluded.repo_contract_id,
+          contract_fingerprint = excluded.contract_fingerprint,
+          scan_id = excluded.scan_id,
+          status = excluded.status,
+          scope = excluded.scope,
+          engine_source = excluded.engine_source,
+          fallback_used = excluded.fallback_used,
+          stale_scan = excluded.stale_scan,
+          capability_complete = excluded.capability_complete,
+          findings_count = excluded.findings_count,
+          blocking_count = excluded.blocking_count,
+          completed_at = excluded.completed_at
+      `)
+      .run({
+        ...parsed,
+        fallback_used: parsed.fallback_used ? 1 : 0,
+        stale_scan: parsed.stale_scan ? 1 : 0,
+        capability_complete: parsed.capability_complete ? 1 : 0
+      });
+  }
+
+  listCheckRuns(repoId: string): CheckRun[] {
+    return this.db
+      .prepare("SELECT * FROM check_runs WHERE repo_id = ? ORDER BY completed_at, id")
+      .all(repoId)
+      .map(checkRunFromRow);
+  }
+
   upsertFinding(finding: Finding): void {
     const parsed = FindingSchema.parse(finding);
     this.db
       .prepare(`
         INSERT INTO findings (
           id, repo_id, convention_id, fingerprint, title, message, severity,
-          enforcement_result, status, diff_status, evidence_refs_json, created_at
+          enforcement_result, status, diff_status, evidence_refs_json, check_id,
+          repo_contract_id, expected_layer, actual_layer, graph_path_json,
+          suggested_fix, related_node_ids_json, created_at
         )
         VALUES (
           @id, @repo_id, @convention_id, @fingerprint, @title, @message, @severity,
-          @enforcement_result, @status, @diff_status, @evidence_refs_json, @created_at
+          @enforcement_result, @status, @diff_status, @evidence_refs_json, @check_id,
+          @repo_contract_id, @expected_layer, @actual_layer, @graph_path_json,
+          @suggested_fix, @related_node_ids_json, @created_at
         )
         ON CONFLICT(repo_id, fingerprint) DO UPDATE SET
           title = excluded.title,
@@ -645,11 +758,25 @@ export class SqliteDriftStorage {
           enforcement_result = excluded.enforcement_result,
           status = excluded.status,
           diff_status = excluded.diff_status,
-          evidence_refs_json = excluded.evidence_refs_json
+          evidence_refs_json = excluded.evidence_refs_json,
+          check_id = excluded.check_id,
+          repo_contract_id = excluded.repo_contract_id,
+          expected_layer = excluded.expected_layer,
+          actual_layer = excluded.actual_layer,
+          graph_path_json = excluded.graph_path_json,
+          suggested_fix = excluded.suggested_fix,
+          related_node_ids_json = excluded.related_node_ids_json
       `)
       .run({
         ...parsed,
-        evidence_refs_json: stringifyJson(parsed.evidence_refs)
+        check_id: parsed.check_id ?? null,
+        repo_contract_id: parsed.repo_contract_id ?? null,
+        evidence_refs_json: stringifyJson(parsed.evidence_refs),
+        expected_layer: parsed.expected_layer ?? null,
+        actual_layer: parsed.actual_layer ?? null,
+        graph_path_json: stringifyJson(parsed.graph_path ?? []),
+        suggested_fix: parsed.suggested_fix ?? null,
+        related_node_ids_json: stringifyJson(parsed.related_node_ids ?? [])
       });
   }
 
@@ -851,8 +978,10 @@ export class SqliteDriftStorage {
   appendAuditEvent(event: AuditEvent): void {
     const parsed = AuditEventSchema.parse(event);
     const previousEventHash = this.latestAuditEventHash(parsed.repo_id);
+    const sequence = this.nextAuditSequence(parsed.repo_id);
     const eventWithHash: AuditEvent = {
       ...parsed,
+      sequence,
       previous_event_hash: previousEventHash,
       event_hash: auditEventHash(parsed, previousEventHash)
     };
@@ -861,11 +990,11 @@ export class SqliteDriftStorage {
         .prepare(`
           INSERT INTO audit_events (
             id, repo_id, actor, action, target_type, target_id, metadata_json,
-            created_at, previous_event_hash, event_hash
+            created_at, sequence, previous_event_hash, event_hash
           )
           VALUES (
             @id, @repo_id, @actor, @action, @target_type, @target_id, @metadata_json,
-            @created_at, @previous_event_hash, @event_hash
+            @created_at, @sequence, @previous_event_hash, @event_hash
           )
         `)
         .run({
@@ -882,26 +1011,57 @@ export class SqliteDriftStorage {
 
   listAuditEvents(repoId: string): AuditEvent[] {
     return this.db
-      .prepare("SELECT * FROM audit_events WHERE repo_id = ? ORDER BY created_at, rowid")
+      .prepare("SELECT * FROM audit_events WHERE repo_id = ? ORDER BY sequence, created_at, rowid")
       .all(repoId)
       .map(auditEventFromRow);
   }
 
-  verifyAuditChain(repoId: string): AuditChainVerification {
+  verifyAuditChain(repoId: string, options: { strict?: boolean } = {}): AuditChainVerification {
     const events = this.db
       .prepare("SELECT * FROM audit_events WHERE repo_id = ? ORDER BY rowid")
       .all(repoId)
       .map(auditEventFromRow);
     let previousEventHash: string | null = null;
     let verifiedCount = 0;
+    let expectedSequence = 1;
+    let headSequence: number | null = null;
 
     for (const event of events) {
+      if (options.strict && typeof event.sequence !== "number") {
+        return {
+          repo_id: repoId,
+          valid: false,
+          strict: true,
+          event_count: events.length,
+          verified_count: verifiedCount,
+          head_sequence: headSequence,
+          head_event_hash: previousEventHash,
+          broken_at_event_id: event.id,
+          reasons: ["sequence_missing"]
+        };
+      }
+      if (options.strict && event.sequence !== expectedSequence) {
+        return {
+          repo_id: repoId,
+          valid: false,
+          strict: true,
+          event_count: events.length,
+          verified_count: verifiedCount,
+          head_sequence: headSequence,
+          head_event_hash: previousEventHash,
+          broken_at_event_id: event.id,
+          reasons: ["sequence_gap"]
+        };
+      }
+
       if ((event.previous_event_hash ?? null) !== previousEventHash) {
         return {
           repo_id: repoId,
           valid: false,
+          strict: options.strict ? true : undefined,
           event_count: events.length,
           verified_count: verifiedCount,
+          head_sequence: options.strict ? headSequence : undefined,
           head_event_hash: previousEventHash,
           broken_at_event_id: event.id,
           reasons: ["previous_event_hash_mismatch"]
@@ -912,8 +1072,10 @@ export class SqliteDriftStorage {
         return {
           repo_id: repoId,
           valid: false,
+          strict: options.strict ? true : undefined,
           event_count: events.length,
           verified_count: verifiedCount,
+          head_sequence: options.strict ? headSequence : undefined,
           head_event_hash: previousEventHash,
           broken_at_event_id: event.id,
           reasons: ["event_hash_missing"]
@@ -925,8 +1087,10 @@ export class SqliteDriftStorage {
         return {
           repo_id: repoId,
           valid: false,
+          strict: options.strict ? true : undefined,
           event_count: events.length,
           verified_count: verifiedCount,
+          head_sequence: options.strict ? headSequence : undefined,
           head_event_hash: previousEventHash,
           broken_at_event_id: event.id,
           reasons: ["event_hash_mismatch"]
@@ -935,13 +1099,19 @@ export class SqliteDriftStorage {
 
       verifiedCount += 1;
       previousEventHash = event.event_hash;
+      if (options.strict) {
+        headSequence = event.sequence ?? null;
+        expectedSequence += 1;
+      }
     }
 
     return {
       repo_id: repoId,
       valid: true,
+      strict: options.strict ? true : undefined,
       event_count: events.length,
       verified_count: verifiedCount,
+      head_sequence: options.strict ? headSequence : undefined,
       head_event_hash: previousEventHash,
       broken_at_event_id: null,
       reasons: []
@@ -958,6 +1128,13 @@ export class SqliteDriftStorage {
     return rowValue<string | null>(row, "event_hash") ?? null;
   }
 
+  private nextAuditSequence(repoId: string): number {
+    const row = this.db
+      .prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM audit_events WHERE repo_id = ?")
+      .get(repoId);
+    return rowValue<number>(row, "next_sequence");
+  }
+
   checkpoint(): void {
     this.db.pragma("wal_checkpoint(TRUNCATE)");
   }
@@ -969,6 +1146,22 @@ export class SqliteDriftStorage {
 
 export function openDriftStorage(options: DriftStorageOptions): SqliteDriftStorage {
   return new SqliteDriftStorage(options);
+}
+
+function repoRecordFromRow(row: unknown): RepoRecord {
+  const record = row as Record<string, unknown>;
+  return RepoRecordSchema.parse({
+    id: record.id,
+    root_path: record.root_path,
+    fingerprint: record.fingerprint,
+    vcs_provider: record.vcs_provider ?? undefined,
+    remote_url_hash: record.remote_url_hash ?? null,
+    package_manager: record.package_manager ?? undefined,
+    lockfile_hashes: record.lockfile_hashes_json ? parseJsonObject(record.lockfile_hashes_json) : undefined,
+    resolver_input_hash: record.resolver_input_hash ?? undefined,
+    created_at: record.created_at,
+    updated_at: record.updated_at
+  });
 }
 
 function scanManifestFromRow(row: unknown): ScanManifest {
@@ -997,7 +1190,24 @@ function findingFromRow(row: unknown): Finding {
   const record = row as Record<string, unknown>;
   return FindingSchema.parse({
     ...record,
-    evidence_refs: parseJsonArray(record.evidence_refs_json)
+    check_id: record.check_id ?? undefined,
+    repo_contract_id: record.repo_contract_id ?? undefined,
+    evidence_refs: parseJsonArray(record.evidence_refs_json),
+    expected_layer: record.expected_layer ?? undefined,
+    actual_layer: record.actual_layer ?? undefined,
+    graph_path: parseJsonArray(record.graph_path_json ?? "[]"),
+    suggested_fix: record.suggested_fix ?? undefined,
+    related_node_ids: parseJsonArray(record.related_node_ids_json ?? "[]")
+  });
+}
+
+function checkRunFromRow(row: unknown): CheckRun {
+  const record = row as Record<string, unknown>;
+  return CheckRunSchema.parse({
+    ...record,
+    fallback_used: record.fallback_used === 1,
+    stale_scan: record.stale_scan === 1,
+    capability_complete: record.capability_complete === 1
   });
 }
 
@@ -1138,6 +1348,7 @@ function auditEventFromRow(row: unknown): AuditEvent {
   const record = row as Record<string, unknown>;
   return AuditEventSchema.parse({
     ...record,
+    sequence: typeof record.sequence === "number" ? record.sequence : undefined,
     metadata: parseJsonObject(record.metadata_json)
   });
 }

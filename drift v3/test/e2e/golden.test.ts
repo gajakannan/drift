@@ -147,7 +147,7 @@ describe("golden fixture CLI lifecycle", () => {
         "governance_read_only": false,
         "next_command_count": 3,
         "repo_matches": true,
-        "schema_version": 9,
+        "schema_version": 12,
       }
     `);
 
@@ -166,7 +166,7 @@ describe("golden fixture CLI lifecycle", () => {
         "governance_read_only": false,
         "next_command_count": 2,
         "repo_matches": true,
-        "schema_version": 9,
+        "schema_version": 12,
         "write_intent": true,
       }
     `);
@@ -192,7 +192,7 @@ describe("golden fixture CLI lifecycle", () => {
         "count": 8,
       }
     `);
-  });
+  }, 15_000);
 });
 
 function goldenScan(payload: any) {

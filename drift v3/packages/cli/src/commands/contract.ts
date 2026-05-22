@@ -21,6 +21,8 @@ export function showContract(storage: SqliteDriftStorage, parsed: ParsedArgs): C
     throw new Error(`Policy denied contract show: ${policy.reason}`);
   }
   const payload = {
+    response_schema: "drift.repo.contract.v1",
+    repo_id: repoId,
     contract,
     contract_fingerprint: contractFingerprint(contract),
     policy,

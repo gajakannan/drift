@@ -79,6 +79,14 @@ pub struct EngineStats {
     pub diagnostics_emitted: usize,
     pub duration_ms: u128,
     pub truncated: bool,
+    pub capabilities: EngineCapabilityStats,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EngineCapabilityStats {
+    pub certified: Vec<String>,
+    pub required: Vec<String>,
+    pub missing: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -424,17 +432,54 @@ pub fn engine_stats(
         diagnostics_emitted,
         duration_ms,
         truncated: false,
+        capabilities: capability_stats(&["syntax_facts"], &[]),
     }
 }
 
 pub fn repo_completeness() -> Vec<EngineCompleteness> {
+    let required = vec![
+        "file_discovery".to_string(),
+        "syntax_facts".to_string(),
+        "graph_stream".to_string(),
+    ];
     vec![EngineCompleteness {
         scope: "repo".to_string(),
         complete: true,
-        required_capabilities: vec!["syntax_facts".to_string()],
+        required_capabilities: required,
         missing_capabilities: Vec::new(),
         truncated: false,
         can_block: true,
         reasons: Vec::new(),
     }]
+}
+
+pub fn capability_stats(required: &[&str], missing: &[&str]) -> EngineCapabilityStats {
+    EngineCapabilityStats {
+        certified: certified_capabilities(),
+        required: required
+            .iter()
+            .map(|capability| (*capability).to_string())
+            .collect(),
+        missing: missing
+            .iter()
+            .map(|capability| (*capability).to_string())
+            .collect(),
+    }
+}
+
+pub fn certified_capabilities() -> Vec<String> {
+    [
+        "candidate_inference",
+        "data_operation_detection",
+        "direct_data_access_check",
+        "file_discovery",
+        "graph_stream",
+        "import_resolution",
+        "route_detection",
+        "symbol_linking",
+        "syntax_facts",
+    ]
+    .into_iter()
+    .map(ToOwned::to_owned)
+    .collect()
 }

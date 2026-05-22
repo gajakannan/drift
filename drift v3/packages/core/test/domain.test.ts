@@ -12,6 +12,8 @@ import {
   authorizeContextExport,
   canonicalRepoContractJson,
   canonicalScanStateJson,
+  createAgentEnvelopeV2,
+  createPolicyProof,
   makeDriftId
 } from "../src/index.js";
 
@@ -28,8 +30,69 @@ describe("core domain", () => {
     expect(DRIFT_CONTRACT_SCHEMA_VERSION).toBe(1);
   });
 
+  it("creates deterministic agent envelope actions", () => {
+    expect(createAgentEnvelopeV2({
+      surface: "cli-preflight",
+      policy: { allowed: true, surface: "cli-preflight" },
+      scan: { required_fresh: false, stale: false, latest_scan_id: "scan_abc" }
+    }).action).toBe("safe_to_edit");
+    expect(createAgentEnvelopeV2({
+      surface: "cli-preflight",
+      policy: { allowed: true, surface: "cli-preflight" },
+      scan: { required_fresh: false, stale: true, latest_scan_id: null }
+    }).action).toBe("run_scan_first");
+    expect(createAgentEnvelopeV2({
+      surface: "cli-preflight",
+      policy: { allowed: true, surface: "cli-preflight" },
+      scan: { required_fresh: true, stale: true, latest_scan_id: "scan_abc" }
+    }).action).toBe("blocked_by_stale_graph");
+    expect(createAgentEnvelopeV2({
+      surface: "cli-preflight",
+      policy: { allowed: false, surface: "cli-preflight", reason: "denied" }
+    }).action).toBe("blocked_by_policy");
+    expect(createAgentEnvelopeV2({
+      surface: "cli-preflight",
+      policy: { allowed: true, surface: "cli-preflight" },
+      scan: { required_fresh: false, stale: false, latest_scan_id: "scan_abc" },
+      redactions: { snippets_included: false, context_truncated: true }
+    }).action).toBe("context_truncated");
+  });
+
+  it("creates policy proof metadata for agent-facing egress", () => {
+    const proof = createPolicyProof({
+      allowed: true,
+      surface: "cli-preflight",
+      mode: "redacted",
+      reason: "requested snippet length exceeds repo policy and was capped",
+      max_snippet_chars: 1200,
+      approved_snippet_chars: 1200
+    }, {
+      snippetsIncluded: true,
+      sourceContentIncluded: false,
+      contextTruncated: true
+    });
+
+    expect(proof).toEqual({
+      schema_version: "policy.proof.v1",
+      surface: "cli-preflight",
+      allowed: true,
+      mode: "redacted",
+      reason: "requested snippet length exceeds repo policy and was capped",
+      max_snippet_chars: 1200,
+      approved_snippet_chars: 1200,
+      snippets_included: true,
+      source_content_included: false,
+      context_truncated: true,
+      redaction_state: "snippet_limited"
+    });
+  });
+
   it("accepts deterministic package and module role names", () => {
     expect(FileRoleSchema.parse("cli_command_module")).toBe("cli_command_module");
+    expect(FileRoleSchema.parse("core_module")).toBe("core_module");
+    expect(FileRoleSchema.parse("query_module")).toBe("query_module");
+    expect(FileRoleSchema.parse("factgraph_module")).toBe("factgraph_module");
+    expect(FileRoleSchema.parse("adapter_module")).toBe("adapter_module");
     expect(FileRoleSchema.parse("storage_module")).toBe("storage_module");
     expect(FileRoleSchema.parse("engine_bridge_module")).toBe("engine_bridge_module");
     expect(FileRoleSchema.parse("mcp_module")).toBe("mcp_module");

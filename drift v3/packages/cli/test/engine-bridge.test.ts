@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   collectScanData,
@@ -15,6 +18,51 @@ const input = {
 };
 
 describe("engine scan data bridge", () => {
+  it("marks explicit TypeScript fallback as degraded and diagnostic-only", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-engine-fallback-"));
+    const previousBin = process.env.DRIFT_ENGINE_BIN;
+    const previousFallback = process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK;
+    try {
+      await mkdir(join(dir, "app/api/users"), { recursive: true });
+      await writeFile(join(dir, "app/api/users/route.ts"), "export async function GET() { return Response.json({ ok: true }); }\n");
+      process.env.DRIFT_ENGINE_BIN = join(dir, "missing-engine");
+      process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK = "1";
+
+      const scanData = await collectScanData({
+        repoId: "repo_abc",
+        scanId: "scan_fallback",
+        repoRoot: dir
+      });
+
+      expect(scanData.engineSource).toBe("typescript");
+      expect(scanData.fallbackStatus).toMatchObject({
+        fallback_used: true,
+        fallback_reason: "rust_engine_failed",
+        enforcement_degraded: true,
+        degraded_capabilities: ["graph", "graph_evidence", "deterministic_enforcement"]
+      });
+      expect(scanData.diagnostics).toContainEqual(expect.objectContaining({
+        severity: "warning",
+        code: "typescript_fallback_used"
+      }));
+      expect(scanData.graph_nodes).toEqual([]);
+      expect(scanData.graph_edges).toEqual([]);
+      expect(scanData.graph_evidence).toEqual([]);
+    } finally {
+      if (previousBin === undefined) {
+        delete process.env.DRIFT_ENGINE_BIN;
+      } else {
+        process.env.DRIFT_ENGINE_BIN = previousBin;
+      }
+      if (previousFallback === undefined) {
+        delete process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK;
+      } else {
+        process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK = previousFallback;
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not silently resolve a TypeScript scanner fallback when the Rust engine is unavailable", () => {
     expect(resolveRustEngineCommand({
       startDir: "/tmp/drift-no-cargo-workspace",

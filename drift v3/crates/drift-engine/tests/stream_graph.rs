@@ -67,6 +67,14 @@ export async function GET() {
         .expect("scan_completed event");
     assert!(completed["stats"]["graph_nodes"].as_u64().unwrap() > 0);
     assert!(completed["stats"]["graph_edges"].as_u64().unwrap() > 0);
+    assert_eq!(
+        completed["stats"]["capabilities"]["required"],
+        serde_json::json!(["file_discovery", "syntax_facts", "graph_stream"])
+    );
+    assert_eq!(
+        completed["stats"]["capabilities"]["missing"],
+        serde_json::json!([])
+    );
 }
 
 #[test]

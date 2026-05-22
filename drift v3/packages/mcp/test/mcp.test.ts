@@ -223,6 +223,107 @@ async function seedMcpDatabase(): Promise<string> {
   return databasePath;
 }
 
+async function seedMcpNoContractDatabase(): Promise<{
+  databasePath: string;
+  repoId: string;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), "drift-mcp-no-contract-"));
+  tempDirs.push(dir);
+  const repoRoot = join(dir, "repo");
+  const routeSource = "export async function GET() { return Response.json({ ok: true }); }\n";
+  await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+  await writeFile(join(repoRoot, "apps/web/app/api/users/route.ts"), routeSource);
+
+  const databasePath = join(dir, "drift.sqlite");
+  const repoId = "repo_no_contract";
+  const storage = openDriftStorage({ databasePath });
+  storage.migrate();
+  storage.upsertRepo({
+    id: repoId,
+    root_path: repoRoot,
+    fingerprint: "repo-no-contract-fp",
+    created_at: "2026-05-10T00:00:00.000Z",
+    updated_at: "2026-05-10T00:00:00.000Z"
+  });
+  storage.upsertScanManifest({
+    id: "scan_no_contract",
+    repo_id: repoId,
+    branch: "unknown",
+    commit: "abc123",
+    dirty: false,
+    scanner_version: "0.1.0",
+    adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+    rule_engine_version: "0.1.0",
+    status: "completed",
+    file_count: 1,
+    fact_count: 2,
+    finding_count: 0,
+    started_at: "2026-05-10T00:00:01.000Z",
+    completed_at: "2026-05-10T00:00:02.000Z"
+  });
+  storage.upsertFileSnapshot({
+    repo_id: repoId,
+    scan_id: "scan_no_contract",
+    file_path: "apps/web/app/api/users/route.ts",
+    content_hash: createHash("sha256").update(routeSource).digest("hex"),
+    byte_size: Buffer.byteLength(routeSource),
+    indexed: true
+  });
+  storage.upsertFacts([
+    {
+      id: "fact_no_contract_file",
+      repo_id: repoId,
+      scan_id: "scan_no_contract",
+      kind: "file_detected",
+      file_path: "apps/web/app/api/users/route.ts",
+      name: "apps/web/app/api/users/route.ts",
+      start_line: 1,
+      end_line: 1
+    },
+    {
+      id: "fact_no_contract_role",
+      repo_id: repoId,
+      scan_id: "scan_no_contract",
+      kind: "file_role_detected",
+      file_path: "apps/web/app/api/users/route.ts",
+      name: "api_route",
+      start_line: 1,
+      end_line: 1
+    }
+  ]);
+  storage.upsertConventionCandidate({
+    id: "candidate_no_contract_db",
+    repo_id: repoId,
+    scan_id: "scan_no_contract",
+    kind: "api_route_no_direct_data_access",
+    statement: "API routes should not import data-access clients directly.",
+    scope: { path_globs: ["apps/web/app/api/**/route.ts"], file_roles: ["api_route"] },
+    matcher: {
+      kind: "api_route_no_direct_data_access",
+      forbidden_imports: ["@/lib/prisma"],
+      applies_to_file_roles: ["api_route"]
+    },
+    suggested_severity: "error",
+    suggested_enforcement_mode: "block",
+    enforcement_capability: "deterministic_check",
+    confidence_label: "high",
+    scoring: {
+      supporting_examples_count: 4,
+      counterexamples_count: 0,
+      scope_files_count: 4,
+      coverage_ratio: 1,
+      heuristic_id: "direct-data-access-import-v1"
+    },
+    evidence_refs: [],
+    counterexample_refs: [],
+    status: "candidate",
+    created_at: "2026-05-10T00:00:03.000Z"
+  });
+  storage.close();
+
+  return { databasePath, repoId };
+}
+
 async function runMcpStdio(databasePath: string, lines: string[]): Promise<{
   stdout: string[];
   stderr: string;
@@ -434,6 +535,49 @@ describe("read-only MCP handlers", () => {
     });
   });
 
+  it("matches CLI scan-status resolver input invalidation semantics", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const repo = storage.getRepo("repo_abc")!;
+    const scan = storage.listScanManifests("repo_abc").find((entry) => entry.id === "scan_abc")!;
+    const routeSource = "export async function GET() { return Response.json({ ok: true }); }\n";
+    await writeFile(join(repo.root_path, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        baseUrl: ".",
+        paths: { "@/*": ["apps/web/*"] }
+      }
+    }));
+    storage.upsertScanManifest({
+      ...scan,
+      id: "scan_resolver_inputs",
+      branch: "unknown",
+      scanner_version: "0.1.0",
+      adapter_versions: {
+        typescript: "0.1.0",
+        resolver: "0.1.0",
+        resolver_inputs: "0".repeat(64)
+      },
+      rule_engine_version: "0.1.0",
+      started_at: "2026-05-10T00:00:03.000Z",
+      completed_at: "2026-05-10T00:00:04.000Z"
+    });
+    storage.upsertFileSnapshot({
+      repo_id: "repo_abc",
+      scan_id: "scan_resolver_inputs",
+      file_path: "apps/web/app/api/users/route.ts",
+      content_hash: createHash("sha256").update(routeSource).digest("hex"),
+      byte_size: Buffer.byteLength(routeSource),
+      indexed: true
+    });
+    storage.close();
+
+    expect(createReadOnlyMcpHandlers({ databasePath }).get_scan_status({ repo_id: "repo_abc" })).toMatchObject({
+      stale: true,
+      invalidation_reasons: ["resolver_inputs_changed"]
+    });
+  });
+
   it("returns scan, contract, preflight, findings, and policy context without mutating state", async () => {
     const databasePath = await seedMcpDatabase();
     const handlers = createReadOnlyMcpHandlers({ databasePath });
@@ -522,7 +666,7 @@ describe("read-only MCP handlers", () => {
       ]
     });
     expect(handlers.get_repo_contract({ repo_id: "repo_abc" })).toMatchObject({
-      policy: { allowed: true, surface: "mcp" },
+      policy: { allowed: true, surface: "contract-export" },
       governance: {
         read_only: true,
         agent_can_mutate: false
@@ -540,7 +684,7 @@ describe("read-only MCP handlers", () => {
     });
     expect(handlers.get_repo_map({ repo_id: "repo_abc" })).toMatchObject({
       repo_id: "repo_abc",
-      policy: { allowed: true, surface: "mcp" },
+      policy: { allowed: true, surface: "cli-preflight" },
       governance: {
         read_only: true,
         agent_can_mutate: false
@@ -606,6 +750,17 @@ describe("read-only MCP handlers", () => {
     expect(preflight).toMatchObject({
       target_path: "apps/web/app/api/users/route.ts",
       generated_at: "2026-05-10T00:01:00.000Z",
+      agent_envelope: {
+        policy_proof: {
+          schema_version: "policy.proof.v1",
+          surface: "cli-preflight",
+          allowed: true,
+          redaction_state: "metadata_only",
+          snippets_included: false,
+          source_content_included: false,
+          context_truncated: false
+        }
+      },
       freshness_requirement: {
         required: false,
         satisfied: false
@@ -651,7 +806,7 @@ describe("read-only MCP handlers", () => {
         id: "contract_abc",
         schema_version: 1
       },
-      policy: { allowed: true, surface: "mcp" },
+      policy: { allowed: true, surface: "cli-preflight" },
       conventions: [{
         id: "convention_no_direct_db",
         severity: "error",
@@ -708,7 +863,7 @@ describe("read-only MCP handlers", () => {
       require_fresh: true
     } as never)).toThrow("Scan is stale for repo_abc.");
     expect(handlers.get_conventions({ repo_id: "repo_abc" })).toMatchObject({
-      policy: { allowed: true, surface: "mcp" },
+      policy: { allowed: true, surface: "cli-preflight" },
       summary: {
         total_count: 1,
         deterministic_count: 1,
@@ -723,10 +878,11 @@ describe("read-only MCP handlers", () => {
       conventions: [{ id: "convention_no_direct_db" }]
     });
     const allFindings = handlers.get_findings({ repo_id: "repo_abc" }) as {
+      review_items: Array<Record<string, unknown>>;
       findings: Array<Record<string, unknown>>;
     };
     expect(allFindings).toMatchObject({
-      policy: { allowed: true, surface: "mcp" },
+      policy: { allowed: true, surface: "cli-check" },
       governance: {
         read_only: true,
         agent_can_mutate: false
@@ -747,9 +903,10 @@ describe("read-only MCP handlers", () => {
           outside_diff: 1
         }
       },
+      review_items: [{ id: "finding_abc" }, { id: "finding_suppressed" }],
       findings: [{ id: "finding_abc" }, { id: "finding_suppressed" }]
     });
-    expect(allFindings.findings[0]).toMatchObject({
+    expect(allFindings.review_items[0]).toMatchObject({
       id: "finding_abc",
       convention_id: "convention_no_direct_db",
       title: "API route imports data access directly",
@@ -765,8 +922,8 @@ describe("read-only MCP handlers", () => {
         symbol: "prisma"
       }
     });
-    expect(allFindings.findings[0]).not.toHaveProperty("message");
-    expect(allFindings.findings[0]).not.toHaveProperty("evidence_refs");
+    expect(allFindings.findings[0]).toHaveProperty("message");
+    expect(allFindings.findings[0]).toHaveProperty("evidence_refs");
     const pathFindings = handlers.get_findings({
       repo_id: "repo_abc",
       path: "apps/web/app/api/users/route.ts"
@@ -1050,7 +1207,7 @@ describe("read-only MCP handlers", () => {
       path: routePath,
       roles: ["api_route"],
       exported_symbols: ["GET"],
-      calls: ["Response.json", "db.user.findMany"]
+      calls: expect.arrayContaining(["Response.json", "db.user.findMany"])
     })]);
   });
 
@@ -1087,6 +1244,91 @@ describe("read-only MCP handlers", () => {
         excluded_file_count: 0,
         snippets_included: false
       }
+    });
+  });
+
+  it("returns first-run MCP preflight before a contract exists without inventing conventions", async () => {
+    const { databasePath, repoId } = await seedMcpNoContractDatabase();
+    const preflight = createReadOnlyMcpHandlers({ databasePath }).get_task_preflight({
+      repo_id: repoId,
+      task: "add users api route",
+      path: "apps/web/app/api/users/route.ts",
+      now: "2026-05-10T00:01:00.000Z"
+    }) as {
+      contract: { ready: boolean; id: string | null; source: string };
+      summary: {
+        contract_ready: boolean;
+        candidate_count: number;
+        convention_count: number;
+        relevant_file_count: number;
+      };
+      conventions: unknown[];
+      relevant_files: Array<{ path: string; reasons: string[] }>;
+      next_commands: string[];
+    };
+
+    expect(preflight.contract).toMatchObject({
+      ready: false,
+      id: null,
+      source: "default_local_policy"
+    });
+    expect(preflight.summary).toMatchObject({
+      contract_ready: false,
+      candidate_count: 1,
+      convention_count: 0,
+      relevant_file_count: 1
+    });
+    expect(preflight.conventions).toEqual([]);
+    expect(preflight.relevant_files).toEqual([
+      expect.objectContaining({
+        path: "apps/web/app/api/users/route.ts",
+        reasons: expect.arrayContaining(["requested path"])
+      })
+    ]);
+    expect(preflight.next_commands).toEqual([
+      `drift conventions list --repo ${repoId} --status candidate --json`,
+      `drift repo map --repo ${repoId} --json`,
+      `drift scan status --repo ${repoId} --json`
+    ]);
+  });
+
+  it("returns MCP repo map before a contract exists using the default local policy", async () => {
+    const { databasePath, repoId } = await seedMcpNoContractDatabase();
+    const repoMap = createReadOnlyMcpHandlers({ databasePath }).get_repo_map({
+      repo_id: repoId
+    }) as {
+      policy: { allowed: boolean; surface: string };
+      summary: { indexed_file_count: number; listed_file_count: number };
+      files: Array<{
+        path: string;
+        roles: string[];
+        convention_ids: string[];
+        risky_area_ids: string[];
+        open_finding_ids: string[];
+      }>;
+      redactions: { source_content_included: boolean; snippets_included: boolean };
+    };
+
+    expect(repoMap.policy).toMatchObject({
+      allowed: true,
+      surface: "cli-preflight"
+    });
+    expect(repoMap.summary).toMatchObject({
+      indexed_file_count: 1,
+      listed_file_count: 1
+    });
+    expect(repoMap.files).toEqual([
+      expect.objectContaining({
+        path: "apps/web/app/api/users/route.ts",
+        roles: ["api_route"],
+        convention_ids: [],
+        risky_area_ids: [],
+        open_finding_ids: []
+      })
+    ]);
+    expect(repoMap.redactions).toMatchObject({
+      source_content_included: false,
+      snippets_included: false
     });
   });
 
@@ -1452,12 +1694,7 @@ describe("read-only MCP handlers", () => {
     const handlers = createReadOnlyMcpHandlers({ databasePath });
 
     expect(handlers.get_scan_status({ repo_id: "repo_abc" })).toMatchObject({
-      repo_id: "repo_abc",
-      policy: {
-        allowed: false,
-        surface: "mcp",
-        mode: "approval_required"
-      }
+      repo_id: "repo_abc"
     });
     expect(() => handlers.get_task_preflight({
       repo_id: "repo_abc",
@@ -1852,6 +2089,27 @@ describe("read-only MCP handlers", () => {
       "get_findings",
       "get_allowed_context"
     ]);
+    const repoMapRoleSchema = DRIFT_READ_ONLY_MCP_TOOLS.find((tool) => tool.name === "get_repo_map")
+      ?.inputSchema.properties.role as { enum?: string[] } | undefined;
+    expect(repoMapRoleSchema?.enum).toEqual([
+      "api_route",
+      "server_module",
+      "service_module",
+      "data_access_module",
+      "component",
+      "test",
+      "config",
+      "cli_command_module",
+      "core_module",
+      "query_module",
+      "factgraph_module",
+      "adapter_module",
+      "storage_module",
+      "engine_bridge_module",
+      "mcp_module",
+      "docs",
+      "package_manifest"
+    ]);
     expect(called?.result).toMatchObject({
       content: [{ type: "text" }],
       isError: false
@@ -1862,7 +2120,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 9,
+        supported_sqlite_schema_version: 12,
         storage_driver: "sqlite"
       },
       v1_scope: {

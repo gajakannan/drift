@@ -140,8 +140,16 @@ describe("installed Drift package flow", () => {
     expect(doctorPayload.runtime).toMatchObject({
       cli_version: "0.1.0",
       core_version: "0.1.0",
-      supported_sqlite_schema_version: 9,
+      supported_sqlite_schema_version: 12,
       storage_driver: "sqlite"
+    });
+    expect(doctorPayload.engine).toMatchObject({
+      status: "available",
+      source: "packaged_optional_dependency",
+      package_name: expect.stringMatching(/^@drift\/engine-/),
+      package_version: "0.1.0",
+      override_active: false,
+      checksum_matches: true
     });
     expect(doctorPayload.v1_scope).toMatchObject({
       product_mode: "local_first_cli",
@@ -191,8 +199,16 @@ describe("installed Drift package flow", () => {
     expect(versionPayload.runtime).toMatchObject({
       cli_version: "0.1.0",
       core_version: "0.1.0",
-      supported_sqlite_schema_version: 9,
+      supported_sqlite_schema_version: 12,
       storage_driver: "sqlite"
+    });
+    expect(versionPayload.engine).toMatchObject({
+      status: "available",
+      source: "packaged_optional_dependency",
+      package_name: expect.stringMatching(/^@drift\/engine-/),
+      package_version: "0.1.0",
+      override_active: false,
+      checksum_matches: true
     });
 
     const capabilities = await runInstalledDrift(consumerDir, [
@@ -453,6 +469,27 @@ describe("installed Drift package flow", () => {
     expect(contract.stderr).toBe("");
     expect(contractPayload.contract_fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(contractPayload.summary.convention_count).toBe(1);
+
+    const acceptedConventions = await runInstalledDrift(consumerDir, [
+      "--db", databasePath!,
+      "conventions", "accepted",
+      "--repo", repoId!,
+      "--kind", "api_route_no_direct_data_access",
+      "--capability", "deterministic_check",
+      "--limit", "1",
+      "--offset", "0",
+      "--json"
+    ]);
+    const acceptedConventionsPayload = JSON.parse(acceptedConventions.stdout);
+    expect(acceptedConventions.stderr).toBe("");
+    expect(acceptedConventionsPayload.summary).toMatchObject({
+      filtered_count: 1,
+      listed_count: 1
+    });
+    expect(acceptedConventionsPayload.conventions[0]).toMatchObject({
+      kind: "api_route_no_direct_data_access",
+      enforcement_capability: "deterministic_check"
+    });
 
     const baseline = await runInstalledDrift(consumerDir, [
       "--db", databasePath!,
@@ -1059,7 +1096,7 @@ describe("installed Drift package flow", () => {
       has_more: false,
       next_offset: null
     });
-    expect(mcpFindingsPayload.findings).toEqual([
+    expect(mcpFindingsPayload.review_items).toEqual([
       expect.objectContaining({
         first_evidence: expect.objectContaining({
           file_path: "apps/web/app/api/users/route.ts"
@@ -1127,7 +1164,7 @@ describe("installed Drift package flow", () => {
     expect(runtimePayload.runtime).toMatchObject({
       mcp_version: "0.1.0",
       core_version: "0.1.0",
-      supported_sqlite_schema_version: 9,
+      supported_sqlite_schema_version: 12,
       storage_driver: "sqlite"
     });
     expect(runtimePayload.governance).toMatchObject({

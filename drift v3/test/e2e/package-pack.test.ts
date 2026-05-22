@@ -68,8 +68,10 @@ function expectDistOnly(files: string[]): void {
   expect(files.every((file) =>
     file === "package.json" ||
     file === "README.md" ||
+    file === "LICENSE" ||
     file.startsWith("dist/")
   )).toBe(true);
+  expect(files).toContain("LICENSE");
   expect(files.some((file) => file.startsWith("src/"))).toBe(false);
   expect(files.some((file) => file.startsWith("test/"))).toBe(false);
   expect(files).not.toContain("tsconfig.json");
@@ -78,7 +80,7 @@ function expectDistOnly(files: string[]): void {
 function expectPackageMetadata(manifest: PackedPackage["manifest"]): void {
   expect(manifest.version).toBe("0.1.0");
   expect(manifest.description).toBeTruthy();
-  expect(manifest.license).toBe("UNLICENSED");
+  expect(manifest.license).toBe("MIT");
   expect(manifest.engines?.node).toBe(">=20.0.0");
 }
 

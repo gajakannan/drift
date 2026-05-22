@@ -32,6 +32,19 @@ afterEach(async () => {
 });
 
 describe("fixture matrix", () => {
+  async function scanFixture(name: string) {
+    const { repoRoot, stateRoot } = await fixtureRepo(name);
+    const scan = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:00.000Z",
+      "--json"
+    ]);
+    expect(scan.exitCode).toBe(0);
+    return { repoRoot, scanPayload: JSON.parse(scan.stdout) };
+  }
+
   it("keeps a service-delegated API route as a graph-resolved route-to-service flow", async () => {
     const { repoRoot, stateRoot } = await fixtureRepo("next-api-service-delegated");
     const scan = await runCli([
@@ -102,5 +115,143 @@ describe("fixture matrix", () => {
     expect(payload.summary.files_indexed).toBe(0);
     expect(payload.summary.candidates_count).toBe(0);
     expect(payload.candidates).toEqual([]);
+  });
+
+  it("keeps barrel re-exported data clients visible in graph evidence", async () => {
+    const { scanPayload } = await scanFixture("barrel-reexport-db");
+    const storage = openDriftStorage({ databasePath: scanPayload.database_path });
+
+    try {
+      const edges = storage.listGraphEdges(scanPayload.repo.id, scanPayload.scan.id);
+
+      expect(edges).toContainEqual(expect.objectContaining({
+        kind: "MODULE_REEXPORTS_MODULE",
+        to: "module:apps/web/lib/db.ts"
+      }));
+      expect(edges).toContainEqual(expect.objectContaining({
+        kind: "IMPORT_RESOLVES_TO_MODULE",
+        from: expect.stringContaining("apps/web/lib/index.ts"),
+        to: "module:apps/web/lib/db.ts"
+      }));
+    } finally {
+      storage.close();
+    }
+  });
+
+  it("keeps namespace import and receiver-chain facts visible in graph nodes", async () => {
+    const { scanPayload } = await scanFixture("namespace-import-db");
+    const storage = openDriftStorage({ databasePath: scanPayload.database_path });
+
+    try {
+      const nodes = storage.listGraphNodes(scanPayload.repo.id, scanPayload.scan.id);
+
+      expect(nodes).toContainEqual(expect.objectContaining({
+        kind: "import_decl",
+        metadata: expect.objectContaining({
+          imported_name: "*",
+          local_name: "dbModule",
+          resolved_file_path: "apps/web/lib/db.ts"
+        })
+      }));
+      expect(nodes).toContainEqual(expect.objectContaining({
+        kind: "data_operation",
+        metadata: expect.objectContaining({
+          receiver_name: "dbModule.db.user",
+          receiver_root: "dbModule",
+          store_name: "db",
+          operation_kind: "read"
+        })
+      }));
+    } finally {
+      storage.close();
+    }
+  });
+
+  it("resolves default-exported services from API routes", async () => {
+    const { scanPayload } = await scanFixture("default-export-service");
+    const storage = openDriftStorage({ databasePath: scanPayload.database_path });
+
+    try {
+      const edges = storage.listGraphEdges(scanPayload.repo.id, scanPayload.scan.id);
+
+      expect(edges).toContainEqual(expect.objectContaining({
+        kind: "IMPORT_RESOLVES_TO_MODULE",
+        from: expect.stringContaining("apps/web/app/api/users/route.ts"),
+        to: "module:apps/web/services/users.ts"
+      }));
+      expect(edges).toContainEqual(expect.objectContaining({
+        kind: "IMPORT_RESOLVES_TO_SYMBOL",
+        to: "symbol:apps/web/services/users.ts:function:default"
+      }));
+    } finally {
+      storage.close();
+    }
+  });
+
+  it("derives endpoint shapes for dynamic app and pages API routes", async () => {
+    const { scanPayload } = await scanFixture("dynamic-route-params");
+    const storage = openDriftStorage({ databasePath: scanPayload.database_path });
+
+    try {
+      const endpoints = storage
+        .listGraphNodes(scanPayload.repo.id, scanPayload.scan.id)
+        .filter((node) => node.kind === "endpoint")
+        .map((node) => node.metadata);
+
+      expect(endpoints).toContainEqual(expect.objectContaining({
+        route_pattern: "/api/users/:id",
+        dynamic_params: ["id"]
+      }));
+      expect(endpoints).toContainEqual(expect.objectContaining({
+        route_pattern: "/api/projects/:projectId",
+        dynamic_params: ["projectId"]
+      }));
+    } finally {
+      storage.close();
+    }
+  });
+
+  it("surfaces write data operations through prepare graph context", async () => {
+    const { repoRoot, scanPayload } = await scanFixture("route-write-operation");
+    const prepared = await runCli([
+      "--db", scanPayload.database_path,
+      "prepare",
+      "change user creation route",
+      "--repo", scanPayload.repo.id,
+      "--path", "apps/web/app/api/users/route.ts",
+      "--json"
+    ]);
+    expect(prepared.exitCode).toBe(0);
+    const payload = JSON.parse(prepared.stdout);
+
+    expect(payload.graph_context.reachable_data_access[0].risk_reasons).toContainEqual(expect.objectContaining({
+      risk_kind: "data_write",
+      operation_kind: "write",
+      operation_name: "create"
+    }));
+    expect(payload.required_checks).toContainEqual(expect.objectContaining({
+      source: "graph_risk",
+      matched_files: ["apps/web/app/api/users/route.ts"],
+      risk_kinds: ["data_write"]
+    }));
+    expect(repoRoot).toContain("repo");
+  });
+
+  it("indexes mixed JavaScript and TypeScript route/service files", async () => {
+    const { scanPayload } = await scanFixture("mixed-js-ts");
+    const storage = openDriftStorage({ databasePath: scanPayload.database_path });
+
+    try {
+      const edges = storage.listGraphEdges(scanPayload.repo.id, scanPayload.scan.id);
+
+      expect(scanPayload.summary.files_indexed).toBe(3);
+      expect(edges).toContainEqual(expect.objectContaining({
+        kind: "IMPORT_RESOLVES_TO_MODULE",
+        from: expect.stringContaining("apps/web/pages/api/users.js"),
+        to: "module:apps/web/services/users.ts"
+      }));
+    } finally {
+      storage.close();
+    }
   });
 });

@@ -4,9 +4,11 @@ import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { optionalRepoRelativeFlag,requiredValue,stringFlag } from "../args/flag-readers.js";
 import { resolveRepoId } from "../args/repo-flags.js";
 import { isActiveConvention } from "../check/rule-evaluation.js";
+import { agentEnvelopeForScan } from "../domain/agent-envelope.js";
 import { baselineSummary } from "../domain/baselines.js";
 import { isOpenPreflightFinding } from "../domain/findings.js";
 import { graphPreflightContext } from "../domain/graph-preflight.js";
+import { requiredChecksFromGraphRisk } from "../domain/graph-risk-checks.js";
 import { preflightGovernance } from "../domain/governance.js";
 import { countDeniedFiles,preflightSummary,preparedConvention,relevantFilesForTask,requiredChecksForFiles,riskyAreasForFiles,waiversForFiles } from "../domain/preflight.js";
 import { repoContractOrDefault } from "../domain/repo-paths.js";
@@ -56,7 +58,6 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     targetPath
   });
   const riskyAreas = riskyAreasForFiles(contract, relevantFiles);
-  const requiredChecks = requiredChecksForFiles(contract, relevantFiles);
   const waivers = waiversForFiles(contract, relevantFiles, now);
   const scanStatus = scanStatusPayload(storage, repoId);
   const requireFresh = parsed.flags.has("require-fresh");
@@ -68,17 +69,37 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     targetPath,
     relevantFiles
   });
+  const requiredChecks = [
+    ...requiredChecksForFiles(contract, relevantFiles),
+    ...requiredChecksFromGraphRisk({
+      repoRoot: repo.root_path,
+      graphContext,
+      relevantFiles,
+      safeCommands: contract.safe_commands
+    })
+  ];
   const auditIntegrity = scanStatus.audit_integrity;
   const redactions = {
     denied_globs: contract.context_egress.denied_globs,
     excluded_file_count: countDeniedFiles(repo.root_path, contract.context_egress.denied_globs),
-    snippets_included: false
+    snippets_included: false,
+    source_content_included: false,
+    graph_context_included: graphContext.available,
+    context_truncated: false
   };
   const payload = {
+    response_schema: "drift.task.preflight.v1",
     repo_id: repoId,
     task,
     target_path: targetPath ?? null,
     generated_at: now,
+    agent_envelope: agentEnvelopeForScan({
+      surface: "cli-preflight",
+      policy,
+      scanStatus,
+      requireFresh,
+      diagnostics: graphContext.diagnostics
+    }),
     policy,
     contract: {
       id: storedContract?.id ?? null,

@@ -1,6 +1,16 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createDriftCapabilities } from "../../packages/core/src/capabilities";
-import { describe, expect, it } from "vitest";
+import { MIGRATIONS } from "../../packages/storage/src/migrations";
+import { afterEach, describe, expect, it } from "vitest";
+
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 describe("release hygiene", () => {
   it("keeps the root package release gate explicit", async () => {
@@ -10,8 +20,17 @@ describe("release hygiene", () => {
     expect(manifest.packageManager).toBe("pnpm@10.28.0");
     expect(manifest.engines?.node).toBe(">=20.0.0");
     expect(manifest.scripts.verify).toBe("pnpm build && pnpm typecheck && pnpm test && pnpm test:e2e");
+    expect(manifest.scripts["format:engine"]).toBe("cargo fmt --all");
+    expect(manifest.scripts["format:engine:check"]).toBe("cargo fmt --all -- --check");
+    expect(manifest.scripts["lint:engine"]).toBe("cargo clippy -p drift-engine --all-targets -- -D warnings");
     expect(manifest.scripts["check:boundaries"]).toBe("node packages/cli/scripts/check-boundaries.mjs");
-    expect(manifest.scripts["verify:ci"]).toBe("pnpm verify && pnpm check:boundaries && git diff --check");
+    expect(manifest.scripts["validate:release-matrix"]).toBe("node scripts/validate-engine-release-matrix.mjs");
+    expect(manifest.scripts["validate:claims"]).toBe("node scripts/validate-product-claims.mjs");
+    expect(manifest.scripts["beta:proof"]).toBe("node scripts/run-beta-proof.mjs");
+    expect(manifest.scripts["release:proof"]).toBe("node scripts/generate-release-proof.mjs");
+    expect(manifest.scripts["verify:ci"]).toBe(
+      "pnpm verify && pnpm format:engine:check && pnpm lint:engine && pnpm check:boundaries && pnpm validate:release-matrix && pnpm validate:claims && pnpm beta:proof && git diff --check",
+    );
   });
 
   it("runs the production verification gate in CI with least repository permissions", async () => {
@@ -49,15 +68,171 @@ describe("release hygiene", () => {
       "@drift/engine-win32-x64",
       "SHA256SUMS",
       "npm publish",
-      "npm_config_provenance=true"
+      "npm_config_provenance=true",
+      "packages/factgraph",
+      "packages/query",
+      "drift-factgraph-*.tgz",
+      "drift-query-*.tgz",
+      "node scripts/validate-engine-release-matrix.mjs"
     ]) {
       expect(workflow).toContain(expected);
     }
+    expect(workflow).toContain("DRIFT_VERIFY_CI_STATUS=passed node scripts/run-beta-proof.mjs --output beta-proof.json");
+    expect(workflow).toContain("node scripts/generate-release-proof.mjs --require-clean --require-built-cli --require-beta-proof --beta-proof-file beta-proof.json --output release-proof.json");
+    expect(workflow).toContain("name: Final release proof");
+    expect(workflow).toContain("drift-beta-preflight-proof");
+    expect(workflow).toContain("drift-final-release-proof");
+    expect(workflow).toContain("node scripts/generate-release-proof.mjs --require-clean --require-built-cli --require-complete --require-beta-proof --beta-proof-file .release/proof/beta-proof.json --output .release/final-release-proof.json");
+    expect(workflow).toContain("beta-proof.json");
     expect(workflow).toContain("if: ${{ inputs.dry_run == false || startsWith(github.ref, 'refs/tags/v') }}");
+  });
+
+  it("generates a release proof artifact with source and built schema fields", () => {
+    const output = execFileSync("node", ["scripts/generate-release-proof.mjs"], {
+      encoding: "utf8"
+    });
+    const proof = JSON.parse(output);
+
+    expect(proof.schema_version).toBe("drift.release.proof.v1");
+    expect(proof.release_version).toBe("0.1.0");
+    expect(proof.source_schema_version).toBe(MIGRATIONS.length);
+    expect(proof.built_schema_version === null || proof.built_schema_version === MIGRATIONS.length).toBe(true);
+    expect(proof.dirty_state).toEqual(expect.any(Boolean));
+    expect(proof.engine_targets).toHaveLength(5);
+    expect(proof.beta_proof).toMatchObject({
+      clean_git: expect.any(Boolean),
+      verify_ci_passed: expect.any(Boolean),
+      rust_engine_required: true,
+      fallback_absent: expect.any(Boolean),
+      fresh_scan_verified: null,
+      response_schemas_verified: null,
+      good_route_passed: null,
+      bad_route_blocked: null,
+      finding_evidence_complete: null,
+      mcp_cli_parity_verified: false,
+      audit_verified: null
+    });
+    expect(proof.verification).toMatchObject({
+      source_build_schema_match: expect.any(Boolean),
+      release_ready: expect.any(Boolean),
+      beta_ready: false,
+      beta_missing: expect.arrayContaining([
+        "verify_ci_passed",
+        "rust_engine_no_fallback",
+        "fresh_scan_verified",
+        "response_schemas_verified",
+        "good_route_passed",
+        "bad_route_blocked",
+        "finding_evidence_complete",
+        "mcp_cli_parity_verified",
+        "audit_verified"
+      ])
+    });
+  });
+
+  it("runs an executable beta proof and feeds release proof without manual beta env fields", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "drift-beta-proof-test-"));
+    tempDirs.push(tempDir);
+    const betaProofPath = join(tempDir, "beta-proof.json");
+
+    const betaOutput = execFileSync("node", ["scripts/run-beta-proof.mjs", "--output", betaProofPath], {
+      encoding: "utf8"
+    });
+    const betaProof = JSON.parse(betaOutput);
+
+    expect(betaProof.schema_version).toBe("drift.beta.proof.v1");
+    expect(betaProof.beta_proof).toMatchObject({
+      fallback_used: false,
+      fresh_scan_verified: true,
+      response_schemas_verified: true,
+      good_route_passed: true,
+      bad_route_blocked: true,
+      finding_evidence_complete: true,
+      mcp_cli_parity_verified: true,
+      audit_verified: true
+    });
+    expect(betaProof.beta_proof.dogfood_or_fixture_repo_id).toMatch(/^repo_[a-f0-9]+$/);
+    expect(betaProof.beta_proof.scan_id).toMatch(/^scan_/);
+    expect(betaProof.beta_proof.repo_contract_id).toMatch(/^contract_/);
+    expect(betaProof.beta_proof.check_id).toMatch(/^check_/);
+    expect(betaProof.beta_proof.mcp_cli_parity_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(betaProof.beta_proof.audit_head_hash).toMatch(/^[a-f0-9]{64}$/);
+
+    const releaseOutput = execFileSync("node", [
+      "scripts/generate-release-proof.mjs",
+      "--beta-proof-file",
+      betaProofPath
+    ], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DRIFT_VERIFY_CI_STATUS: "passed"
+      }
+    });
+    const releaseProof = JSON.parse(releaseOutput);
+    const missingWithoutGitClean = releaseProof.verification.beta_missing
+      .filter((field: string) => field !== "clean_git");
+
+    expect(releaseProof.beta_proof).toMatchObject({
+      verify_ci_passed: true,
+      fallback_absent: true,
+      fresh_scan_verified: true,
+      response_schemas_verified: true,
+      dogfood_or_fixture_repo_id: betaProof.beta_proof.dogfood_or_fixture_repo_id,
+      scan_id: betaProof.beta_proof.scan_id,
+      repo_contract_id: betaProof.beta_proof.repo_contract_id,
+      check_id: betaProof.beta_proof.check_id,
+      good_route_passed: true,
+      bad_route_blocked: true,
+      finding_evidence_complete: true,
+      mcp_cli_parity_hash: betaProof.beta_proof.mcp_cli_parity_hash,
+      mcp_cli_parity_verified: true,
+      audit_head_hash: betaProof.beta_proof.audit_head_hash,
+      audit_verified: true
+    });
+    expect(missingWithoutGitClean).toEqual([]);
+  }, 30_000);
+
+  it("does not allow require-beta-proof to be self-attested with env fields", () => {
+    expect(() =>
+      execFileSync("node", [
+        "scripts/generate-release-proof.mjs",
+        "--require-beta-proof"
+      ], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          DRIFT_VERIFY_CI_STATUS: "passed",
+          DRIFT_RELEASE_FALLBACK_USED: "false",
+          DRIFT_RELEASE_FRESH_SCAN_VERIFIED: "true",
+          DRIFT_RELEASE_RESPONSE_SCHEMAS_VERIFIED: "true",
+          DRIFT_RELEASE_REPO_ID: "repo_deadbeef",
+          DRIFT_RELEASE_SCAN_ID: "scan_deadbeef",
+          DRIFT_RELEASE_REPO_CONTRACT_ID: "contract_deadbeef",
+          DRIFT_RELEASE_CHECK_ID: "check_deadbeef",
+          DRIFT_RELEASE_GOOD_ROUTE_PASSED: "true",
+          DRIFT_RELEASE_BAD_ROUTE_BLOCKED: "true",
+          DRIFT_RELEASE_FINDING_EVIDENCE_COMPLETE: "true",
+          DRIFT_RELEASE_MCP_CLI_PARITY_HASH: "0".repeat(64),
+          DRIFT_RELEASE_AUDIT_HEAD_HASH: "1".repeat(64),
+          DRIFT_RELEASE_AUDIT_VERIFIED: "true"
+        }
+      })
+    ).toThrow(/--require-beta-proof requires --beta-proof-file/);
+  });
+
+  it("validates the engine release matrix against package manifests", () => {
+    const output = execFileSync("node", ["scripts/validate-engine-release-matrix.mjs"], {
+      encoding: "utf8"
+    });
+
+    expect(output).toContain("Validated 5 engine release targets");
   });
 
   it("keeps engine binary package versions exact and workspace-free for publication", async () => {
     const cliManifest = JSON.parse(await readFile("packages/cli/package.json", "utf8"));
+    const assertReleaseVersionsScript = await readFile("scripts/assert-release-versions.mjs", "utf8");
+    const preparePublishManifestsScript = await readFile("scripts/prepare-npm-publish-manifests.mjs", "utf8");
     const enginePackages = [
       "engine-darwin-arm64",
       "engine-darwin-x64",
@@ -72,6 +247,10 @@ describe("release hygiene", () => {
       expect(manifest.version).toBe(cliManifest.version);
       expect(cliManifest.optionalDependencies?.[`@drift/${packageName}`]).toBe("workspace:*");
     }
+    for (const runtimePackage of ["factgraph", "query"]) {
+      expect(assertReleaseVersionsScript).toContain(`packages/${runtimePackage}/package.json`);
+      expect(preparePublishManifestsScript).toContain(`packages/${runtimePackage}/package.json`);
+    }
   });
 
   it("documents every installed-package smoke surface that release tests execute", async () => {
@@ -80,6 +259,7 @@ describe("release hygiene", () => {
     for (const expected of [
       "installed `drift doctor`",
       "installed `drift scan`",
+      "installed `drift conventions accepted --kind --capability --limit --offset`",
       "installed `drift start --accept-defaults`",
       "installed `drift prepare`",
       "installed `drift baseline status`",
@@ -100,7 +280,8 @@ describe("release hygiene", () => {
       "installed MCP `get_runtime_info`",
       "installed MCP `get_capabilities`",
       "installed MCP `get_audit_status`",
-      "installed `drift-mcp`"
+      "installed `drift-mcp`",
+      "`pnpm beta:proof`"
     ]) {
       expect(readme).toContain(expected);
     }
@@ -136,6 +317,20 @@ describe("release hygiene", () => {
     expect(capabilities.mcp_mutation_tools).toEqual([]);
   });
 
+  it("validates production claims against the machine-readable capabilities manifest", async () => {
+    const output = execFileSync("node", ["scripts/validate-product-claims.mjs"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    const claims = JSON.parse(await readFile(join("docs", "architecture", "beta-claims.json"), "utf8"));
+
+    expect(output).toContain("Validated Drift production claims manifest");
+    expect(claims.schema_version).toBe("drift.production.claims.v1");
+    expect(claims.allowed_claims).toContain("typescript_api_route_layering");
+    expect(claims.blocked_claims).toContain("incremental_reuse");
+    expect(claims.blocked_claims).toContain("mutation_capable_mcp");
+  });
+
   it("documents the V1 support matrix and deferred surfaces without overpromising", async () => {
     const readme = await readFile("README.md", "utf8");
 
@@ -169,6 +364,53 @@ describe("release hygiene", () => {
       "coverage/"
     ]) {
       expect(gitignore).toContain(expected);
+    }
+  });
+
+  it("keeps adapter internals behind the public adapter registry package", async () => {
+    const boundaryScript = await readFile("packages/cli/scripts/check-boundaries.mjs", "utf8");
+
+    expect(boundaryScript).toContain("adapters: join(repoRoot, \"packages/adapters/src\")");
+    expect(boundaryScript).toContain("@drift\\/adapters\\/");
+    expect(boundaryScript).toContain("imports adapter internals directly");
+  });
+
+  it("keeps OSS trust and contribution rails in place", async () => {
+    const license = await readFile("LICENSE", "utf8");
+    const security = await readFile("SECURITY.md", "utf8");
+    const contributing = await readFile("CONTRIBUTING.md", "utf8");
+    const prTemplate = await readFile(".github/PULL_REQUEST_TEMPLATE.md", "utf8");
+    const bugTemplate = await readFile(".github/ISSUE_TEMPLATE/bug_report.yml", "utf8");
+    const featureTemplate = await readFile(".github/ISSUE_TEMPLATE/feature_request.yml", "utf8");
+
+    expect(license).toContain("MIT License");
+    expect(security).toContain("local-first");
+    expect(security).toContain("Do not include private source code");
+    expect(contributing).toContain("pnpm verify:ci");
+    expect(contributing).toContain("Rust owns deterministic parser and rule authority");
+    expect(prTemplate).toContain("No source snippets or secrets are added to outputs");
+    expect(bugTemplate).toContain("Drift version");
+    expect(featureTemplate).toContain("V1 wedge");
+  });
+
+  it("keeps the beta intelligence gate honest about supported and deferred scope", async () => {
+    const gate = await readFile("docs/architecture/beta-intelligence-gate.md", "utf8");
+
+    for (const expected of [
+      "Drift is a local-first TypeScript/JavaScript repo intelligence guardrail",
+      "pnpm verify:ci",
+      "docs/dogfood/drift-on-drift.md",
+      "Rust owns parser and deterministic rule authority",
+      "Blocking enforcement is allowed only when parser completeness permits it",
+      "MCP must not accept, reject, edit, suppress, import, export",
+      "full platform engine binary publishing",
+      "Python and additional language adapters",
+      "Desktop review UI",
+      "Cloud or team sync",
+      "Duplicate-helper detection",
+      "Write-capable MCP tools"
+    ]) {
+      expect(gate).toContain(expected);
     }
   });
 });

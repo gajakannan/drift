@@ -31,6 +31,7 @@ drift baseline status --repo <repo_id>
 drift version --json
 drift capabilities --json
 drift conventions list --repo <repo_id> --status candidate --kind api_route_no_direct_data_access --capability deterministic_check --limit 20 --offset 0 --json
+drift conventions accepted --repo <repo_id> --kind api_route_no_direct_data_access --capability deterministic_check --limit 20 --offset 0 --json
 drift conventions show <candidate_id> --repo <repo_id> --json
 drift ask "what should I know before changing this route?" --repo <repo_id> --path apps/web/app/api/users/route.ts --json
 drift prepare "add user search endpoint" --repo <repo_id> --path apps/web/app/api/users/route.ts --json
@@ -194,6 +195,7 @@ The e2e suite packs and installs the workspace packages into a clean consumer pr
 - installed `drift doctor`
 - installed `drift scan`
 - installed `drift conventions list --kind --capability --limit --offset`
+- installed `drift conventions accepted --kind --capability --limit --offset`
 - installed `drift start --accept-defaults`
 - installed `drift scan status`
 - installed `drift ask`
@@ -233,9 +235,12 @@ The e2e suite packs and installs the workspace packages into a clean consumer pr
 - installed MCP `get_findings`
 - installed MCP `get_allowed_context`
 - installed `drift-mcp`
+- `pnpm beta:proof`
 
 Run the full gate:
 
 ```bash
 pnpm verify:ci
 ```
+
+`pnpm verify:ci` includes `pnpm beta:proof`, which proves a fresh Rust scan, an accepted contract, a service-delegated route passing, a new direct data-access route blocking, evidence-complete findings, full schema-stable CLI/MCP parity, and audit hash-chain verification.

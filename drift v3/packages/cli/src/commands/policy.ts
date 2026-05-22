@@ -14,6 +14,7 @@ export function showPolicy(storage: SqliteDriftStorage, parsed: ParsedArgs): Com
   const repoId = resolveRepoId(parsed);
   const contract = requiredRepoContract(storage, repoId);
   const payload = {
+    response_schema: "drift.policy.show.v1",
     repo_id: repoId,
     governance: preflightGovernance(),
     summary: policyShowSummary(contract),
@@ -51,6 +52,7 @@ export function checkPolicyContext(storage: SqliteDriftStorage, parsed: ParsedAr
     request_full_file_content: requestFullFileContent
   });
   const payload = {
+    response_schema: "drift.allowed-context.v1",
     repo_id: repoId,
     path: contextPath,
     request: {

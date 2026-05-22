@@ -1,5 +1,21 @@
 import type { PolicyDecision, RepoContract } from "./domain.js";
 
+export type PolicyRedactionState = "none" | "metadata_only" | "snippet_limited" | "denied";
+
+export interface PolicyProof {
+  schema_version: "policy.proof.v1";
+  surface: PolicyDecision["surface"];
+  allowed: boolean;
+  mode: PolicyDecision["mode"];
+  reason: string;
+  max_snippet_chars: number;
+  approved_snippet_chars: number;
+  snippets_included: boolean;
+  source_content_included: boolean;
+  context_truncated: boolean;
+  redaction_state: PolicyRedactionState;
+}
+
 export function authorizeContextExport(
   contract: RepoContract,
   surface: PolicyDecision["surface"],
@@ -84,6 +100,51 @@ export function authorizeContextExport(
     max_snippet_chars: contract.context_egress.max_snippet_chars,
     approved_snippet_chars: approvedSnippetChars
   };
+}
+
+export function createPolicyProof(
+  decision: PolicyDecision,
+  input: {
+    snippetsIncluded?: boolean;
+    sourceContentIncluded?: boolean;
+    contextTruncated?: boolean;
+  } = {}
+): PolicyProof {
+  const snippetsIncluded = Boolean(input.snippetsIncluded);
+  const sourceContentIncluded = Boolean(input.sourceContentIncluded);
+  const contextTruncated = Boolean(input.contextTruncated);
+  return {
+    schema_version: "policy.proof.v1",
+    surface: decision.surface,
+    allowed: decision.allowed,
+    mode: decision.mode,
+    reason: decision.reason,
+    max_snippet_chars: decision.max_snippet_chars,
+    approved_snippet_chars: decision.approved_snippet_chars,
+    snippets_included: snippetsIncluded,
+    source_content_included: sourceContentIncluded,
+    context_truncated: contextTruncated,
+    redaction_state: policyRedactionState(decision, {
+      snippetsIncluded,
+      contextTruncated
+    })
+  };
+}
+
+function policyRedactionState(
+  decision: PolicyDecision,
+  input: {
+    snippetsIncluded: boolean;
+    contextTruncated: boolean;
+  }
+): PolicyRedactionState {
+  if (!decision.allowed || decision.mode === "denied" || decision.mode === "approval_required") {
+    return "denied";
+  }
+  if (decision.mode === "redacted" || input.contextTruncated) {
+    return "snippet_limited";
+  }
+  return input.snippetsIncluded ? "none" : "metadata_only";
 }
 
 export function matchesPolicyGlob(filePath: string, glob: string): boolean {

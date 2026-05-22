@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 const version = process.argv[2] ?? JSON.parse(readFileSync("package.json", "utf8")).version;
 const packagePaths = [
   "packages/core/package.json",
+  "packages/factgraph/package.json",
+  "packages/query/package.json",
   "packages/engine-contract/package.json",
   "packages/storage/package.json",
   "packages/cli/package.json",

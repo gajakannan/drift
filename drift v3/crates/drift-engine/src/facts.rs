@@ -178,28 +178,27 @@ fn extract_export(node: Node<'_>, source: &[u8], file_path: &str, facts: &mut Ve
         .child_by_field_name("source")
         .and_then(|child| node_text(child, source))
         .map(unquote)
+        && let Some(statement) = statement.as_deref()
     {
-        if let Some(statement) = statement.as_deref() {
-            for identifier in reexport_value_identifiers(&statement) {
-                facts.push(Fact {
-                    kind: FactKind::ImportUsed,
-                    file_path: file_path.to_string(),
-                    name: identifier.clone(),
-                    value: Some(source_value.clone()),
-                    imported_name: None,
-                    start_line: node.start_position().row + 1,
-                    end_line: node.end_position().row + 1,
-                });
-                facts.push(Fact {
-                    kind: FactKind::ReExportUsed,
-                    file_path: file_path.to_string(),
-                    name: identifier,
-                    value: Some(source_value.clone()),
-                    imported_name: None,
-                    start_line: node.start_position().row + 1,
-                    end_line: node.end_position().row + 1,
-                });
-            }
+        for identifier in reexport_value_identifiers(statement) {
+            facts.push(Fact {
+                kind: FactKind::ImportUsed,
+                file_path: file_path.to_string(),
+                name: identifier.clone(),
+                value: Some(source_value.clone()),
+                imported_name: None,
+                start_line: node.start_position().row + 1,
+                end_line: node.end_position().row + 1,
+            });
+            facts.push(Fact {
+                kind: FactKind::ReExportUsed,
+                file_path: file_path.to_string(),
+                name: identifier,
+                value: Some(source_value.clone()),
+                imported_name: None,
+                start_line: node.start_position().row + 1,
+                end_line: node.end_position().row + 1,
+            });
         }
     }
 
@@ -342,19 +341,19 @@ fn reexport_value_identifiers(statement: &str) -> Vec<String> {
     }
 
     let mut identifiers = Vec::new();
-    if let Some(named_start) = export_clause.find('{') {
-        if let Some(named_end) = export_clause[named_start + 1..].find('}') {
-            let named_exports = &export_clause[named_start + 1..named_start + 1 + named_end];
-            for specifier in named_exports.split(',') {
-                let specifier = specifier.trim();
-                if specifier.is_empty() || specifier.starts_with("type ") {
-                    continue;
-                }
-                if let Some((_, exported_name)) = specifier.split_once(" as ") {
-                    push_import_identifier(&mut identifiers, exported_name);
-                } else {
-                    push_import_identifier(&mut identifiers, specifier);
-                }
+    if let Some(named_start) = export_clause.find('{')
+        && let Some(named_end) = export_clause[named_start + 1..].find('}')
+    {
+        let named_exports = &export_clause[named_start + 1..named_start + 1 + named_end];
+        for specifier in named_exports.split(',') {
+            let specifier = specifier.trim();
+            if specifier.is_empty() || specifier.starts_with("type ") {
+                continue;
+            }
+            if let Some((_, exported_name)) = specifier.split_once(" as ") {
+                push_import_identifier(&mut identifiers, exported_name);
+            } else {
+                push_import_identifier(&mut identifiers, specifier);
             }
         }
     }
@@ -420,10 +419,7 @@ fn callable_parts(node: Node<'_>, source: &[u8]) -> Option<(String, Option<Strin
     }
 }
 
-fn data_operation_shape<'a>(
-    receiver: &'a str,
-    operation_name: &str,
-) -> Option<(String, &'static str)> {
+fn data_operation_shape(receiver: &str, operation_name: &str) -> Option<(String, &'static str)> {
     let mut parts = receiver.split('.');
     let _root = parts.next()?;
     let store_name = parts.next()?;
@@ -508,16 +504,14 @@ fn data_operation_kind(operation_name: &str) -> &'static str {
 fn first_named_declaration_identifier(node: Node<'_>, source: &[u8]) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "function_declaration"
-            || child.kind() == "generator_function_declaration"
-            || child.kind() == "class_declaration"
+        if matches!(
+            child.kind(),
+            "function_declaration" | "generator_function_declaration" | "class_declaration"
+        ) && let Some(name) = child
+            .child_by_field_name("name")
+            .and_then(|name| node_text(name, source))
         {
-            if let Some(name) = child
-                .child_by_field_name("name")
-                .and_then(|name| node_text(name, source))
-            {
-                return Some(name);
-            }
+            return Some(name);
         }
         if let Some(name) = first_named_declaration_identifier(child, source) {
             return Some(name);
@@ -547,6 +541,18 @@ fn file_roles(file_path: &str) -> Vec<&'static str> {
     }
     if is_cli_command_module_path(file_path) {
         roles.push("cli_command_module");
+    }
+    if is_core_module_path(file_path) {
+        roles.push("core_module");
+    }
+    if is_query_module_path(file_path) {
+        roles.push("query_module");
+    }
+    if is_factgraph_module_path(file_path) {
+        roles.push("factgraph_module");
+    }
+    if is_adapter_module_path(file_path) {
+        roles.push("adapter_module");
     }
     if is_storage_module_path(file_path) {
         roles.push("storage_module");
@@ -605,6 +611,22 @@ fn is_data_access_module_path(file_path: &str) -> bool {
 
 fn is_cli_command_module_path(file_path: &str) -> bool {
     file_path.contains("/cli/src/commands/") || file_path.starts_with("packages/cli/src/commands/")
+}
+
+fn is_core_module_path(file_path: &str) -> bool {
+    file_path.contains("/core/src/") || file_path.starts_with("packages/core/src/")
+}
+
+fn is_query_module_path(file_path: &str) -> bool {
+    file_path.contains("/query/src/") || file_path.starts_with("packages/query/src/")
+}
+
+fn is_factgraph_module_path(file_path: &str) -> bool {
+    file_path.contains("/factgraph/src/") || file_path.starts_with("packages/factgraph/src/")
+}
+
+fn is_adapter_module_path(file_path: &str) -> bool {
+    file_path.contains("/adapters/") && file_path.contains("/src/")
 }
 
 fn is_storage_module_path(file_path: &str) -> bool {

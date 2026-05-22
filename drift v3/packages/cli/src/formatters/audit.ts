@@ -54,8 +54,10 @@ export function formatAuditVerifyText(payload: {
     "",
     `Repo: ${payload.repo_id}`,
     `Valid: ${payload.verification.valid ? "yes" : "no"}`,
+    `Strict: ${payload.verification.strict ? "yes" : "no"}`,
     `Events: ${payload.verification.event_count}`,
     `Verified: ${payload.verification.verified_count}`,
+    `Head sequence: ${payload.verification.head_sequence ?? "none"}`,
     `Head hash: ${payload.verification.head_event_hash ?? "none"}`,
     `Broken at: ${payload.verification.broken_at_event_id ?? "none"}`,
     payload.verification.reasons.length > 0

@@ -12,6 +12,16 @@ export function formatCheckText(payload: {
     expired_findings_count?: number;
     skipped_deleted_files: string[];
     engine_source: "rust" | "typescript";
+    affected_scope?: {
+      changed_file_count: number;
+      changed_line_count: number;
+      deleted_file_count: number;
+    };
+    outcome?: {
+      blocking_reasons: Array<{ reason: string; count: number }>;
+      warning_reasons: Array<{ reason: string; count: number }>;
+      non_blocking_reasons: Array<{ reason: string; count: number }>;
+    };
   };
   findings: Finding[];
 }): string {
@@ -32,12 +42,28 @@ export function formatCheckText(payload: {
     `Blocking: ${payload.summary.blocking_count}`,
     `Waived: ${payload.summary.waived_findings_count ?? 0}`,
     `Expired: ${payload.summary.expired_findings_count ?? 0}`,
+    payload.summary.affected_scope
+      ? `Affected: ${payload.summary.affected_scope.changed_file_count} files, ${payload.summary.affected_scope.changed_line_count} changed lines`
+      : "",
+    ...reasonLines("Block reasons", payload.summary.outcome?.blocking_reasons ?? []),
+    ...reasonLines("Warn reasons", payload.summary.outcome?.warning_reasons ?? []),
+    ...reasonLines("Non-blocking reasons", payload.summary.outcome?.non_blocking_reasons ?? []),
     `Skipped deleted files: ${payload.summary.skipped_deleted_files.length}`,
     "",
     "Findings:",
     ...rows.map((row) => `  ${row}`),
     ""
   ].join("\n");
+}
+
+function reasonLines(label: string, reasons: Array<{ reason: string; count: number }>): string[] {
+  if (reasons.length === 0) {
+    return [];
+  }
+  return [
+    `${label}:`,
+    ...reasons.map((reason) => `  ${reason.reason}: ${reason.count}`)
+  ];
 }
 
 export function formatChecksText(payload: {

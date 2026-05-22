@@ -40,6 +40,7 @@ export function listAudit(storage: SqliteDriftStorage, parsed: ParsedArgs): Comm
   const events = paginateAuditEvents(orderedEvents, limit, offset);
   const verification = storage.verifyAuditChain(repoId);
   const payload = {
+    response_schema: "drift.audit.status.v1",
     repo_id: repoId,
     action: action ?? null,
     actor: actorFilter ?? null,
@@ -77,12 +78,14 @@ export function verifyAudit(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
   if (!policy.allowed) {
     throw new Error(`Policy denied audit output: ${policy.reason}`);
   }
-  const verification = storage.verifyAuditChain(repoId);
+  const verification = storage.verifyAuditChain(repoId, { strict: parsed.flags.has("strict") });
   const payload = {
+    response_schema: "drift.audit.status.v1",
     repo_id: repoId,
     policy,
     governance: preflightGovernance(),
     verification,
+    audit_integrity: verification,
     summary: auditVerifySummary(verification),
     next_commands: auditVerifyNextCommands(repoId, verification)
   };

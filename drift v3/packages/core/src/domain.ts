@@ -14,6 +14,10 @@ export type FileRole =
   | "test"
   | "config"
   | "cli_command_module"
+  | "core_module"
+  | "query_module"
+  | "factgraph_module"
+  | "adapter_module"
   | "storage_module"
   | "engine_bridge_module"
   | "mcp_module"
@@ -59,6 +63,12 @@ export interface ConventionException {
   path_globs?: string[];
   symbols?: string[];
   imports?: string[];
+  endpoint_paths?: string[];
+  methods?: string[];
+  resolved_modules?: string[];
+  resolved_symbols?: string[];
+  data_stores?: string[];
+  operation_kinds?: Array<"read" | "write" | "delete" | "unknown">;
   expires_at?: string;
   created_by: string;
   created_at: string;
@@ -83,6 +93,11 @@ export interface RepoRecord {
   id: string;
   root_path: string;
   fingerprint: string;
+  vcs_provider?: "git" | "none";
+  remote_url_hash?: string | null;
+  package_manager?: string;
+  lockfile_hashes?: Record<string, string>;
+  resolver_input_hash?: string;
   created_at: string;
   updated_at: string;
 }
@@ -258,6 +273,7 @@ export interface AuditEvent {
   target_id: string;
   metadata: Record<string, unknown>;
   created_at: string;
+  sequence?: number;
   previous_event_hash?: string | null;
   event_hash?: string | null;
 }
@@ -343,10 +359,32 @@ export type FindingDiffStatus =
   | "touched_existing"
   | "outside_diff";
 
+export type CheckRunStatus = "pass" | "fail" | "blocked";
+
+export interface CheckRun {
+  id: string;
+  repo_id: string;
+  repo_contract_id: string;
+  contract_fingerprint: string;
+  scan_id: string;
+  status: CheckRunStatus;
+  scope: "changed-hunks" | "changed-files" | "full";
+  engine_source: "rust" | "typescript";
+  fallback_used: boolean;
+  stale_scan: boolean;
+  capability_complete: boolean;
+  findings_count: number;
+  blocking_count: number;
+  started_at: string;
+  completed_at: string;
+}
+
 export interface Finding {
   id: string;
   repo_id: string;
   convention_id: string;
+  check_id?: string;
+  repo_contract_id?: string;
   fingerprint: string;
   title: string;
   message: string;
@@ -355,6 +393,11 @@ export interface Finding {
   status: FindingStatus;
   diff_status: FindingDiffStatus;
   evidence_refs: EvidenceRef[];
+  expected_layer?: string;
+  actual_layer?: string;
+  graph_path?: string[];
+  suggested_fix?: string;
+  related_node_ids?: string[];
   created_at: string;
 }
 
@@ -382,6 +425,9 @@ export interface RequiredCheck {
   command: string;
   applies_to: ConventionScope;
   reason: string;
+  source?: "contract" | "graph_risk";
+  evidence_node_ids?: string[];
+  risk_kinds?: string[];
 }
 
 export interface ContextEgressPolicy {

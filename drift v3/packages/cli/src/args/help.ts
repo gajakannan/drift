@@ -230,11 +230,14 @@ export function helpText(parsed: ParsedArgs): string {
       "Usage:",
       "  drift --db <path> conventions list --repo <repo_id> --status candidate --json",
       "  drift --db <path> conventions list --repo <repo_id> --kind api_route_no_direct_data_access --capability deterministic_check --limit 20 --offset 0 --json",
+      "  drift --db <path> conventions accepted --repo <repo_id> --kind api_route_no_direct_data_access --capability deterministic_check --limit 20 --offset 0 --json",
       "  drift --db <path> conventions show <candidate_id> --json",
       "  drift --db <path> conventions accept <candidate_id> --severity warning --mode warn --confirm --json",
       "  drift --db <path> conventions reject <candidate_id> --reason \"false inference\" --confirm --json",
       "  drift --db <path> conventions edit <candidate_id> --statement \"...\" --confirm --json",
       "  drift --db <path> conventions exception add <convention_id> --repo <repo_id> --path <glob> --reason \"...\" --confirm --json",
+      "  drift --db <path> conventions exception add <convention_id> --repo <repo_id> --endpoint /api/health --method GET --reason \"...\" --confirm --json",
+      "  drift --db <path> conventions exception add <convention_id> --repo <repo_id> --operation-kind read --reason \"...\" --confirm --json",
       ""
     ].join("\n");
   }
@@ -401,6 +404,7 @@ export function helpText(parsed: ParsedArgs): string {
     "Convention review:",
     "  drift conventions list --repo <repo_id> --status candidate --json",
     "  drift conventions list --repo <repo_id> --kind api_route_no_direct_data_access --capability deterministic_check --limit 20 --offset 0 --json",
+    "  drift conventions accepted --repo <repo_id> --kind api_route_no_direct_data_access --capability deterministic_check --limit 20 --offset 0 --json",
     "  drift conventions show <candidate_id> --json",
     "  drift conventions accept <candidate_id> --severity warning --mode warn --confirm --json",
     "  drift conventions reject <candidate_id> --reason \"false inference\" --confirm --json",

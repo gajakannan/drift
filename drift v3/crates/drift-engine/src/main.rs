@@ -17,6 +17,9 @@ use protocol::*;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+type EngineResult<T> = Result<T, Box<dyn std::error::Error>>;
+type ScannedFileFacts = (ScannedFile, Vec<EngineFact>);
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
@@ -137,6 +140,7 @@ fn scan_repo(
     );
     stats.graph_nodes = graph_node_count;
     stats.graph_edges = graph_edge_count;
+    stats.capabilities = capability_stats(&["file_discovery", "syntax_facts", "graph_stream"], &[]);
     Ok(ScanRepoOutput {
         schema_version: ENGINE_SCAN_RESULT_SCHEMA_VERSION,
         repo_id,
@@ -265,6 +269,7 @@ fn stream_scan_repo(
     );
     stats.graph_nodes = graph_nodes_emitted;
     stats.graph_edges = graph_edges_emitted;
+    stats.capabilities = capability_stats(&["file_discovery", "syntax_facts", "graph_stream"], &[]);
     write_event(
         &mut stdout,
         &ScanStreamEvent::ScanCompleted {
@@ -290,7 +295,7 @@ fn scan_file(
     repo_root: &Path,
     file_path: &Path,
     diagnostics: &mut Vec<EngineDiagnostic>,
-) -> Result<Option<(ScannedFile, Vec<EngineFact>)>, Box<dyn std::error::Error>> {
+) -> EngineResult<Option<ScannedFileFacts>> {
     let absolute_path = repo_root.join(file_path);
     let metadata = fs::metadata(&absolute_path)?;
     if metadata.len() > MAX_FILE_BYTES {
@@ -326,7 +331,7 @@ fn scan_files(
     repo_root: &Path,
     files: &[PathBuf],
     diagnostics: &mut Vec<EngineDiagnostic>,
-) -> Result<Vec<(ScannedFile, Vec<EngineFact>)>, Box<dyn std::error::Error>> {
+) -> EngineResult<Vec<ScannedFileFacts>> {
     let mut scanned = Vec::new();
     for file_path in files {
         if let Some(scan) = scan_file(repo_root, file_path, diagnostics)? {
@@ -550,7 +555,9 @@ fn graph_for_file(
     let file_version_node = file_version_id(&file.file_path, &file.content_hash);
     let module_node = module_id(&file.file_path);
     let file_is_api_route = facts.iter().any(|fact| {
-        fact.kind == "file_role_detected" && fact.file_path == file.file_path && fact.name == "api_route"
+        fact.kind == "file_role_detected"
+            && fact.file_path == file.file_path
+            && fact.name == "api_route"
     });
     let import_nodes_by_local_name = facts
         .iter()
@@ -742,7 +749,7 @@ fn graph_for_file(
                         &mut edges,
                         "IMPORT_RESOLVES_TO_MODULE",
                         &import_node,
-                        &resolved_module,
+                        resolved_module,
                         vec![evidence_id.clone()],
                         BTreeMap::from([
                             ("resolution_status".to_string(), json!("resolved")),
@@ -794,7 +801,7 @@ fn graph_for_file(
                         &mut edges,
                         "MODULE_IMPORTS_MODULE",
                         &module_node,
-                        &resolved_module,
+                        resolved_module,
                         vec![evidence_id.clone()],
                         BTreeMap::new(),
                     );
@@ -1249,7 +1256,9 @@ fn endpoint_shape(file_path: &str, method: &str) -> Option<EndpointShape> {
             .strip_suffix("/route.ts")
             .or_else(|| strip_before_segment(&normalized, "app/api/")?.strip_suffix("/route.tsx"))
             .or_else(|| strip_before_segment(&normalized, "app/api/")?.strip_suffix("/route.js"))
-            .or_else(|| strip_before_segment(&normalized, "app/api/")?.strip_suffix("/route.jsx"))?;
+            .or_else(|| {
+                strip_before_segment(&normalized, "app/api/")?.strip_suffix("/route.jsx")
+            })?;
         let (pattern, dynamic_params) = route_pattern_from_segments(route_path);
         return Some(EndpointShape {
             pattern,
@@ -1665,9 +1674,7 @@ fn read_js_ts_config_file(
             }
         })
         .unwrap_or_else(|| config_dir.clone());
-    if explicit_base_url.is_some() {
-        config.base_url = Some(effective_base_url.clone());
-    } else if config.base_url.is_some() {
+    if explicit_base_url.is_some() || config.base_url.is_some() {
         config.base_url = Some(effective_base_url.clone());
     }
     config.effective_base_url = effective_base_url.clone();
