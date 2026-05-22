@@ -95,6 +95,7 @@ describe("release hygiene", () => {
     expect(workflow).toContain("node scripts/generate-release-proof.mjs --require-clean --require-built-cli --require-beta-proof --beta-proof-file \"${RUNNER_TEMP}/drift-release-proof/beta-proof.json\" --output \"${RUNNER_TEMP}/drift-release-proof/release-proof.json\"");
     expect(workflow).toContain("${{ runner.temp }}/drift-release-proof/beta-proof.json");
     expect(workflow).toContain("${{ runner.temp }}/drift-release-proof/release-proof.json");
+    expect(workflow.indexOf("name: Build JavaScript packages")).toBeLessThan(workflow.indexOf("name: Prepare exact publish manifests"));
     expect(workflow).toContain("name: Final release proof");
     expect(workflow).toContain("drift-beta-preflight-proof");
     expect(workflow).toContain("drift-final-release-proof");
