@@ -19,5 +19,8 @@
     "bin",
     "engine-manifest.json",
     "README.md"
-  ]
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/prepare-engine-package.mjs --target x86_64-unknown-linux-gnu --platform linux --arch x64 --binary-name drift-engine"
+  }
 }

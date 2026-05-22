@@ -16,5 +16,8 @@
     "bin",
     "engine-manifest.json",
     "README.md"
-  ]
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/prepare-engine-package.mjs --target x86_64-apple-darwin --platform darwin --arch x64 --binary-name drift-engine"
+  }
 }

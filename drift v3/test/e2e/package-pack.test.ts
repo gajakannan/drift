@@ -29,6 +29,15 @@ interface PackedPackage {
   tarballPath: string;
 }
 
+interface EnginePackageFixture {
+  packageDir: string;
+  packageName: string;
+  os: string;
+  cpu: string;
+  targetTriple: string;
+  binaryPath: string;
+}
+
 async function packWorkspacePackage(packageDir: string): Promise<PackedPackage> {
   const dir = await mkdtemp(join(tmpdir(), "drift-pack-"));
   tempDirs.push(dir);
@@ -90,13 +99,14 @@ function expectNoWorkspaceDependencies(manifest: PackedPackage["manifest"]): voi
 }
 
 async function packAllWorkspacePackages(): Promise<Record<string, PackedPackage>> {
+  const enginePackage = currentEnginePackageFixture();
   const packages = await Promise.all([
     packWorkspacePackage("packages/core"),
     packWorkspacePackage("packages/factgraph"),
     packWorkspacePackage("packages/engine-contract"),
     packWorkspacePackage("packages/storage"),
     packWorkspacePackage("packages/query"),
-    packWorkspacePackage(currentEnginePackageDir()),
+    packWorkspacePackage(enginePackage.packageDir),
     packWorkspacePackage("packages/cli"),
     packWorkspacePackage("packages/mcp")
   ]);
@@ -108,11 +118,61 @@ async function expectSourcePrepack(packageDir: string): Promise<void> {
   expect(manifest.scripts?.prepack).toBe("pnpm build");
 }
 
-function currentEnginePackageDir(): string {
-  if (process.platform === "darwin" && process.arch === "arm64") {
-    return "packages/engine-darwin-arm64";
+function currentEnginePackageFixture(
+  platform = process.platform,
+  arch = process.arch
+): EnginePackageFixture {
+  if (platform === "darwin" && arch === "arm64") {
+    return {
+      packageDir: "packages/engine-darwin-arm64",
+      packageName: "@drift/engine-darwin-arm64",
+      os: "darwin",
+      cpu: "arm64",
+      targetTriple: "aarch64-apple-darwin",
+      binaryPath: "bin/drift-engine"
+    };
   }
-  throw new Error(`No current-platform engine package fixture for ${process.platform}-${process.arch}.`);
+  if (platform === "darwin" && arch === "x64") {
+    return {
+      packageDir: "packages/engine-darwin-x64",
+      packageName: "@drift/engine-darwin-x64",
+      os: "darwin",
+      cpu: "x64",
+      targetTriple: "x86_64-apple-darwin",
+      binaryPath: "bin/drift-engine"
+    };
+  }
+  if (platform === "linux" && arch === "x64") {
+    return {
+      packageDir: "packages/engine-linux-x64-gnu",
+      packageName: "@drift/engine-linux-x64-gnu",
+      os: "linux",
+      cpu: "x64",
+      targetTriple: "x86_64-unknown-linux-gnu",
+      binaryPath: "bin/drift-engine"
+    };
+  }
+  if (platform === "linux" && arch === "arm64") {
+    return {
+      packageDir: "packages/engine-linux-arm64-gnu",
+      packageName: "@drift/engine-linux-arm64-gnu",
+      os: "linux",
+      cpu: "arm64",
+      targetTriple: "aarch64-unknown-linux-gnu",
+      binaryPath: "bin/drift-engine"
+    };
+  }
+  if (platform === "win32" && arch === "x64") {
+    return {
+      packageDir: "packages/engine-win32-x64",
+      packageName: "@drift/engine-win32-x64",
+      os: "win32",
+      cpu: "x64",
+      targetTriple: "x86_64-pc-windows-msvc",
+      binaryPath: "bin/drift-engine.exe"
+    };
+  }
+  throw new Error(`No current-platform engine package fixture for ${platform}-${arch}.`);
 }
 
 afterEach(async () => {
@@ -206,7 +266,8 @@ describe("packed Drift workspace packages", () => {
   }, 30000);
 
   it("packs the current platform Rust engine package with a verified manifest", async () => {
-    const packed = await packWorkspacePackage(currentEnginePackageDir());
+    const enginePackage = currentEnginePackageFixture();
+    const packed = await packWorkspacePackage(enginePackage.packageDir);
     const packageRoot = join(dirname(packed.tarballPath), "extract", "package");
     const manifest = JSON.parse(await readFile(join(packageRoot, "engine-manifest.json"), "utf8"));
     const binaryPath = join(packageRoot, manifest.binary_path);
@@ -214,20 +275,20 @@ describe("packed Drift workspace packages", () => {
     const binaryStat = await stat(binaryPath);
     const sha256 = createHash("sha256").update(binary).digest("hex");
 
-    expect(packed.manifest.name).toBe("@drift/engine-darwin-arm64");
+    expect(packed.manifest.name).toBe(enginePackage.packageName);
     expect(packed.manifest.version).toBe("0.1.0");
-    expect(packed.manifest.os).toEqual(["darwin"]);
-    expect(packed.manifest.cpu).toEqual(["arm64"]);
-    expect(packed.files).toContain("bin/drift-engine");
+    expect(packed.manifest.os).toEqual([enginePackage.os]);
+    expect(packed.manifest.cpu).toEqual([enginePackage.cpu]);
+    expect(packed.files).toContain(enginePackage.binaryPath);
     expect(packed.files).toContain("engine-manifest.json");
     expect(manifest).toMatchObject({
       schema_version: "drift.engine.package.v1",
-      package_name: "@drift/engine-darwin-arm64",
+      package_name: enginePackage.packageName,
       package_version: "0.1.0",
-      target_triple: "aarch64-apple-darwin",
-      platform: "darwin",
-      arch: "arm64",
-      binary_path: "bin/drift-engine",
+      target_triple: enginePackage.targetTriple,
+      platform: enginePackage.os,
+      arch: enginePackage.cpu,
+      binary_path: enginePackage.binaryPath,
       engine_version: "0.1.0"
     });
     expect(manifest.sha256).toBe(sha256);
@@ -250,13 +311,14 @@ describe("packed Drift workspace packages", () => {
   }, 30000);
 
   it("packs all workspace packages with local tarballs available for the installed-flow smoke", async () => {
+    const enginePackage = currentEnginePackageFixture();
     const packed = await packAllWorkspacePackages();
 
     expect(Object.keys(packed).sort()).toEqual([
       "@drift/cli",
       "@drift/core",
       "@drift/engine-contract",
-      "@drift/engine-darwin-arm64",
+      enginePackage.packageName,
       "@drift/factgraph",
       "@drift/mcp",
       "@drift/query",
