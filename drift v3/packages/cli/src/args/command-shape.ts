@@ -62,6 +62,9 @@ export function unknownCommandError(parsed: ParsedArgs): string | null {
   if (group === "backup") {
     return exact(["create", "list", "verify"]);
   }
+  if (group === "support") {
+    return exact(["bundle"]);
+  }
   if (group === "baseline") {
     return exact(["create", "status", "clear"]);
   }
@@ -151,6 +154,10 @@ export function validateCommandShape(parsed: ParsedArgs): void {
   }
   if (group === "backup") {
     exact(`backup ${command}`, command === "verify" ? 3 : 2);
+    return;
+  }
+  if (group === "support" && command === "bundle") {
+    exact("support bundle", 2);
     return;
   }
   if (group === "baseline") {

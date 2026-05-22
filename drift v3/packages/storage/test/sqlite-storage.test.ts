@@ -35,7 +35,8 @@ describe("SQLite Drift storage", () => {
       "008_scan_file_changes",
       "009_symbol_occurrence_kind",
       "010_audit_sequence",
-      "011_check_runs_and_finding_context"
+      "011_check_runs_and_finding_context",
+      "012_repo_identity"
     ]);
     storage.close();
   });
@@ -92,7 +93,8 @@ describe("SQLite Drift storage", () => {
       "008_scan_file_changes",
       "009_symbol_occurrence_kind",
       "010_audit_sequence",
-      "011_check_runs_and_finding_context"
+      "011_check_runs_and_finding_context",
+      "012_repo_identity"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();

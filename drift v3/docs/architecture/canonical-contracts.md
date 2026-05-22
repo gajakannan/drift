@@ -96,7 +96,7 @@ Current mismatch:
 | Contract | Status | Current evidence | Main gap |
 | --- | --- | --- | --- |
 | Product/Capability | canonical-beta | `packages/core/src/capabilities.ts`, `packages/cli/src/domain/versions.ts`, CLI `capabilities --json` | Needs release gate that prevents broad claims beyond the narrow wedge. |
-| Repo Identity | partial | `RepoRecord`, `ScanManifest`, `repoIdForRoot`, `repoRecordForRoot` | No persisted remote hash, VCS provider, package manager, lockfile hash, or full clean-commit gate. |
+| Repo Identity | canonical-beta | `RepoRecord`, `ScanManifest`, `repoIdForRoot`, `repoRecordForRoot`, migration `012_repo_identity` | Clean-commit enforcement remains a release/beta proof gate rather than a mutable repo row. |
 | Scan/Freshness | canonical-beta | `ScanManifest`, `ScanFileChange`, `scanStatusPayload`, resolver-input fingerprint, beta proof fresh scan check | Incremental reuse is not implemented; `check` uses check-time collection and reports that status explicitly. |
 | Engine Boundary | canonical-beta | `@drift/engine-contract` schemas, Rust bridge, stream parsing tests, fallback-used check blocking | TypeScript fallback remains dev-only and must stay visibly degraded. |
 | Fact | canonical-defined | `FactRecord`, `FactKind`, `facts` table | Facts lack confidence, extractor id, resolved target, and provenance beyond file/range/fact ids. |
@@ -108,20 +108,20 @@ Current mismatch:
 | Check | canonical-beta | `runCheck`, engine check request/result schemas, `CheckRun`, `check_runs`, beta proof good-pass/bad-block loop | `check` uses check-time collection instead of requiring the stored scan to be fresh. |
 | Agent Envelope | canonical-defined | `AgentEnvelopeV2`, CLI/MCP envelope helpers | Envelope is intentionally minimal; it is not the full repo/context packet. |
 | MCP | canonical-beta | 10 read-only MCP tools, argument validation, tests, beta proof full CLI/MCP schema-stable parity hash | Transport boundary still has duplicated read-model assembly outside `@drift/query`. |
-| Storage/Migrations | canonical-beta | migrations 001-011 in source, SQLite storage tests, `check_runs` table | Backup/restore is release-supported but not part of the narrow beta proof loop. |
+| Storage/Migrations | canonical-beta | migrations 001-012 in source, SQLite storage tests, `check_runs` table, repo identity columns | Backup/restore is release-supported but not part of the narrow beta proof loop. |
 | Governance/Audit | canonical-beta | mutation governance, `--confirm`, audit hash chain | Audit events do not carry explicit before/after object hashes. |
 | Backup/Restore | canonical-defined | backup manifests, create/verify/restore commands/tests | Beta only needs this if included in the demo/release claim. |
 | Release/Beta | canonical-beta | `verify:ci`, `beta:proof`, generated beta fixture proof, strict release proof beta input | Final release readiness is proven after packaged npm tarballs and engine checksums exist. |
 | Agent-Facing Response Schema | canonical-beta | Demo-used CLI/MCP outputs expose `response_schema`; beta proof verifies full schema-stable parity | CLI payloads and MCP tool returns are still typed loosely as `unknown`. |
-| Transport Boundary | partial | CLI router, MCP JSON-RPC handlers | MCP still performs repo/domain work inline instead of only validating args and calling shared read models. |
+| Transport Boundary | canonical-defined | CLI router, MCP JSON-RPC handlers, shared `@drift/query` graph read models, full beta CLI/MCP parity hash | MCP still has refactor debt, but beta-used transport outputs are schema-tagged and parity-gated. |
 | Release Proof Artifact | canonical-beta | `scripts/generate-release-proof.mjs`, `scripts/run-beta-proof.mjs`, strict beta proof file ingestion, final workflow `--require-complete` proof | Full release readiness is proven in the release workflow after tarballs and engine checksum artifacts exist. |
 | CI/Gate | canonical-beta | `pnpm verify:ci`, `pnpm beta:proof`, CI workflow, engine release workflow | Release artifact completeness is proven in release workflow, not normal PR CI. |
 | Packaged Engine/Installer | canonical-defined | engine resolver, optional packages, checksum validation, `doctor --json`/`version --json` engine object | More production polish can still improve provenance wording and support bundles. |
 | Update/Compatibility | canonical-defined | release compatibility policy, schema versions, migration checks | Compatibility policy is split across docs and not summarized in canonical contracts. |
-| Operational Failure Modes | partial | CLI refusals, engine resolver errors, beta refusal list | No stable cross-surface error code taxonomy. |
+| Operational Failure Modes | canonical-defined | CLI refusal envelope, canonical recovery fields, beta refusal list | MCP JSON-RPC still returns protocol errors, but CLI beta refusals now use stable operational codes. |
 | Local State Sensitivity | canonical-defined | SQLite paths/facts/graph/audit/backup schema, security docs | Sensitivity rules are not first-class in storage/backup/audit contracts. |
-| Support/Debuggability | speculative | `doctor --json`, backup verify, audit verify | No support bundle exists; future support bundle boundaries must be defined before implementation. |
-| Production Scope/Claims | partial | capabilities output, doctor V1 scope | No release gate prevents docs/marketing from exceeding implemented capabilities. |
+| Support/Debuggability | canonical-defined | `doctor --json`, backup verify, audit verify, `support bundle --dry-run` | Support bundle is manifest-only in V1; export/send flows remain out of scope. |
+| Production Scope/Claims | canonical-beta | capabilities output, doctor V1 scope, `beta-claims.json`, `validate:claims` | Claims gate is intentionally narrow and blocks only explicit overclaims. |
 
 ## Contract Definitions
 
@@ -145,10 +145,10 @@ Required invariants:
 - Service delegation remains heuristic until capability-gated as deterministic.
 - Deferred capabilities must not show up as beta promises.
 
-Gaps:
+Implemented production boundary:
 
-- No explicit product claims manifest binds marketing/docs to capabilities output.
-- No release script currently fails if docs claim unsupported capabilities.
+- `docs/architecture/beta-claims.json` is the machine-readable claims manifest.
+- `scripts/validate-product-claims.mjs` validates allowed and blocked claims and is part of `pnpm verify:ci`.
 
 Beta status: `canonical-beta`.
 
@@ -158,10 +158,10 @@ Purpose: bind scans, contracts, and findings to a repo and state.
 
 Current implementation:
 
-- `RepoRecord` has `id`, `root_path`, `fingerprint`, `created_at`, `updated_at` in `packages/core/src/domain.ts:92`.
+- `RepoRecord` has `id`, `root_path`, `fingerprint`, `vcs_provider`, `remote_url_hash`, `package_manager`, `lockfile_hashes`, `resolver_input_hash`, `created_at`, and `updated_at` in `packages/core/src/domain.ts:92`.
 - `ScanManifest` carries `repo_id`, `branch`, `commit`, and `dirty` in `packages/core/src/domain.ts:100`.
 - `repoIdForRoot` hashes the resolved repo root in `packages/cli/src/domain/identifiers.ts:5`.
-- `repoRecordForRoot` uses root path as repo fingerprint in `packages/cli/src/domain/repo-paths.ts:118`.
+- `repoRecordForRoot` uses root path as repo fingerprint and computes repo identity metadata in `packages/cli/src/domain/repo-paths.ts:118`.
 - Scan captures branch, commit, dirty state, scanner versions, resolver version, and resolver input fingerprint in `packages/cli/src/domain/scan-status.ts:96`.
 
 Required invariants:
@@ -170,14 +170,13 @@ Required invariants:
 - Scan output must expose branch, commit, and dirty state.
 - Contract import must reject repo id or fingerprint mismatch.
 
-Gaps and speculative fields:
+Implemented identity fields:
 
-- GPT Pro suggested `vcs_provider`, `remote_url_hash`, `package_manager`, `lockfile_hashes`, and `tsconfig_hash`. Current code does not persist those in `RepoRecord` or `ScanManifest`.
-- `detectPackageManager` exists in `packages/cli/src/domain/repo-paths.ts:70`, but it is not the repo identity contract.
-- Resolver input fingerprint covers `package.json`, `jsconfig.json`, and `tsconfig*.json` files via `resolverInputPaths` in `packages/cli/src/domain/scan-status.ts:624`, not lockfiles.
+- `vcs_provider`, `remote_url_hash`, `package_manager`, `lockfile_hashes`, and `resolver_input_hash` are persisted on `repos` by migration `012_repo_identity`.
+- Resolver input fingerprint covers `package.json`, `jsconfig.json`, and `tsconfig*.json`; lockfile hashes are stored separately on repo identity.
 - Clean-worktree gating is a beta/release requirement, not a persisted contract invariant today.
 
-Beta status: `partial`.
+Beta status: `canonical-beta`.
 
 ### 3. Scan And Freshness Contract
 
@@ -207,7 +206,7 @@ Gaps:
 - `runCheck` does not call `scanStatusPayload` or require a fresh stored scan. It collects current scan data with a `scan_check_...` id in `packages/cli/src/check/run-check.ts:53`.
 - MCP scan status duplicates CLI logic and currently omits resolver-input fingerprint invalidation; compare CLI `scanInvalidationReasons` in `packages/cli/src/domain/scan-status.ts:594` with MCP duplicate in `packages/mcp/src/index.ts:1399`.
 
-Beta status: `canonical-beta`, with release enforcement still missing.
+Beta status: `canonical-beta`.
 
 ### 4. Engine Boundary Contract
 
@@ -509,7 +508,7 @@ Current implementation:
 
 - 11 migrations exist in source in `packages/storage/src/migrations.ts:6`; `011_check_runs_and_finding_context` persists check runs and finding evidence context.
 - Tables cover repos, scan manifests, file snapshots, findings, baselines, audit events, facts, convention candidates, accepted conventions, repo contracts, backup manifests, fact graph artifacts, graph projections, scan file changes, symbol occurrence kind.
-- Source tests expect `supported_sqlite_schema_version: 11` in `packages/cli/test/cli.test.ts:410` and `test/e2e/installed-flow.test.ts:143`.
+- Source tests expect `supported_sqlite_schema_version: 12` in CLI and installed-flow coverage.
 - Storage test persists repo, scan, findings, baselines, facts, and more in `packages/storage/test/sqlite-storage.test.ts:165`.
 - Release proof checks source and built schema versions so stale generated artifacts do not pass as release truth.
 
@@ -661,15 +660,15 @@ Required invariants:
 Current evidence:
 
 - CLI has a shared repo-map builder in `packages/cli/src/domain/repo-map.ts:51`.
-- MCP still duplicates scan status, preflight, and repo-map payload construction in `packages/mcp/src/index.ts:865`, `packages/mcp/src/index.ts:127`, and `packages/mcp/src/index.ts:1124`.
-- Golden parity tests compare reduced preflight/contract projections in `test/e2e/golden.test.ts:80`.
+- CLI and MCP both use `@drift/query` graph read models for graph-backed repo map evidence.
+- `scripts/run-beta-proof.mjs` computes a full schema-stable CLI/MCP parity hash across beta-used read surfaces.
+- MCP remains read-only and exposes no mutation tools.
 
-Gaps:
+Remaining refactor debt:
 
-- MCP imports storage/query/fs/git/hash/path/scanner concerns directly, so the read-only transport boundary is not clean yet.
-- Parity tests can catch drift, but they do not prevent duplicated logic.
+- MCP still contains transport-adjacent assembly code. This is now guarded by parity proof, but shared read-model extraction should continue.
 
-Status: `partial`.
+Status: `canonical-defined`.
 
 ### 20. Release Proof Artifact Contract
 
@@ -847,16 +846,16 @@ Required codes:
 
 Current evidence:
 
-- Engine runtime failures are thrown as direct errors in `packages/cli/src/engine/rust-engine.ts:50` and `packages/cli/src/engine/rust-engine.ts:179`.
-- JSON CLI errors use generic refusal shape in `packages/cli/src/app/run-cli.ts:97`.
-- The beta refusal list exists, but it is not a cross-surface taxonomy.
+- Engine runtime failures are mapped into CLI operational codes in `packages/cli/src/app/run-cli.ts`.
+- JSON CLI errors include `code`, `surface`, `severity`, `safe_to_retry`, `user_action`, `recovery_commands`, and `diagnostics`.
+- Tests cover `stale_scan` and `missing_contract` recovery envelopes.
+- The beta refusal list names the release-blocking failure classes.
 
-Gaps:
+Remaining refactor debt:
 
-- Failure codes are not canonical.
-- MCP and CLI errors can collapse to code/message without the recovery envelope beta users need.
+- MCP protocol errors still use JSON-RPC `code/message`; a future MCP compatibility pass should add the same recovery envelope under JSON-RPC `error.data`.
 
-Status: `partial`.
+Status: `canonical-defined`.
 
 ### 25. Local State Sensitivity Contract
 
@@ -887,35 +886,34 @@ Current evidence:
 - Graph artifacts store full graph JSON in `packages/storage/src/migrations.ts:246`.
 - Backup manifests store source database and backup paths in `packages/storage/src/migrations.ts:210`.
 
-Gaps:
+Implemented boundary:
 
-- This sensitivity model was underdefined before this pass.
-- Support bundle behavior is not implemented, so these rules must constrain future implementation.
+- `support bundle --dry-run` emits a manifest-only support payload and explicitly reports excluded data classes.
+- Support/debug output excludes source text, SQLite DBs, backup files, environment variables, contract JSON, and finding evidence by default.
 
 Status: `canonical-defined`.
 
 ### 26. Support And Debuggability Contract
 
-Purpose: define what support/debug payloads may contain before a support bundle exists.
+Purpose: define what support/debug payloads may contain.
 
-Current support payload:
+Current support payloads:
 
 - `doctor --json` is the current operational support surface.
 - Backup verify and audit verify provide additional local health checks.
+- `support bundle --dry-run --json` emits `drift.support.bundle.v1`.
 
-Future support bundle rules:
+Support bundle rules:
 
-- No support bundle exists in V1.
-- If added, the default bundle must be manifest-only: versions, OS/runtime, engine provenance, migration ids, counts, integrity booleans, non-reversible hashes, backup health, and redacted diagnostics.
+- The default bundle is manifest-only: versions, OS/runtime, engine provenance, migration ids/counts, integrity booleans, non-reversible hashes, backup health, and redacted diagnostics.
 - It must exclude SQLite DBs, backups, source snippets, absolute paths, audit metadata, contract JSON, findings evidence, environment variables, tokens, and repo dumps unless each class is explicitly approved.
 - Support artifacts are local-only unless the user exports them.
 
-Gaps:
+Remaining limitations:
 
-- No `drift support bundle` command exists.
-- `doctor --json` does not yet include complete engine provenance.
+- V1 supports dry-run manifest output only; writing/exporting a support bundle remains out of scope.
 
-Status: `speculative`.
+Status: `canonical-defined`.
 
 ### 27. Production Scope/Claims Contract
 
@@ -930,14 +928,11 @@ Required invariants:
 Current evidence:
 
 - Capabilities output is real and narrow.
-- The repo contains broader roadmap docs, which are useful but must not be confused with shipped capability.
+- `docs/architecture/beta-claims.json` is the machine-readable production claims manifest.
+- `scripts/validate-product-claims.mjs` blocks explicit overclaims for incremental reuse, cloud sync, mutation-capable MCP, and broad language support.
+- `pnpm verify:ci` runs `pnpm validate:claims`.
 
-Gaps:
-
-- No release script currently compares docs/claims against `capabilities --json`.
-- No machine-readable beta claims manifest exists.
-
-Status: `partial`.
+Status: `canonical-beta`.
 
 ## GPT Pro Proposal Classification
 

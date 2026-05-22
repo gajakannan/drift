@@ -212,19 +212,37 @@ export class SqliteDriftStorage {
     const parsed = RepoRecordSchema.parse(repo);
     this.db
       .prepare(`
-        INSERT INTO repos (id, root_path, fingerprint, created_at, updated_at)
-        VALUES (@id, @root_path, @fingerprint, @created_at, @updated_at)
+        INSERT INTO repos (
+          id, root_path, fingerprint, vcs_provider, remote_url_hash, package_manager,
+          lockfile_hashes_json, resolver_input_hash, created_at, updated_at
+        )
+        VALUES (
+          @id, @root_path, @fingerprint, @vcs_provider, @remote_url_hash, @package_manager,
+          @lockfile_hashes_json, @resolver_input_hash, @created_at, @updated_at
+        )
         ON CONFLICT(id) DO UPDATE SET
           root_path = excluded.root_path,
           fingerprint = excluded.fingerprint,
+          vcs_provider = excluded.vcs_provider,
+          remote_url_hash = excluded.remote_url_hash,
+          package_manager = excluded.package_manager,
+          lockfile_hashes_json = excluded.lockfile_hashes_json,
+          resolver_input_hash = excluded.resolver_input_hash,
           updated_at = excluded.updated_at
       `)
-      .run(parsed);
+      .run({
+        ...parsed,
+        vcs_provider: parsed.vcs_provider ?? null,
+        remote_url_hash: parsed.remote_url_hash ?? null,
+        package_manager: parsed.package_manager ?? null,
+        lockfile_hashes_json: stringifyJson(parsed.lockfile_hashes ?? {}),
+        resolver_input_hash: parsed.resolver_input_hash ?? null
+      });
   }
 
   getRepo(id: string): RepoRecord | undefined {
     const row = this.db.prepare("SELECT * FROM repos WHERE id = ?").get(id);
-    return row ? RepoRecordSchema.parse(row) : undefined;
+    return row ? repoRecordFromRow(row) : undefined;
   }
 
   upsertScanManifest(manifest: ScanManifest): void {
@@ -1128,6 +1146,22 @@ export class SqliteDriftStorage {
 
 export function openDriftStorage(options: DriftStorageOptions): SqliteDriftStorage {
   return new SqliteDriftStorage(options);
+}
+
+function repoRecordFromRow(row: unknown): RepoRecord {
+  const record = row as Record<string, unknown>;
+  return RepoRecordSchema.parse({
+    id: record.id,
+    root_path: record.root_path,
+    fingerprint: record.fingerprint,
+    vcs_provider: record.vcs_provider ?? undefined,
+    remote_url_hash: record.remote_url_hash ?? null,
+    package_manager: record.package_manager ?? undefined,
+    lockfile_hashes: record.lockfile_hashes_json ? parseJsonObject(record.lockfile_hashes_json) : undefined,
+    resolver_input_hash: record.resolver_input_hash ?? undefined,
+    created_at: record.created_at,
+    updated_at: record.updated_at
+  });
 }
 
 function scanManifestFromRow(row: unknown): ScanManifest {

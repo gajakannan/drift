@@ -14,6 +14,13 @@ export interface DriftCapabilities {
   deferred: string[];
 }
 
+export interface DriftProductionClaimsManifest {
+  schema_version: "drift.production.claims.v1";
+  allowed_claims: string[];
+  blocked_claims: string[];
+  source_of_truth: "createDriftCapabilities";
+}
+
 export const DRIFT_DEFAULT_MCP_READ_ONLY_TOOLS = [
   "get_runtime_info",
   "get_capabilities",
@@ -56,7 +63,8 @@ export function createDriftCapabilities(input: {
       "contract waivers list",
       "backup list",
       "backup verify",
-      "restore --dry-run"
+      "restore --dry-run",
+      "support bundle --dry-run"
     ],
     human_confirmed_cli: [
       "conventions accept --confirm",
@@ -91,5 +99,30 @@ export function createDriftCapabilities(input: {
       source_mutation: false
     },
     deferred: ["desktop_ui", "cloud_sync", "python_adapter", "duplicate_helper_detection"]
+  };
+}
+
+export function createProductionClaimsManifest(): DriftProductionClaimsManifest {
+  return {
+    schema_version: "drift.production.claims.v1",
+    source_of_truth: "createDriftCapabilities",
+    allowed_claims: [
+      "local_first_cli",
+      "typescript_api_route_layering",
+      "sqlite_local_state",
+      "human_confirmed_governance",
+      "read_only_mcp",
+      "accepted_contract_blocks_direct_data_access"
+    ],
+    blocked_claims: [
+      "incremental_reuse",
+      "cloud_sync",
+      "desktop_ui",
+      "python_adapter",
+      "duplicate_helper_detection",
+      "mutation_capable_mcp",
+      "general_ai_code_review",
+      "broad_language_support"
+    ]
   };
 }

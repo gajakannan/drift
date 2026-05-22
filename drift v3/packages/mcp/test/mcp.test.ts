@@ -2120,7 +2120,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 11,
+        supported_sqlite_schema_version: 12,
         storage_driver: "sqlite"
       },
       v1_scope: {

@@ -25,10 +25,11 @@ describe("release hygiene", () => {
     expect(manifest.scripts["lint:engine"]).toBe("cargo clippy -p drift-engine --all-targets -- -D warnings");
     expect(manifest.scripts["check:boundaries"]).toBe("node packages/cli/scripts/check-boundaries.mjs");
     expect(manifest.scripts["validate:release-matrix"]).toBe("node scripts/validate-engine-release-matrix.mjs");
+    expect(manifest.scripts["validate:claims"]).toBe("node scripts/validate-product-claims.mjs");
     expect(manifest.scripts["beta:proof"]).toBe("node scripts/run-beta-proof.mjs");
     expect(manifest.scripts["release:proof"]).toBe("node scripts/generate-release-proof.mjs");
     expect(manifest.scripts["verify:ci"]).toBe(
-      "pnpm verify && pnpm format:engine:check && pnpm lint:engine && pnpm check:boundaries && pnpm validate:release-matrix && pnpm beta:proof && git diff --check",
+      "pnpm verify && pnpm format:engine:check && pnpm lint:engine && pnpm check:boundaries && pnpm validate:release-matrix && pnpm validate:claims && pnpm beta:proof && git diff --check",
     );
   });
 
@@ -314,6 +315,20 @@ describe("release hygiene", () => {
       expect(readme).toContain(`installed MCP \`${tool}\``);
     }
     expect(capabilities.mcp_mutation_tools).toEqual([]);
+  });
+
+  it("validates production claims against the machine-readable capabilities manifest", async () => {
+    const output = execFileSync("node", ["scripts/validate-product-claims.mjs"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    const claims = JSON.parse(await readFile(join("docs", "architecture", "beta-claims.json"), "utf8"));
+
+    expect(output).toContain("Validated Drift production claims manifest");
+    expect(claims.schema_version).toBe("drift.production.claims.v1");
+    expect(claims.allowed_claims).toContain("typescript_api_route_layering");
+    expect(claims.blocked_claims).toContain("incremental_reuse");
+    expect(claims.blocked_claims).toContain("mutation_capable_mcp");
   });
 
   it("documents the V1 support matrix and deferred surfaces without overpromising", async () => {

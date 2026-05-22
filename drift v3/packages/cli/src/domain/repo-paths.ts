@@ -1,7 +1,9 @@
 import { DRIFT_CONTRACT_SCHEMA_VERSION,type ConventionCandidate,type RepoContract,type RepoRecord } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
-import { existsSync,mkdirSync,readFileSync,statSync } from "node:fs";
-import { dirname,join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync,mkdirSync,readdirSync,readFileSync,statSync } from "node:fs";
+import { dirname,join,relative } from "node:path";
 import { hashStable,repoIdForRoot } from "./identifiers.js";
 
 export function requiredRepoContract(storage: SqliteDriftStorage, repoId: string): RepoContract {
@@ -120,9 +122,92 @@ export function repoRecordForRoot(repoRoot: string, now: string): RepoRecord {
     id: repoIdForRoot(repoRoot),
     root_path: repoRoot,
     fingerprint: hashStable(repoRoot),
+    vcs_provider: detectVcsProvider(repoRoot),
+    remote_url_hash: remoteUrlHash(repoRoot),
+    package_manager: detectPackageManager(repoRoot),
+    lockfile_hashes: lockfileHashes(repoRoot),
+    resolver_input_hash: resolverInputHash(repoRoot),
     created_at: now,
     updated_at: now
   };
+}
+
+function detectVcsProvider(repoRoot: string): "git" | "none" {
+  return existsSync(join(repoRoot, ".git")) || Boolean(gitOutput(repoRoot, ["rev-parse", "--show-toplevel"]))
+    ? "git"
+    : "none";
+}
+
+function remoteUrlHash(repoRoot: string): string | null {
+  const remoteUrl = gitOutput(repoRoot, ["config", "--get", "remote.origin.url"]);
+  return remoteUrl ? hashStable(remoteUrl) : null;
+}
+
+function lockfileHashes(repoRoot: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const filePath of ["pnpm-lock.yaml", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "bun.lock", "bun.lockb"]) {
+    const absolutePath = join(repoRoot, filePath);
+    if (existsSync(absolutePath) && statSync(absolutePath).isFile()) {
+      result[filePath] = createHash("sha256").update(readFileSync(absolutePath)).digest("hex");
+    }
+  }
+  return result;
+}
+
+function resolverInputHash(repoRoot: string): string {
+  const inputs = resolverInputPaths(repoRoot).map((filePath) => {
+    const absolutePath = join(repoRoot, filePath);
+    return {
+      path: filePath,
+      hash: createHash("sha256").update(readFileSync(absolutePath)).digest("hex")
+    };
+  });
+  return hashStable(JSON.stringify(inputs));
+}
+
+function resolverInputPaths(repoRoot: string): string[] {
+  const results: string[] = [];
+  collectResolverInputs(repoRoot, repoRoot, results);
+  return results.sort();
+}
+
+function collectResolverInputs(repoRoot: string, current: string, results: string[]): void {
+  if (!existsSync(current) || !statSync(current).isDirectory()) {
+    return;
+  }
+  for (const entry of readdirSafe(current)) {
+    if (entry === "node_modules" || entry === ".git" || entry === ".drift") {
+      continue;
+    }
+    const absolutePath = join(current, entry);
+    const stats = statSync(absolutePath);
+    if (stats.isDirectory()) {
+      collectResolverInputs(repoRoot, absolutePath, results);
+      continue;
+    }
+    if (entry === "package.json" || entry === "jsconfig.json" || /^tsconfig.*\.json$/.test(entry)) {
+      results.push(relative(repoRoot, absolutePath).split("\\").join("/"));
+    }
+  }
+}
+
+function readdirSafe(path: string): string[] {
+  try {
+    return existsSync(path) ? readdirSync(path) : [];
+  } catch {
+    return [];
+  }
+}
+
+function gitOutput(repoRoot: string, args: string[]): string {
+  try {
+    return execFileSync("git", ["-C", repoRoot, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+  } catch {
+    return "";
+  }
 }
 
 export function isApiRoutePath(filePath: string): boolean {

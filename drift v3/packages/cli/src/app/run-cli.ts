@@ -156,9 +156,13 @@ function operationalFailureForMessage(message: string): {
       diagnostics: [message]
     };
   }
-  if (message.startsWith("No repo contract exists")) {
+  if (
+    message.startsWith("No repo contract exists") ||
+    message.includes("No accepted repo contract exists") ||
+    (message.toLowerCase().includes("contract") && message.toLowerCase().includes("exist"))
+  ) {
     return {
-      code: "missing_repo_contract",
+      code: "missing_contract",
       surface: "cli",
       severity: "error",
       safe_to_retry: true,
@@ -169,7 +173,7 @@ function operationalFailureForMessage(message: string): {
   }
   if (message.includes("DRIFT_ENGINE_BIN") || message.includes("Rust engine")) {
     return {
-      code: "engine_unavailable",
+      code: "missing_engine",
       surface: "cli",
       severity: "error",
       safe_to_retry: true,
@@ -180,7 +184,7 @@ function operationalFailureForMessage(message: string): {
   }
   if (message.includes("unsupported schema") || message.includes("Unsupported local state schema")) {
     return {
-      code: "unsupported_database_schema",
+      code: "unsupported_database",
       surface: "cli",
       severity: "error",
       safe_to_retry: false,

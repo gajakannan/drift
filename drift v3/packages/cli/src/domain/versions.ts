@@ -1,4 +1,4 @@
-import { createDriftCapabilities,DRIFT_CONTRACT_SCHEMA_VERSION,DRIFT_CORE_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION } from "@drift/core";
+import { createDriftCapabilities,createProductionClaimsManifest,DRIFT_CONTRACT_SCHEMA_VERSION,DRIFT_CORE_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION } from "@drift/core";
 import { MIGRATIONS } from "@drift/storage";
 import { engineProvenance } from "./engine-provenance.js";
 import { preflightGovernance } from "./governance.js";
@@ -47,13 +47,15 @@ export function capabilitiesPayload(): {
   v1_scope: ReturnType<typeof doctorV1Scope>;
   governance: ReturnType<typeof preflightGovernance>;
   capabilities: ReturnType<typeof createDriftCapabilities>;
+  claims_manifest: ReturnType<typeof createProductionClaimsManifest>;
 } {
   return {
     runtime: doctorRuntime(),
     engine: engineProvenance(),
     v1_scope: doctorV1Scope(),
     governance: preflightGovernance(),
-    capabilities: createDriftCapabilities()
+    capabilities: createDriftCapabilities(),
+    claims_manifest: createProductionClaimsManifest()
   };
 }
 

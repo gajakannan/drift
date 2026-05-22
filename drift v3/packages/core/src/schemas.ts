@@ -105,6 +105,11 @@ export const RepoRecordSchema = z.object({
   id: z.string().min(1),
   root_path: z.string().min(1),
   fingerprint: z.string().min(1),
+  vcs_provider: z.enum(["git", "none"]).optional(),
+  remote_url_hash: z.string().min(1).nullable().optional(),
+  package_manager: z.string().min(1).optional(),
+  lockfile_hashes: z.record(z.string().min(1)).optional(),
+  resolver_input_hash: z.string().min(1).optional(),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime()
 });

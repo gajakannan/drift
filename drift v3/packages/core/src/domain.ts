@@ -93,6 +93,11 @@ export interface RepoRecord {
   id: string;
   root_path: string;
   fingerprint: string;
+  vcs_provider?: "git" | "none";
+  remote_url_hash?: string | null;
+  package_manager?: string;
+  lockfile_hashes?: Record<string, string>;
+  resolver_input_hash?: string;
   created_at: string;
   updated_at: string;
 }

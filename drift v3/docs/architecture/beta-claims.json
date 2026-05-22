@@ -1,0 +1,22 @@
+{
+  "schema_version": "drift.production.claims.v1",
+  "source_of_truth": "createDriftCapabilities",
+  "allowed_claims": [
+    "local_first_cli",
+    "typescript_api_route_layering",
+    "sqlite_local_state",
+    "human_confirmed_governance",
+    "read_only_mcp",
+    "accepted_contract_blocks_direct_data_access"
+  ],
+  "blocked_claims": [
+    "incremental_reuse",
+    "cloud_sync",
+    "desktop_ui",
+    "python_adapter",
+    "duplicate_helper_detection",
+    "mutation_capable_mcp",
+    "general_ai_code_review",
+    "broad_language_support"
+  ]
+}

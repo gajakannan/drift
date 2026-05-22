@@ -15,6 +15,7 @@ import { prepareTask } from "../commands/prepare.js";
 import { showRepoMap } from "../commands/repo-map.js";
 import { scanRepo,scanStatus } from "../commands/scan.js";
 import { startRepo } from "../commands/start.js";
+import { supportBundle } from "../commands/support.js";
 import { CommandPayload,ParsedArgs } from "./command-types.js";
 
 export async function runCommand(storage: SqliteDriftStorage, parsed: ParsedArgs): Promise<unknown | CommandPayload> {
@@ -185,6 +186,10 @@ export async function runCommand(storage: SqliteDriftStorage, parsed: ParsedArgs
 
   if (group === "backup" && command === "list") {
     return listBackups(storage, parsed);
+  }
+
+  if (group === "support" && command === "bundle") {
+    return supportBundle(storage, parsed);
   }
 
   if (group === "check") {

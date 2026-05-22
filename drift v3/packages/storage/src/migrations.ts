@@ -473,5 +473,15 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE findings ADD COLUMN suggested_fix TEXT;
       ALTER TABLE findings ADD COLUMN related_node_ids_json TEXT NOT NULL DEFAULT '[]';
     `
+  },
+  {
+    id: "012_repo_identity",
+    sql: `
+      ALTER TABLE repos ADD COLUMN vcs_provider TEXT;
+      ALTER TABLE repos ADD COLUMN remote_url_hash TEXT;
+      ALTER TABLE repos ADD COLUMN package_manager TEXT;
+      ALTER TABLE repos ADD COLUMN lockfile_hashes_json TEXT;
+      ALTER TABLE repos ADD COLUMN resolver_input_hash TEXT;
+    `
   }
 ];
