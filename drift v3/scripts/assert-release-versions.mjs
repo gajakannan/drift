@@ -3,7 +3,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const expectedVersion = process.argv[2] ?? JSON.parse(readFileSync("package.json", "utf8")).version;
+const expectedVersion = (process.argv[2] ?? JSON.parse(readFileSync("package.json", "utf8")).version).trim();
+if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(expectedVersion)) {
+  console.error(`Invalid release version: ${expectedVersion}`);
+  process.exit(1);
+}
 const packagePaths = [
   "package.json",
   "packages/core/package.json",
