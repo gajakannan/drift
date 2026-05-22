@@ -90,8 +90,11 @@ describe("release hygiene", () => {
     expect(workflow).toContain("cache-dependency-path: drift v3/pnpm-lock.yaml");
     expect(workflow).toContain("path: drift v3/.release/npm/*.tgz");
     expect(workflow).toContain("path: drift v3/.release/final-release-proof.json");
-    expect(workflow).toContain("DRIFT_VERIFY_CI_STATUS=passed node scripts/run-beta-proof.mjs --output beta-proof.json");
-    expect(workflow).toContain("node scripts/generate-release-proof.mjs --require-clean --require-built-cli --require-beta-proof --beta-proof-file beta-proof.json --output release-proof.json");
+    expect(workflow).toContain("mkdir -p \"${RUNNER_TEMP}/drift-release-proof\"");
+    expect(workflow).toContain("DRIFT_VERIFY_CI_STATUS=passed node scripts/run-beta-proof.mjs --output \"${RUNNER_TEMP}/drift-release-proof/beta-proof.json\"");
+    expect(workflow).toContain("node scripts/generate-release-proof.mjs --require-clean --require-built-cli --require-beta-proof --beta-proof-file \"${RUNNER_TEMP}/drift-release-proof/beta-proof.json\" --output \"${RUNNER_TEMP}/drift-release-proof/release-proof.json\"");
+    expect(workflow).toContain("${{ runner.temp }}/drift-release-proof/beta-proof.json");
+    expect(workflow).toContain("${{ runner.temp }}/drift-release-proof/release-proof.json");
     expect(workflow).toContain("name: Final release proof");
     expect(workflow).toContain("drift-beta-preflight-proof");
     expect(workflow).toContain("drift-final-release-proof");
