@@ -11,6 +11,7 @@ import type {
   FindingStatus,
   PolicyDecision,
   RepoContract,
+  RepoRecord,
   ScanManifest,
   Severity
 } from "@drift/core";
@@ -18,6 +19,7 @@ import {
   authorizeContextExport,
   canonicalRepoContractJson,
   canonicalScanStateJson,
+  createAgentEnvelopeV2,
   createDriftCapabilities,
   matchesPolicyGlob
 } from "@drift/core";
@@ -127,7 +129,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const requestedTask = requiredMcpString(task, "task");
       const requestedPath = path ? requiredRepoRelativeMcpPath(path) : undefined;
       const generatedAt = optionalMcpIsoTimestamp(now, "now") ?? new Date().toISOString();
-      const { contract, policy } = requiredAuthorizedMcpContract(storage, requestedRepoId);
+      const { contract, policy, ready: contractReady } = authorizedMcpContractOrDefault(storage, requestedRepoId);
       const activeConventions = contract.conventions.filter((convention) =>
         !convention.expires_at || convention.expires_at > generatedAt
       );
@@ -140,6 +142,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const scanStatus = scanStatusPayload(storage, requestedRepoId);
       assertFreshScanIfRequired(requestedRepoId, scanStatus, Boolean(require_fresh));
       const baseline = baselineSummary(storage, requestedRepoId);
+      const candidateCount = storage.listConventionCandidates(requestedRepoId, { status: "candidate" }).length;
       const findings = storage.listFindings(requestedRepoId)
         .filter(isOpenPreflightFinding)
         .map(preflightFinding);
@@ -151,13 +154,22 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         task: requestedTask,
         target_path: requestedPath ?? null,
         generated_at: generatedAt,
+        agent_envelope: mcpAgentEnvelope({
+          surface: "mcp",
+          policy,
+          scanStatus,
+          requireFresh: Boolean(require_fresh)
+        }),
         policy,
         contract: {
-          id: contract.id,
+          id: contractReady ? contract.id : null,
           schema_version: contract.contract_schema_version,
-          updated_at: contract.updated_at
+          updated_at: contractReady ? contract.updated_at : null,
+          ready: contractReady,
+          source: contractReady ? "accepted_contract" : "default_local_policy"
         },
-        summary: preflightSummary({
+        summary: {
+          ...preflightSummary({
           conventions: activeConventions,
           relevantFiles,
           riskyAreas,
@@ -167,7 +179,10 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
           safeCommands: contract.safe_commands,
           baseline,
           scanStatus
-        }),
+          }),
+          contract_ready: contractReady,
+          candidate_count: candidateCount
+        },
         conventions: activeConventions.map(preflightConvention),
         audit_integrity: scanStatus.audit_integrity,
         scan_status: scanStatus,
@@ -186,12 +201,21 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
             storage.getRepo(requestedRepoId)!.root_path,
             contract.context_egress.denied_globs
           ),
-          snippets_included: false
+          snippets_included: false,
+          source_content_included: false,
+          graph_context_included: false,
+          context_truncated: false
         },
-        next_commands: [
-          `drift check --repo ${requestedRepoId} --diff main...HEAD --scope changed-hunks --json`,
-          `drift findings list --repo ${requestedRepoId} --json`
-        ]
+        next_commands: contractReady
+          ? [
+            `drift check --repo ${requestedRepoId} --diff main...HEAD --scope changed-hunks --json`,
+            `drift findings list --repo ${requestedRepoId} --json`
+          ]
+          : [
+            `drift conventions list --repo ${requestedRepoId} --status candidate --json`,
+            `drift repo map --repo ${requestedRepoId} --json`,
+            `drift scan status --repo ${requestedRepoId} --json`
+          ]
       };
     }),
 
@@ -246,6 +270,12 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const findings = paginateFindings(orderedFindings, requestedLimit, requestedOffset);
       return {
         repo_id: requestedRepoId,
+        agent_envelope: mcpAgentEnvelope({
+          surface: "mcp",
+          policy,
+          scanStatus,
+          requireFresh: Boolean(require_fresh)
+        }),
         policy,
         governance: preflightGovernance(),
         filters: {
@@ -769,10 +799,56 @@ function requiredAuthorizedMcpContract(
   return { contract, policy };
 }
 
+function authorizedMcpContractOrDefault(
+  storage: ReturnType<typeof openDriftStorage>,
+  repoId: string,
+  surface: PolicyDecision["surface"] = "mcp"
+): { contract: RepoContract; policy: PolicyDecision; ready: boolean } {
+  const repo = requiredMcpRepoRecord(storage, repoId);
+  const storedContract = storage.getRepoContract(repoId);
+  const contract = storedContract ?? {
+    id: `contract_default_${repoId}`,
+    repo_id: repoId,
+    contract_schema_version: DRIFT_CONTRACT_SCHEMA_VERSION,
+    repo_fingerprint: repo.fingerprint,
+    created_at: repo.created_at,
+    updated_at: repo.updated_at,
+    conventions: [],
+    rejected_inferences: [],
+    waivers: [],
+    risky_areas: [],
+    safe_commands: [],
+    required_checks: [],
+    context_egress: {
+      default_mode: "local_only" as const,
+      denied_globs: [".env*", "**/*.pem", "**/*.key", "**/*.crt"],
+      max_snippet_chars: 1200,
+      allow_full_file_content: false
+    },
+    agent_permissions: []
+  };
+  const policy = authorizeContextExport(contract, surface);
+  if (!policy.allowed) {
+    throw new Error(`Policy denied MCP output: ${policy.reason}`);
+  }
+  return { contract, policy, ready: Boolean(storedContract) };
+}
+
 function requiredMcpRepo(storage: ReturnType<typeof openDriftStorage>, repoId: string): void {
   if (!storage.getRepo(repoId)) {
     throw new Error(`Unknown repo ${repoId}.`);
   }
+}
+
+function requiredMcpRepoRecord(
+  storage: ReturnType<typeof openDriftStorage>,
+  repoId: string
+): RepoRecord {
+  const repo = storage.getRepo(repoId);
+  if (!repo) {
+    throw new Error(`Unknown repo ${repoId}.`);
+  }
+  return repo;
 }
 
 function optionalAuthorizedMcpPolicy(
@@ -1079,6 +1155,12 @@ function repoMapPayload(
   return {
     repo_id: repoId,
     repo_root: repo.root_path,
+    agent_envelope: mcpAgentEnvelope({
+      surface: options.surface,
+      policy,
+      scanStatus,
+      requireFresh: Boolean(options.requireFresh)
+    }),
     policy,
     governance: preflightGovernance(),
     latest_scan: latestScan ?? null,
@@ -1095,7 +1177,10 @@ function repoMapPayload(
     files: listedFiles,
     redactions: {
       denied_globs: contract.context_egress.denied_globs,
-      snippets_included: false
+      snippets_included: false,
+      source_content_included: false,
+      graph_context_included: Boolean(graphMap),
+      context_truncated: false
     },
     next_commands: [
       `drift prepare "task" --repo ${repoId} --json`,
@@ -1814,6 +1899,29 @@ function countDeniedFiles(repoRoot: string, deniedGlobs: string[]): number {
   return walkIndexableFiles(repoRoot).filter((filePath) =>
     deniedGlobs.some((glob) => matchesPolicyGlob(filePath, glob))
   ).length;
+}
+
+function mcpAgentEnvelope(input: {
+  surface: PolicyDecision["surface"];
+  policy: Pick<PolicyDecision, "allowed" | "surface" | "reason">;
+  scanStatus: ReturnType<typeof scanStatusPayload>;
+  requireFresh: boolean;
+  diagnostics?: string[];
+}) {
+  return createAgentEnvelopeV2({
+    surface: input.surface,
+    policy: input.policy,
+    scan: {
+      required_fresh: input.requireFresh,
+      stale: input.scanStatus.stale,
+      latest_scan_id: input.scanStatus.latest_scan?.id ?? null
+    },
+    redactions: {
+      snippets_included: false,
+      context_truncated: false
+    },
+    diagnostics: input.diagnostics
+  });
 }
 
 function isApiRoutePath(filePath: string): boolean {

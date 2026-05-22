@@ -432,5 +432,12 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN occurrence_kind TEXT NOT NULL DEFAULT 'reference'
         CHECK (occurrence_kind IN ('declaration', 'reference'));
     `
+  },
+  {
+    id: "010_audit_sequence",
+    sql: `
+      -- Applied by SqliteDriftStorage.applyAuditSequenceMigration so existing
+      -- databases can be backfilled idempotently before the unique index lands.
+    `
   }
 ];

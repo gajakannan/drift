@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use crate::protocol::{
     CandidateRequest, CandidateResult, CheckFact, ENGINE_CANDIDATES_RESULT_SCHEMA_VERSION,
     EngineCandidate, EngineCandidateEvidenceRef, EngineCompleteness, GraphEvidence,
-    adapter_versions, engine_stats,
+    adapter_versions, capability_stats, engine_stats,
 };
 
 struct GraphImportEvidence {
@@ -138,7 +138,7 @@ pub fn infer_candidates(request: CandidateRequest) -> CandidateResult {
             required_capabilities: vec![
                 "syntax_facts".to_string(),
                 "import_resolution".to_string(),
-                "route_role_detection".to_string(),
+                "route_detection".to_string(),
             ],
             evidence_refs: combined_evidence_refs(
                 &request.scan.scan_id,
@@ -204,7 +204,7 @@ pub fn infer_candidates(request: CandidateRequest) -> CandidateResult {
             required_capabilities: vec![
                 "syntax_facts".to_string(),
                 "import_resolution".to_string(),
-                "route_flow_graph".to_string(),
+                "graph_stream".to_string(),
             ],
             evidence_refs: evidence_refs(&request.scan.scan_id, &service_imports, &file_hashes, "supporting"),
             counterexample_refs: combined_evidence_refs(&request.scan.scan_id, &data_imports, &graph_data_imports, &file_hashes, "counterexample"),
@@ -221,6 +221,7 @@ pub fn infer_candidates(request: CandidateRequest) -> CandidateResult {
     );
     stats.graph_nodes = request.graph.graph_nodes.len();
     stats.graph_edges = request.graph.graph_edges.len();
+    stats.capabilities = capability_stats(&["candidate_inference"], &[]);
 
     CandidateResult {
         schema_version: ENGINE_CANDIDATES_RESULT_SCHEMA_VERSION,

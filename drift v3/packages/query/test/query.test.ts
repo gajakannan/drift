@@ -649,6 +649,115 @@ describe("GraphQueryService", () => {
     expect(diagnostic.reasons).toContain("import_resolution_incomplete");
   });
 
+  it("groups graph diagnostics into bounded deterministic summaries", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-query-"));
+    tempDirs.push(dir);
+    const storage = openDriftStorage({ databasePath: join(dir, "drift.sqlite") });
+    storage.migrate();
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-22T00:00:00.000Z",
+      updated_at: "2026-05-22T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_diagnostics",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 3,
+      fact_count: 0,
+      finding_count: 0,
+      started_at: "2026-05-22T00:00:00.000Z",
+      completed_at: "2026-05-22T00:00:01.000Z"
+    });
+    storage.upsertFactGraphArtifact(buildFactGraphArtifactFromParts({
+      repo: {
+        repo_id: "repo_abc",
+        scan_id: "scan_diagnostics",
+        root_hash: "root_hash",
+        branch: "main",
+        commit: "abc123",
+        dirty: false
+      },
+      snapshots: [],
+      nodes: [graphNode("module:src/a.ts", "module", "src/a.ts", { file_path: "src/a.ts" })],
+      edges: [],
+      evidence: [],
+      diagnostics: [
+        {
+          id: "diag_unresolved_a",
+          severity: "warning",
+          code: "unresolved_import",
+          message: "Could not resolve import @/db from src/a.ts.",
+          file_path: "src/a.ts",
+          evidence_ids: []
+        },
+        {
+          id: "diag_unresolved_b",
+          severity: "warning",
+          code: "unresolved_import",
+          message: "Could not resolve import @/db from src/b.ts.",
+          file_path: "src/b.ts",
+          evidence_ids: []
+        },
+        {
+          id: "diag_namespace",
+          severity: "info",
+          code: "unsupported_namespace_import_symbol",
+          message: "Namespace import membership is not statically resolved.",
+          file_path: "src/c.ts",
+          evidence_ids: []
+        }
+      ],
+      completeness: [{
+        scope: "repo",
+        complete: false,
+        required_capabilities: ["import_resolution"],
+        missing_capabilities: [],
+        truncated: false,
+        can_block: false,
+        reasons: ["import_resolution_incomplete"]
+      }],
+      createdAt: "2026-05-22T00:00:00.000Z"
+    }));
+
+    const summary = createGraphQueryService(storage).getDiagnosticSummary({
+      repo_id: "repo_abc",
+      scan_id: "scan_diagnostics",
+      limit: 1,
+      policy_surface: "cli-preflight"
+    });
+    storage.close();
+
+    expect(summary.total_count).toBe(3);
+    expect(summary.completeness_reasons).toEqual(["import_resolution_incomplete"]);
+    expect(summary.groups).toEqual([
+      {
+        code: "unresolved_import",
+        severity: "warning",
+        count: 2,
+        file_count: 2,
+        sample_files: ["src/a.ts"],
+        sample_messages: ["Could not resolve import @/db from src/a.ts."]
+      },
+      {
+        code: "unsupported_namespace_import_symbol",
+        severity: "info",
+        count: 1,
+        file_count: 1,
+        sample_files: ["src/c.ts"],
+        sample_messages: ["Namespace import membership is not statically resolved."]
+      }
+    ]);
+  });
+
   it("returns semantic symbol neighborhoods from import and callsite graph links", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-query-"));
     tempDirs.push(dir);

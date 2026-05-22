@@ -184,6 +184,13 @@ fn detects_package_and_module_roles_from_paths() {
     let source = "export function run() { return true; }\n";
     let cases = [
         ("packages/cli/src/commands/scan.ts", "cli_command_module"),
+        ("packages/core/src/domain.ts", "core_module"),
+        ("packages/query/src/index.ts", "query_module"),
+        ("packages/factgraph/src/index.ts", "factgraph_module"),
+        (
+            "packages/adapters/typescript/src/index.ts",
+            "adapter_module",
+        ),
         ("packages/storage/src/sqlite-storage.ts", "storage_module"),
         (
             "packages/cli/src/engine/rust-engine.ts",

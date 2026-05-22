@@ -42,7 +42,12 @@ describe("engine contract schemas", () => {
         graph_edges: 0,
         diagnostics_emitted: 0,
         duration_ms: 10,
-        truncated: false
+        truncated: false,
+        capabilities: {
+          certified: ["file_discovery", "syntax_facts"],
+          required: ["syntax_facts"],
+          missing: []
+        }
       },
       completeness: [{
         scope: "repo",
@@ -56,6 +61,11 @@ describe("engine contract schemas", () => {
     });
 
     expect(result.schema_version).toBe("engine.scan.result.v1");
+    expect(result.stats.capabilities).toEqual({
+      certified: ["file_discovery", "syntax_facts"],
+      required: ["syntax_facts"],
+      missing: []
+    });
     expect(EngineScanResultSchema.safeParse(result).success).toBe(true);
   });
 
@@ -291,6 +301,58 @@ describe("engine contract schemas", () => {
     expect(result.findings[0].diff_status).toBe("new_in_diff");
   });
 
+  it("rejects blocking check results when required capabilities are missing", () => {
+    expect(() => parseEngineCheckResult({
+      schema_version: "engine.check.result.v1",
+      repo_id: "repo_abc",
+      scan_id: "scan_check_abc",
+      engine_version: "0.1.0",
+      rule_engine_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      diff_mode: "changed-hunks",
+      findings: [{
+        id: "finding_abc",
+        fingerprint: "fingerprint_abc",
+        convention_id: "convention_no_direct_db",
+        rule_id: "api_route_no_direct_data_access",
+        title: "API route imports data access directly",
+        message: "app/api/users/route.ts imports prisma from @/lib/prisma directly.",
+        severity: "error",
+        enforcement_result: "block",
+        status_hint: "new",
+        diff_status: "new_in_diff",
+        evidence: [{ file_path: "app/api/users/route.ts" }],
+        related_node_ids: []
+      }],
+      diagnostics: [],
+      stats: {
+        files_seen: 1,
+        files_skipped: 0,
+        files_parsed: 1,
+        facts_emitted: 1,
+        graph_nodes: 1,
+        graph_edges: 1,
+        diagnostics_emitted: 0,
+        duration_ms: 2,
+        truncated: false,
+        capabilities: {
+          certified: ["syntax_facts"],
+          required: ["direct_data_access_check"],
+          missing: ["direct_data_access_check"]
+        }
+      },
+      completeness: [{
+        scope: "repo",
+        complete: false,
+        required_capabilities: ["direct_data_access_check"],
+        missing_capabilities: ["direct_data_access_check"],
+        truncated: false,
+        can_block: false,
+        reasons: ["missing_capability:direct_data_access_check"]
+      }]
+    })).toThrow(/blocking findings require complete capability coverage/);
+  });
+
   it("validates engine-owned candidate inference results without governance mutation state", () => {
     const result = parseEngineCandidatesResult({
       schema_version: "engine.candidates.result.v1",
@@ -332,7 +394,7 @@ describe("engine contract schemas", () => {
           coverage_ratio: 0.67,
           heuristic_id: "engine-direct-data-access-v1"
         },
-        required_capabilities: ["syntax_facts", "import_resolution", "route_role_detection"],
+        required_capabilities: ["syntax_facts", "import_resolution", "route_detection"],
         evidence_refs: [{
           id: "evidence_ref_abc",
           kind: "supporting",

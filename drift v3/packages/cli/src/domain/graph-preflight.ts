@@ -1,4 +1,4 @@
-import { createGraphQueryService,type GraphAffectedFiles,type GraphReachableDataAccess,type GraphRouteFlow } from "@drift/query";
+import { createGraphQueryService,type GraphAffectedFiles,type GraphDiagnosticSummary,type GraphReachableDataAccess,type GraphRouteFlow } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import type { RelevantFile } from "./preflight.js";
 import { isApiRoutePath } from "./repo-paths.js";
@@ -14,6 +14,7 @@ export interface GraphPreflightContext {
   route_flows: GraphRouteFlow[];
   reachable_data_access: GraphReachableDataAccess[];
   affected_files: GraphAffectedFiles[];
+  diagnostic_summary: GraphDiagnosticSummary | null;
   diagnostics: string[];
 }
 
@@ -68,6 +69,12 @@ export function graphPreflightContext(input: {
     scan_id: latestScan.id,
     policy_surface: "cli-preflight"
   });
+  const diagnosticSummary = graph.getDiagnosticSummary({
+    repo_id: input.repoId,
+    scan_id: latestScan.id,
+    policy_surface: "cli-preflight",
+    limit: 3
+  });
 
   return {
     available: true,
@@ -79,8 +86,11 @@ export function graphPreflightContext(input: {
     route_flows: routeFlows,
     reachable_data_access: reachableDataAccess,
     affected_files: affectedFiles,
+    diagnostic_summary: diagnosticSummary,
     diagnostics: uniqueSorted([
       ...completeness.reasons,
+      ...diagnosticSummary.completeness_reasons,
+      ...diagnosticSummary.groups.map((group) => `${group.code}:${group.count}`),
       ...routeFlows.flatMap((flow) => flow.diagnostics),
       ...reachableDataAccess.flatMap((access) => access.diagnostics),
       ...affectedFiles.flatMap((affected) => affected.diagnostics)
@@ -96,6 +106,7 @@ function unavailableGraphContext(diagnostics: string[], scanId: string | null = 
     route_flows: [],
     reachable_data_access: [],
     affected_files: [],
+    diagnostic_summary: null,
     diagnostics
   };
 }

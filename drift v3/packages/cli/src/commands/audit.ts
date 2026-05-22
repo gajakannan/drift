@@ -77,7 +77,7 @@ export function verifyAudit(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
   if (!policy.allowed) {
     throw new Error(`Policy denied audit output: ${policy.reason}`);
   }
-  const verification = storage.verifyAuditChain(repoId);
+  const verification = storage.verifyAuditChain(repoId, { strict: parsed.flags.has("strict") });
   const payload = {
     repo_id: repoId,
     policy,

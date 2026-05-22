@@ -45,7 +45,25 @@ export const DRIFT_READ_ONLY_MCP_TOOLS: DriftMcpTool[] = [
         repo_id: { type: "string" },
         role: {
           type: "string",
-          enum: ["api_route", "server_module", "service_module", "data_access_module", "component", "test", "config"]
+          enum: [
+            "api_route",
+            "server_module",
+            "service_module",
+            "data_access_module",
+            "component",
+            "test",
+            "config",
+            "cli_command_module",
+            "core_module",
+            "query_module",
+            "factgraph_module",
+            "adapter_module",
+            "storage_module",
+            "engine_bridge_module",
+            "mcp_module",
+            "docs",
+            "package_manifest"
+          ]
         },
         path: { type: "string" },
         limit: { type: "number" },

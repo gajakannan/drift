@@ -165,6 +165,21 @@ export interface GraphCompleteness extends GraphQueryMetadata {
   reasons: string[];
 }
 
+export interface GraphDiagnosticGroup {
+  code: string;
+  severity: string;
+  count: number;
+  file_count: number;
+  sample_files: string[];
+  sample_messages: string[];
+}
+
+export interface GraphDiagnosticSummary extends GraphQueryMetadata {
+  total_count: number;
+  groups: GraphDiagnosticGroup[];
+  completeness_reasons: string[];
+}
+
 export class GraphQueryService {
   constructor(private readonly storage: GraphQueryStorage) {}
 
@@ -547,6 +562,65 @@ export class GraphQueryService {
       ...queryMetadata(input, scanId, uniqueReasons),
       complete: uniqueReasons.length === 0,
       reasons: uniqueReasons
+    };
+  }
+
+  getDiagnosticSummary(input: GraphQueryContext): GraphDiagnosticSummary {
+    const scanId = requireScanId(input);
+    const limit = input.limit ?? 3;
+    const diagnostics = this.storage.listGraphDiagnostics?.(input.repo_id, scanId) ?? [];
+    const completenessReasons = unique(
+      (this.storage.listGraphCompleteness?.(input.repo_id, scanId) ?? [])
+        .flatMap((completeness) => [
+          ...(!completeness.complete ? completeness.reasons : []),
+          ...completeness.missing_capabilities
+        ])
+    );
+    const grouped = new Map<string, {
+      code: string;
+      severity: string;
+      count: number;
+      files: Set<string>;
+      messages: Set<string>;
+    }>();
+
+    for (const diagnostic of diagnostics) {
+      const key = `${diagnostic.code}\0${diagnostic.severity}`;
+      const group = grouped.get(key) ?? {
+        code: diagnostic.code,
+        severity: diagnostic.severity,
+        count: 0,
+        files: new Set<string>(),
+        messages: new Set<string>()
+      };
+      group.count += 1;
+      if (diagnostic.file_path) {
+        group.files.add(diagnostic.file_path);
+      }
+      group.messages.add(diagnostic.message);
+      grouped.set(key, group);
+    }
+
+    const groups = [...grouped.values()]
+      .map((group) => ({
+        code: group.code,
+        severity: group.severity,
+        count: group.count,
+        file_count: group.files.size,
+        sample_files: sorted(group.files).slice(0, limit),
+        sample_messages: sorted(group.messages).slice(0, limit)
+      }))
+      .sort((left, right) =>
+        right.count - left.count ||
+        left.severity.localeCompare(right.severity) ||
+        left.code.localeCompare(right.code)
+      );
+
+    return {
+      ...queryMetadata(input, scanId, completenessReasons),
+      total_count: diagnostics.length,
+      groups,
+      completeness_reasons: completenessReasons
     };
   }
 }

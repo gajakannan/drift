@@ -28,6 +28,12 @@ export const EngineLimitsSchema = z.object({
   follow_symlinks: z.literal(false)
 });
 
+export const EngineCapabilityStatsSchema = z.object({
+  certified: z.array(z.string().min(1)),
+  required: z.array(z.string().min(1)),
+  missing: z.array(z.string().min(1))
+});
+
 export const EngineStatsSchema = z.object({
   files_seen: z.number().int().nonnegative(),
   files_skipped: z.number().int().nonnegative(),
@@ -41,7 +47,8 @@ export const EngineStatsSchema = z.object({
   batch_count: z.number().int().nonnegative().optional(),
   spill_artifacts_written: z.number().int().nonnegative().optional(),
   truncated: z.boolean(),
-  truncation_reason: z.string().min(1).optional()
+  truncation_reason: z.string().min(1).optional(),
+  capabilities: EngineCapabilityStatsSchema.optional()
 });
 
 export const EngineDiagnosticSchema = z.object({
@@ -280,6 +287,27 @@ export const EngineCheckResultSchema = z.object({
   diagnostics: z.array(EngineDiagnosticSchema),
   stats: EngineStatsSchema,
   completeness: z.array(EngineCompletenessSchema)
+}).superRefine((result, context) => {
+  const hasBlockingFinding = result.findings.some((finding) =>
+    finding.enforcement_result === "block"
+  );
+  if (!hasBlockingFinding) {
+    return;
+  }
+
+  const hasCompleteBlockingCoverage = result.completeness.some((completeness) =>
+    completeness.can_block &&
+    completeness.complete &&
+    !completeness.truncated &&
+    completeness.missing_capabilities.length === 0
+  );
+  const statsMissing = result.stats.capabilities?.missing ?? [];
+  if (!hasCompleteBlockingCoverage || statsMissing.length > 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "blocking findings require complete capability coverage"
+    });
+  }
 });
 
 export const EngineCandidatesResultSchema = z.object({
@@ -349,6 +377,7 @@ export const EngineStreamEventSchema = z.discriminatedUnion("event", [
 
 export type EngineLimits = z.infer<typeof EngineLimitsSchema>;
 export type EngineStats = z.infer<typeof EngineStatsSchema>;
+export type EngineCapabilityStats = z.infer<typeof EngineCapabilityStatsSchema>;
 export type EngineDiagnostic = z.infer<typeof EngineDiagnosticSchema>;
 export type EngineCompleteness = z.infer<typeof EngineCompletenessSchema>;
 export type EngineFileSnapshot = z.infer<typeof EngineFileSnapshotSchema>;

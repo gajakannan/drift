@@ -24,6 +24,10 @@ export const FileRoleSchema = z.enum([
   "test",
   "config",
   "cli_command_module",
+  "core_module",
+  "query_module",
+  "factgraph_module",
+  "adapter_module",
   "storage_module",
   "engine_bridge_module",
   "mcp_module",
@@ -71,6 +75,12 @@ export const ConventionExceptionSchema = z.object({
   path_globs: z.array(RepoRelativePatternSchema).optional(),
   symbols: z.array(z.string().min(1)).optional(),
   imports: z.array(z.string().min(1)).optional(),
+  endpoint_paths: z.array(z.string().min(1).regex(/^\//, "endpoint paths must start with /")).optional(),
+  methods: z.array(z.string().min(1)).optional(),
+  resolved_modules: z.array(RepoRelativePatternSchema).optional(),
+  resolved_symbols: z.array(z.string().min(1)).optional(),
+  data_stores: z.array(z.string().min(1)).optional(),
+  operation_kinds: z.array(z.enum(["read", "write", "delete", "unknown"])).optional(),
   expires_at: z.string().datetime().optional(),
   created_by: z.string().min(1),
   created_at: z.string().datetime()
@@ -273,6 +283,7 @@ export const AuditEventSchema = z.object({
   target_id: z.string().min(1),
   metadata: z.record(z.unknown()),
   created_at: z.string().datetime(),
+  sequence: z.number().int().positive().optional(),
   previous_event_hash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
   event_hash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional()
 });
@@ -400,7 +411,10 @@ export const SafeCommandSchema = z.object({
 export const RequiredCheckSchema = z.object({
   command: z.string().min(1),
   applies_to: ConventionScopeSchema,
-  reason: z.string().min(1)
+  reason: z.string().min(1),
+  source: z.enum(["contract", "graph_risk"]).optional(),
+  evidence_node_ids: z.array(z.string().min(1)).optional(),
+  risk_kinds: z.array(z.string().min(1)).optional()
 });
 
 export const ContextEgressPolicySchema = z.object({

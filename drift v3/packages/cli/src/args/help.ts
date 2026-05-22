@@ -235,6 +235,8 @@ export function helpText(parsed: ParsedArgs): string {
       "  drift --db <path> conventions reject <candidate_id> --reason \"false inference\" --confirm --json",
       "  drift --db <path> conventions edit <candidate_id> --statement \"...\" --confirm --json",
       "  drift --db <path> conventions exception add <convention_id> --repo <repo_id> --path <glob> --reason \"...\" --confirm --json",
+      "  drift --db <path> conventions exception add <convention_id> --repo <repo_id> --endpoint /api/health --method GET --reason \"...\" --confirm --json",
+      "  drift --db <path> conventions exception add <convention_id> --repo <repo_id> --operation-kind read --reason \"...\" --confirm --json",
       ""
     ].join("\n");
   }

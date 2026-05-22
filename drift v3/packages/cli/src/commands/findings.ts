@@ -1,8 +1,10 @@
 import { authorizeContextExport,type Finding,type FindingStatus } from "@drift/core";
+import { createGraphQueryService } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { actorFlag,optionalFindingDiffStatusFlag,optionalFindingStatusFlag,optionalNonEmptyFlag,optionalNonNegativeIntegerFlag,optionalPositiveIntegerFlag,optionalRepoRelativeFlag,optionalSeverityFlag,requiredFlag,requiredNonEmptyFlag,stringFlag,validateFileLineEvidence } from "../args/flag-readers.js";
 import { resolveRepoId } from "../args/repo-flags.js";
+import { agentEnvelopeForScan } from "../domain/agent-envelope.js";
 import { findingMatchesPath,findingShowNextCommands,fixedFindingNextCommands,fixedFindingResolution,governedFindingNextCommands,governedFindingResolution,reviewFinding } from "../domain/findings.js";
 import { auditEvent,mutationGovernance,preflightGovernance } from "../domain/governance.js";
 import { countBy,orderFindingsForReview,paginateFindings,paginationSummary } from "../domain/pagination.js";
@@ -41,6 +43,12 @@ export function listFindings(storage: SqliteDriftStorage, parsed: ParsedArgs): C
 
   const payload = {
     repo_id: repoId,
+    agent_envelope: agentEnvelopeForScan({
+      surface: "cli-check",
+      policy,
+      scanStatus,
+      requireFresh
+    }),
     policy,
     governance: preflightGovernance(),
     filters: {
@@ -88,20 +96,48 @@ export function showFinding(
   if (!finding) {
     throw new Error(`Finding not found: ${findingId}`);
   }
+  const graphEvidence = graphEvidenceForFinding(storage, repoId, finding);
   const payload = {
     repo_id: repoId,
+    agent_envelope: agentEnvelopeForScan({
+      surface: "cli-check",
+      policy,
+      scanStatus,
+      requireFresh
+    }),
     policy,
     governance: preflightGovernance(),
     scan_status: scanStatus,
     freshness_requirement: freshnessRequirement(requireFresh, scanStatus),
     review_item: reviewFinding(finding),
     finding,
+    graph_evidence: graphEvidence,
     next_commands: findingShowNextCommands(repoId, finding)
   };
 
   return {
     payload: parsed.flags.has("json") ? payload : formatFindingShowText(payload)
   };
+}
+
+function graphEvidenceForFinding(
+  storage: SqliteDriftStorage,
+  repoId: string,
+  finding: Finding
+): ReturnType<ReturnType<typeof createGraphQueryService>["getFindingEvidence"]> | null {
+  const scanId = finding.evidence_refs.find((evidence) => evidence.scan_id)?.scan_id;
+  if (!scanId) {
+    return null;
+  }
+  return createGraphQueryService(storage).getFindingEvidence({
+    repo_id: repoId,
+    scan_id: scanId,
+    finding_id: finding.id,
+    evidence_ids: finding.evidence_refs.map((evidence) => evidence.id),
+    fact_ids: [...new Set(finding.evidence_refs.flatMap((evidence) => evidence.fact_ids))],
+    file_paths: [...new Set(finding.evidence_refs.map((evidence) => evidence.file_path))],
+    policy_surface: "cli-check"
+  });
 }
 
 export function markFindingFixed(

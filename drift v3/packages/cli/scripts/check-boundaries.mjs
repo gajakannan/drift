@@ -6,6 +6,7 @@ const repoRoot = resolve(import.meta.dirname, "../../..");
 const srcRoot = join(repoRoot, "packages/cli/src");
 const packageSrcRoots = {
   cli: srcRoot,
+  adapters: join(repoRoot, "packages/adapters/src"),
   core: join(repoRoot, "packages/core/src"),
   storage: join(repoRoot, "packages/storage/src"),
   mcp: join(repoRoot, "packages/mcp/src"),
@@ -105,6 +106,14 @@ for (const { pkg, root, file } of packageFiles) {
 
   if (pkg !== "storage" && (source.includes("better-sqlite3") || source.includes("new Database("))) {
     failures.push(`${repoRel} uses raw SQLite; database access belongs in packages/storage`);
+  }
+
+  if (source.includes("packages/adapters/src") || /@drift\/adapters\//.test(source)) {
+    failures.push(`${repoRel} imports adapter internals directly; use the @drift/adapters public registry`);
+  }
+
+  if (pkg === "adapters" && /@drift\/(cli|storage|mcp|core|engine-contract)/.test(source)) {
+    failures.push(`${repoRel} imports another Drift package; adapters must stay manifest-only`);
   }
 
   if (pkg === "core" && /@drift\/(cli|storage|mcp|engine-contract)/.test(source)) {

@@ -13,8 +13,10 @@ export interface RustEngineCommand {
   cwd?: string;
   source: "env_override" | "packaged_optional_dependency" | "workspace_cargo";
   packageName?: string;
+  packageVersion?: string;
   targetTriple?: string;
   sha256?: string;
+  expectedSha256?: string;
 }
 
 export interface ResolveRustEngineCommandOptions {
@@ -187,8 +189,10 @@ function resolvePackagedEngine(): RustEngineCommand | undefined {
     args: [],
     source: "packaged_optional_dependency",
     packageName: manifest.package_name,
+    packageVersion: manifest.package_version,
     targetTriple: manifest.target_triple,
-    sha256
+    sha256,
+    expectedSha256: manifest.sha256
   };
 }
 
@@ -206,7 +210,8 @@ function validateExplicitEnginePath(value: string): RustEngineCommand {
     command: binaryPath,
     args: [],
     source: "env_override",
-    sha256: sha256File(binaryPath)
+    sha256: sha256File(binaryPath),
+    expectedSha256: sha256File(binaryPath)
   };
 }
 

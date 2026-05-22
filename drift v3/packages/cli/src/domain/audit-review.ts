@@ -27,6 +27,8 @@ export function auditVerifySummary(verification: AuditChainVerification): {
   valid: boolean;
   event_count: number;
   verified_count: number;
+  strict: boolean;
+  head_sequence?: number | null;
   broken_at_event_id: string | null;
   reason_count: number;
   head_event_hash: string | null;
@@ -35,6 +37,8 @@ export function auditVerifySummary(verification: AuditChainVerification): {
     valid: verification.valid,
     event_count: verification.event_count,
     verified_count: verification.verified_count,
+    strict: verification.strict === true,
+    head_sequence: verification.head_sequence,
     broken_at_event_id: verification.broken_at_event_id,
     reason_count: verification.reasons.length,
     head_event_hash: verification.head_event_hash

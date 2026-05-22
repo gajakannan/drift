@@ -140,8 +140,16 @@ describe("installed Drift package flow", () => {
     expect(doctorPayload.runtime).toMatchObject({
       cli_version: "0.1.0",
       core_version: "0.1.0",
-      supported_sqlite_schema_version: 9,
+      supported_sqlite_schema_version: 10,
       storage_driver: "sqlite"
+    });
+    expect(doctorPayload.engine).toMatchObject({
+      status: "available",
+      source: "packaged_optional_dependency",
+      package_name: expect.stringMatching(/^@drift\/engine-/),
+      package_version: "0.1.0",
+      override_active: false,
+      checksum_matches: true
     });
     expect(doctorPayload.v1_scope).toMatchObject({
       product_mode: "local_first_cli",
@@ -191,8 +199,16 @@ describe("installed Drift package flow", () => {
     expect(versionPayload.runtime).toMatchObject({
       cli_version: "0.1.0",
       core_version: "0.1.0",
-      supported_sqlite_schema_version: 9,
+      supported_sqlite_schema_version: 10,
       storage_driver: "sqlite"
+    });
+    expect(versionPayload.engine).toMatchObject({
+      status: "available",
+      source: "packaged_optional_dependency",
+      package_name: expect.stringMatching(/^@drift\/engine-/),
+      package_version: "0.1.0",
+      override_active: false,
+      checksum_matches: true
     });
 
     const capabilities = await runInstalledDrift(consumerDir, [
@@ -1127,7 +1143,7 @@ describe("installed Drift package flow", () => {
     expect(runtimePayload.runtime).toMatchObject({
       mcp_version: "0.1.0",
       core_version: "0.1.0",
-      supported_sqlite_schema_version: 9,
+      supported_sqlite_schema_version: 10,
       storage_driver: "sqlite"
     });
     expect(runtimePayload.governance).toMatchObject({

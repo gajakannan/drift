@@ -2,7 +2,7 @@
   "name": "@drift/engine-darwin-x64",
   "version": "0.1.0",
   "description": "Drift Rust engine binary for macOS x64.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "os": [
     "darwin"
   ],

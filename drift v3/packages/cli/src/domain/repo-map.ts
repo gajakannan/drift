@@ -1,6 +1,7 @@
 import { authorizeContextExport,type FactRecord,type FileRole,type FileSnapshot,type Finding,type PolicyDecision,type RepoContract } from "@drift/core";
 import { createGraphQueryService,fallbackFactRepoMapFiles } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
+import { agentEnvelopeForScan } from "./agent-envelope.js";
 import { uniqueSorted } from "./contract-materialization.js";
 import { isOpenPreflightFinding } from "./findings.js";
 import { preflightGovernance } from "./governance.js";
@@ -90,6 +91,12 @@ export function repoMapPayload(
     repo_id: repoId,
     repo_root: repo.root_path,
     generated_at: new Date().toISOString(),
+    agent_envelope: agentEnvelopeForScan({
+      surface: options.surface,
+      policy,
+      scanStatus,
+      requireFresh: Boolean(options.requireFresh)
+    }),
     policy,
     governance: preflightGovernance(),
     latest_scan: latestScan ?? null,
@@ -106,7 +113,10 @@ export function repoMapPayload(
     files: listedFiles,
     redactions: {
       denied_globs: contract.context_egress.denied_globs,
-      snippets_included: false
+      snippets_included: false,
+      source_content_included: false,
+      graph_context_included: Boolean(graphMap),
+      context_truncated: false
     },
     next_commands: [
       `drift prepare "task" --repo ${repoId} --json`,

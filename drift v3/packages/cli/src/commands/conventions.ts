@@ -1,4 +1,4 @@
-import { type AcceptedConvention,type ConventionCandidate,type ConventionScope,ConventionScopeSchema,type ConventionStatus,type RepoContract } from "@drift/core";
+import { type AcceptedConvention,type ConventionCandidate,type ConventionException,type ConventionScope,ConventionScopeSchema,type ConventionStatus,type RepoContract } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,statSync } from "node:fs";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
@@ -25,7 +25,8 @@ export function acceptCandidate(
     actor: actorFlag(parsed),
     severity: optionalSeverityFlag(parsed, "severity"),
     mode: optionalEnforcementModeFlag(parsed, "mode"),
-    confirmed: parsed.flags.has("confirm")
+    confirmed: parsed.flags.has("confirm"),
+    dryRun: parsed.flags.has("dry-run")
   });
 }
 
@@ -109,8 +110,28 @@ export function rejectCandidate(
   const now = stringFlag(parsed, "now") ?? new Date().toISOString();
   const actor = actorFlag(parsed);
   const reason = requiredNonEmptyFlag(parsed, "reason");
-  if (!parsed.flags.has("confirm")) {
+  const dryRun = parsed.flags.has("dry-run");
+  const confirmed = parsed.flags.has("confirm");
+  if (dryRun && confirmed) {
+    throw new Error("Use either --dry-run or --confirm, not both.");
+  }
+  if (!confirmed && !dryRun) {
     throw new Error("Convention rejection requires --confirm.");
+  }
+  if (dryRun) {
+    const rejected = { ...candidate, status: "rejected" as const };
+    return {
+      candidate: rejected,
+      changed: candidate.status !== "rejected",
+      governance: preflightGovernance() as never,
+      review_item: conventionCandidateReviewItem(rejected),
+      next_commands: [
+        `drift conventions reject ${candidate.id} --repo ${candidate.repo_id} --reason "${reason}" --confirm --json`
+      ],
+      dry_run: true,
+      write_intent: false,
+      would_reject: candidate.status !== "rejected"
+    } as never;
   }
   if (candidate.status === "rejected") {
     return {
@@ -163,7 +184,12 @@ export function editCandidate(
   }
   const statement = optionalNonEmptyFlag(parsed, "statement");
   const scopeFile = optionalNonEmptyFlag(parsed, "scope-file");
-  if (!parsed.flags.has("confirm")) {
+  const dryRun = parsed.flags.has("dry-run");
+  const confirmed = parsed.flags.has("confirm");
+  if (dryRun && confirmed) {
+    throw new Error("Use either --dry-run or --confirm, not both.");
+  }
+  if (!confirmed && !dryRun) {
     throw new Error("Convention edits require --confirm.");
   }
   const now = stringFlag(parsed, "now") ?? new Date().toISOString();
@@ -178,6 +204,20 @@ export function editCandidate(
     statement: statement ?? candidate.statement,
     scope: nextScope
   };
+  if (dryRun) {
+    return {
+      candidate: updated,
+      changed_fields: changedFields,
+      governance: preflightGovernance() as never,
+      review_item: conventionCandidateReviewItem(updated),
+      next_commands: [
+        `drift conventions edit ${candidate.id} --repo ${candidate.repo_id} --confirm --json`
+      ],
+      dry_run: true,
+      write_intent: false,
+      would_edit: changedFields.length > 0
+    } as never;
+  }
   if (changedFields.length === 0) {
     return {
       candidate: updated,
@@ -248,12 +288,32 @@ export function addConventionException(
 } {
   const repoId = resolveRepoId(parsed);
   requiredRepo(storage, repoId);
-  const path = requiredFlag(parsed, "path");
-  if (!isRepoRelativePolicyPattern(path)) {
+  const path = stringFlag(parsed, "path");
+  if (path && !isRepoRelativePolicyPattern(path)) {
     throw new Error("--path must be repo-relative.");
   }
+  const endpoint = stringFlag(parsed, "endpoint");
+  if (endpoint && !endpoint.startsWith("/")) {
+    throw new Error("--endpoint must start with /.");
+  }
+  const method = stringFlag(parsed, "method")?.toUpperCase();
+  const resolvedModule = stringFlag(parsed, "resolved-module");
+  if (resolvedModule && !isRepoRelativePolicyPattern(resolvedModule)) {
+    throw new Error("--resolved-module must be repo-relative.");
+  }
+  const resolvedSymbol = stringFlag(parsed, "resolved-symbol");
+  const dataStore = stringFlag(parsed, "data-store");
+  const operationKind = optionalOperationKindFlag(parsed);
+  if (!path && !endpoint && !method && !resolvedModule && !resolvedSymbol && !dataStore && !operationKind) {
+    throw new Error("Convention exception requires at least one selector.");
+  }
   const reason = requiredNonEmptyFlag(parsed, "reason");
-  if (!parsed.flags.has("confirm")) {
+  const dryRun = parsed.flags.has("dry-run");
+  const confirmed = parsed.flags.has("confirm");
+  if (dryRun && confirmed) {
+    throw new Error("Use either --dry-run or --confirm, not both.");
+  }
+  if (!confirmed && !dryRun) {
     throw new Error("Convention exception changes require --confirm.");
   }
   const now = stringFlag(parsed, "now") ?? new Date().toISOString();
@@ -264,8 +324,29 @@ export function addConventionException(
   if (!convention) {
     throw new Error(`Accepted convention not found: ${conventionId}`);
   }
-  const duplicate = convention.exceptions.some((exception) =>
-    (exception.path_globs ?? []).includes(path)
+  const exception: ConventionException = {
+    id: exceptionIdForConvention(conventionId, exceptionSelectorKey({
+      path,
+      endpoint,
+      method,
+      resolvedModule,
+      resolvedSymbol,
+      dataStore,
+      operationKind
+    })),
+    reason,
+    ...(path ? { path_globs: [path] } : {}),
+    ...(endpoint ? { endpoint_paths: [endpoint] } : {}),
+    ...(method ? { methods: [method] } : {}),
+    ...(resolvedModule ? { resolved_modules: [resolvedModule] } : {}),
+    ...(resolvedSymbol ? { resolved_symbols: [resolvedSymbol] } : {}),
+    ...(dataStore ? { data_stores: [dataStore] } : {}),
+    ...(operationKind ? { operation_kinds: [operationKind] } : {}),
+    created_by: actor,
+    created_at: now
+  };
+  const duplicate = convention.exceptions.some((entry) =>
+    exceptionSelectorKeyFromException(entry) === exceptionSelectorKeyFromException(exception)
   );
   if (duplicate) {
     const contract = requiredRepoContract(storage, repoId);
@@ -273,10 +354,19 @@ export function addConventionException(
       convention,
       contract,
       changed: false,
-      governance: mutationGovernance(),
+      governance: dryRun ? preflightGovernance() as never : mutationGovernance(),
       contract_summary: contractSummary(contract),
-      next_commands: exceptionNextCommands(repoId)
-    };
+      next_commands: dryRun
+        ? [`drift conventions exception add ${conventionId} --repo ${repoId} --confirm --json`]
+        : exceptionNextCommands(repoId),
+      ...(dryRun
+        ? {
+            dry_run: true,
+            write_intent: false,
+            would_add_exception: false
+          }
+        : {})
+    } as never;
   }
 
   const updated: AcceptedConvention = {
@@ -284,15 +374,35 @@ export function addConventionException(
     exceptions: [
       ...convention.exceptions,
       {
-        id: exceptionIdForConvention(conventionId, path),
-        reason,
-        path_globs: [path],
-        created_by: actor,
-        created_at: now
+        ...exception
       }
     ],
     updated_at: now
   };
+
+  if (dryRun) {
+    const existingContract = requiredRepoContract(storage, repoId);
+    const previewContract: RepoContract = {
+      ...existingContract,
+      updated_at: now,
+      conventions: existingContract.conventions.map((entry) =>
+        entry.id === updated.id ? updated : entry
+      )
+    };
+    return {
+      convention: updated,
+      contract: previewContract,
+      changed: true,
+      governance: preflightGovernance() as never,
+      contract_summary: contractSummary(previewContract),
+      next_commands: [
+        `drift conventions exception add ${conventionId} --repo ${repoId} --confirm --json`
+      ],
+      dry_run: true,
+      write_intent: false,
+      would_add_exception: true
+    } as never;
+  }
 
   const contract = storage.transaction(() => {
     storage.upsertAcceptedConvention(repoId, updated);
@@ -305,7 +415,7 @@ export function addConventionException(
       action: "policy_changed",
       targetType: "convention_exception",
       targetId: updated.exceptions.at(-1)?.id ?? conventionId,
-      metadata: { convention_id: conventionId, path, reason },
+      metadata: { convention_id: conventionId, selectors: exceptionSelectorKeyFromException(exception), reason },
       createdAt: now
     }));
     return materializedContract;
@@ -319,4 +429,49 @@ export function addConventionException(
     contract_summary: contractSummary(contract),
     next_commands: exceptionNextCommands(repoId)
   };
+}
+
+function optionalOperationKindFlag(
+  parsed: ParsedArgs
+): NonNullable<ConventionException["operation_kinds"]>[number] | undefined {
+  const value = stringFlag(parsed, "operation-kind");
+  if (!value) {
+    return undefined;
+  }
+  if (value === "read" || value === "write" || value === "delete" || value === "unknown") {
+    return value;
+  }
+  throw new Error("--operation-kind must be read, write, delete, or unknown.");
+}
+
+function exceptionSelectorKey(input: {
+  path?: string;
+  endpoint?: string;
+  method?: string;
+  resolvedModule?: string;
+  resolvedSymbol?: string;
+  dataStore?: string;
+  operationKind?: NonNullable<ConventionException["operation_kinds"]>[number];
+}): string {
+  return [
+    `path=${input.path ?? ""}`,
+    `endpoint=${input.endpoint ?? ""}`,
+    `method=${input.method ?? ""}`,
+    `resolved_module=${input.resolvedModule ?? ""}`,
+    `resolved_symbol=${input.resolvedSymbol ?? ""}`,
+    `data_store=${input.dataStore ?? ""}`,
+    `operation_kind=${input.operationKind ?? ""}`
+  ].join("|");
+}
+
+function exceptionSelectorKeyFromException(exception: ConventionException): string {
+  return [
+    `path=${[...(exception.path_globs ?? [])].sort().join(",")}`,
+    `endpoint=${[...(exception.endpoint_paths ?? [])].sort().join(",")}`,
+    `method=${[...(exception.methods ?? [])].sort().join(",")}`,
+    `resolved_module=${[...(exception.resolved_modules ?? [])].sort().join(",")}`,
+    `resolved_symbol=${[...(exception.resolved_symbols ?? [])].sort().join(",")}`,
+    `data_store=${[...(exception.data_stores ?? [])].sort().join(",")}`,
+    `operation_kind=${[...(exception.operation_kinds ?? [])].sort().join(",")}`
+  ].join("|");
 }

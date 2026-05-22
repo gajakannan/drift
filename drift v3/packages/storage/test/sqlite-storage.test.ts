@@ -33,7 +33,8 @@ describe("SQLite Drift storage", () => {
       "006_fact_graph_artifacts",
       "007_fact_graph_v2_projections",
       "008_scan_file_changes",
-      "009_symbol_occurrence_kind"
+      "009_symbol_occurrence_kind",
+      "010_audit_sequence"
     ]);
     storage.close();
   });
@@ -72,7 +73,8 @@ describe("SQLite Drift storage", () => {
       "006_fact_graph_artifacts",
       "007_fact_graph_v2_projections",
       "008_scan_file_changes",
-      "009_symbol_occurrence_kind"
+      "009_symbol_occurrence_kind",
+      "010_audit_sequence"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -1006,6 +1008,58 @@ describe("SQLite Drift storage", () => {
       verified_count: 1,
       broken_at_event_id: "audit_event_b",
       reasons: ["event_hash_mismatch"]
+    });
+    tampered.close();
+  });
+
+  it("assigns monotonic audit sequences and strict verification detects gaps", async () => {
+    const databasePath = await tempDatabasePath();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+
+    storage.appendAuditEvent({
+      id: "audit_event_seq_a",
+      repo_id: "repo_abc",
+      actor: "local-user",
+      action: "repo_added",
+      target_type: "repo",
+      target_id: "repo_abc",
+      metadata: { root_path: "/repo" },
+      created_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.appendAuditEvent({
+      id: "audit_event_seq_b",
+      repo_id: "repo_abc",
+      actor: "local-user",
+      action: "policy_changed",
+      target_type: "policy",
+      target_id: "policy_abc",
+      metadata: { mode: "local_only" },
+      created_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    expect(storage.listAuditEvents("repo_abc").map((event) => event.sequence)).toEqual([1, 2]);
+    expect(storage.verifyAuditChain("repo_abc", { strict: true })).toMatchObject({
+      valid: true,
+      strict: true,
+      head_sequence: 2,
+      reasons: []
+    });
+    storage.close();
+
+    const db = new Database(databasePath);
+    db.prepare("UPDATE audit_events SET sequence = ? WHERE id = ?").run(4, "audit_event_seq_b");
+    db.close();
+
+    const tampered = openDriftStorage({ databasePath });
+    expect(tampered.verifyAuditChain("repo_abc", { strict: true })).toMatchObject({
+      valid: false,
+      strict: true,
+      event_count: 2,
+      verified_count: 1,
+      broken_at_event_id: "audit_event_seq_b",
+      head_sequence: 1,
+      reasons: ["sequence_gap"]
     });
     tampered.close();
   });

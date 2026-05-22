@@ -12,6 +12,8 @@ export const VALUE_FLAGS = new Set([
   "diff",
   "diff-file",
   "diff-status",
+  "data-store",
+  "endpoint",
   "evidence",
   "expires-at",
   "expect-repo-fingerprint",
@@ -21,6 +23,7 @@ export const VALUE_FLAGS = new Set([
   "kind",
   "limit",
   "max-snippet-chars",
+  "method",
   "mode",
   "now",
   "offset",
@@ -31,6 +34,8 @@ export const VALUE_FLAGS = new Set([
   "reason",
   "repo",
   "repo-root",
+  "resolved-module",
+  "resolved-symbol",
   "role",
   "scope",
   "scope-file",
@@ -42,6 +47,7 @@ export const VALUE_FLAGS = new Set([
   "status",
   "symbol",
   "surface",
+  "operation-kind",
   "target-id",
   "target-type",
   "until"
@@ -60,5 +66,6 @@ export const BOOLEAN_FLAGS = new Set([
   "json",
   "require-checksum",
   "require-fresh",
+  "strict",
   "version"
 ]);

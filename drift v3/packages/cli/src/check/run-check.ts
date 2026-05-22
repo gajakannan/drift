@@ -101,7 +101,14 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
         if (!isForbiddenImport(importUsed.value, convention.matcher.forbidden_imports ?? [])) {
           continue;
         }
-        if (isExceptedImport(filePath, importUsed.name, importUsed.value, convention, now)) {
+        if (isExceptedImport(
+          filePath,
+          importUsed.name,
+          importUsed.value,
+          convention,
+          now,
+          exceptionContextForImport(checkData, filePath, importUsed)
+        )) {
           continue;
         }
         const waiver = findContractWaiverForImport(filePath, importUsed.name, importUsed.value, contract, now);
@@ -171,6 +178,11 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     finding.enforcement_result === "block"
   ).length;
   const openNewCount = findings.filter((finding) => finding.status === "new").length;
+  const outcome = checkOutcomeSummary(findings, {
+    waivedFindingsCount,
+    expiredFindingsCount,
+    scope: scope as "changed-hunks" | "changed-files" | "full"
+  });
   const payload = {
     policy,
     governance: preflightGovernance(),
@@ -183,7 +195,9 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
       waived_findings_count: waivedFindingsCount,
       expired_findings_count: expiredFindingsCount,
       skipped_deleted_files: parsedDiff.deletedFiles,
-      engine_source: checkData.engineSource
+      engine_source: checkData.engineSource,
+      affected_scope: affectedScopeSummary(parsedDiff, scope),
+      outcome
     },
     review_items: findings.map(reviewFinding),
     waived_findings: waivedFindings,
@@ -199,6 +213,101 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     exitCode: blockingCount > 0 ? 1 : 0,
     payload: parsed.flags.has("json") ? payload : formatCheckText(payload)
   };
+}
+
+function affectedScopeSummary(
+  parsedDiff: ReturnType<typeof parseUnifiedDiff>,
+  scope: string
+): {
+  mode: string;
+  changed_file_count: number;
+  changed_line_count: number;
+  deleted_file_count: number;
+  deleted_files: string[];
+} {
+  return {
+    mode: scope,
+    changed_file_count: parsedDiff.files.length,
+    changed_line_count: parsedDiff.files.reduce((total, file) => total + file.changedLines.size, 0),
+    deleted_file_count: parsedDiff.deletedFiles.length,
+    deleted_files: parsedDiff.deletedFiles
+  };
+}
+
+function checkOutcomeSummary(
+  findings: Finding[],
+  input: {
+    waivedFindingsCount: number;
+    expiredFindingsCount: number;
+    scope: "changed-hunks" | "changed-files" | "full";
+  }
+): {
+  status_counts: Partial<Record<Finding["status"], number>>;
+  diff_status_counts: Partial<Record<Finding["diff_status"], number>>;
+  enforcement_counts: Partial<Record<Finding["enforcement_result"], number>>;
+  blocking_reasons: Array<{ reason: string; count: number }>;
+  warning_reasons: Array<{ reason: string; count: number }>;
+  non_blocking_reasons: Array<{ reason: string; count: number }>;
+} {
+  const statusCounts = countFindingsBy(findings, (finding) => finding.status);
+  const diffStatusCounts = countFindingsBy(findings, (finding) => finding.diff_status);
+  const enforcementCounts = countFindingsBy(findings, (finding) => finding.enforcement_result);
+  const blockingNewHunks = findings.filter((finding) =>
+    finding.status === "new" &&
+    finding.diff_status === "new_in_diff" &&
+    finding.enforcement_result === "block"
+  ).length;
+  const warnings = findings.filter((finding) =>
+    finding.status === "new" &&
+    finding.diff_status === "new_in_diff" &&
+    finding.enforcement_result === "warn"
+  ).length;
+  const preExisting = findings.filter((finding) => finding.status === "pre_existing").length;
+  const touchedExisting = findings.filter((finding) =>
+    finding.status === "new" && finding.diff_status === "touched_existing"
+  ).length;
+  const outsideDiff = findings.filter((finding) =>
+    finding.status === "new" && finding.diff_status === "outside_diff"
+  ).length;
+
+  return {
+    status_counts: statusCounts,
+    diff_status_counts: diffStatusCounts,
+    enforcement_counts: enforcementCounts,
+    blocking_reasons: compactReasons([
+      ["new_blocking_violation_in_changed_hunk", blockingNewHunks]
+    ]),
+    warning_reasons: compactReasons([
+      ["new_warning_violation_in_changed_hunk", warnings]
+    ]),
+    non_blocking_reasons: compactReasons([
+      ["pre_existing_baseline", preExisting],
+      ["touched_existing_not_new_hunk", touchedExisting],
+      ["outside_diff", outsideDiff],
+      ["waived_by_contract", input.waivedFindingsCount],
+      ["expired_convention_findings", input.expiredFindingsCount],
+      [input.scope === "changed-files" ? "changed_files_mode_does_not_infer_new_hunks" : "", input.scope === "changed-files" ? touchedExisting : 0],
+      [input.scope === "full" ? "full_scope_reports_existing_violations_without_blocking" : "", input.scope === "full" ? touchedExisting : 0]
+    ])
+  };
+}
+
+function countFindingsBy<T extends string>(
+  findings: Finding[],
+  selector: (finding: Finding) => T
+): Partial<Record<T, number>> {
+  const counts: Partial<Record<T, number>> = {};
+  for (const finding of findings) {
+    const key = selector(finding);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function compactReasons(entries: Array<[string, number]>): Array<{ reason: string; count: number }> {
+  return entries
+    .filter(([reason, count]) => reason.length > 0 && count > 0)
+    .map(([reason, count]) => ({ reason, count }));
 }
 
 async function runEngineOwnedDirectDataAccessCheck(input: {
@@ -239,7 +348,14 @@ async function runEngineOwnedDirectDataAccessCheck(input: {
         const forbiddenImports = convention.matcher.forbidden_imports ?? [];
         const directlyForbidden = isForbiddenImport(importUsed.value, forbiddenImports);
         const graphForbidden = graphImportResolvesToForbidden(input.checkData, filePath, importUsed, forbiddenImports);
-        if (isExceptedImport(filePath, importUsed.name, importUsed.value, convention, input.now)) {
+        if (isExceptedImport(
+          filePath,
+          importUsed.name,
+          importUsed.value,
+          convention,
+          input.now,
+          exceptionContextForImport(input.checkData, filePath, importUsed)
+        )) {
           skippedImportFactIds.add(importUsed.fact_id);
           continue;
         }
@@ -448,6 +564,65 @@ function graphImportResolvesToForbidden(
       const resolvedPath = resolved ? stringMetadata(resolved.metadata, "file_path") : undefined;
       return Boolean(resolvedPath && isForbiddenImport(resolvedPath, forbiddenImports));
     });
+}
+
+function exceptionContextForImport(
+  checkData: ScanData,
+  filePath: string,
+  importUsed: ReturnType<typeof importFactsForFile>[number]
+): {
+  endpointPaths: string[];
+  methods: string[];
+  resolvedModules: string[];
+  resolvedSymbols: string[];
+  dataStores: string[];
+  operationKinds: string[];
+} {
+  const evidenceById = new Map(checkData.graph_evidence.map((evidence) => [evidence.id, evidence]));
+  const nodesById = new Map(checkData.graph_nodes.map((node) => [node.id, node]));
+  const importKey = importFactGraphKey(filePath, importUsed);
+  const importNode = checkData.graph_nodes.find((node) =>
+    node.kind === "import_decl" && importNodeGraphKey(node, evidenceById) === importKey
+  );
+  const endpointNodes = checkData.graph_nodes.filter((node) =>
+    node.kind === "endpoint" && stringMetadata(node.metadata, "file_path") === filePath
+  );
+  const dataOperationNodes = checkData.graph_nodes.filter((node) =>
+    node.kind === "data_operation" &&
+    stringMetadata(node.metadata, "file_path") === filePath &&
+    stringMetadata(node.metadata, "receiver_root") === importUsed.name
+  );
+  const resolvedModules = importNode
+    ? checkData.graph_edges
+        .filter((edge) => edge.kind === "IMPORT_RESOLVES_TO_MODULE" && edge.from === importNode.id)
+        .map((edge) => nodesById.get(edge.to))
+        .flatMap((node) => node ? [stringMetadata(node.metadata, "file_path")] : [])
+        .filter((value): value is string => typeof value === "string")
+    : [];
+  const resolvedSymbols = importNode
+    ? checkData.graph_edges
+        .filter((edge) => edge.kind === "IMPORT_RESOLVES_TO_SYMBOL" && edge.from === importNode.id)
+        .map((edge) => nodesById.get(edge.to)?.label)
+        .filter((value): value is string => typeof value === "string")
+    : [];
+
+  return {
+    endpointPaths: uniqueStrings(endpointNodes.flatMap((node) => metadataValues(node.metadata, "route_pattern"))),
+    methods: uniqueStrings(endpointNodes.flatMap((node) => metadataValues(node.metadata, "method"))),
+    resolvedModules: uniqueStrings(resolvedModules),
+    resolvedSymbols: uniqueStrings(resolvedSymbols),
+    dataStores: uniqueStrings(dataOperationNodes.flatMap((node) => metadataValues(node.metadata, "store_name"))),
+    operationKinds: uniqueStrings(dataOperationNodes.flatMap((node) => metadataValues(node.metadata, "operation_kind")))
+  };
+}
+
+function metadataValues(metadata: Record<string, unknown>, key: string): string[] {
+  const value = metadata[key];
+  return typeof value === "string" ? [value] : [];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)].sort();
 }
 
 function importFactGraphKey(filePath: string, importUsed: ReturnType<typeof importFactsForFile>[number]): string {

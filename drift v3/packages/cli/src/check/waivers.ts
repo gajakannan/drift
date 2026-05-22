@@ -1,10 +1,22 @@
 import type { AcceptedConvention,RepoContract } from "@drift/core";
 import { matchesGlob } from "../domain/repo-paths.js";
 
+export interface ConventionExceptionContext {
+  filePath: string;
+  symbol?: string;
+  importSource?: string;
+  endpointPaths?: string[];
+  methods?: string[];
+  resolvedModules?: string[];
+  resolvedSymbols?: string[];
+  dataStores?: string[];
+  operationKinds?: string[];
+}
+
 export function isExceptedPath(filePath: string, convention: AcceptedConvention, now: string): boolean {
   return convention.exceptions.some((exception) =>
     isActiveException(exception, now) &&
-    (exception.path_globs ?? []).some((glob) => matchesGlob(filePath, glob))
+    exceptionMatchesContext(exception, { filePath }, now)
   );
 }
 
@@ -13,16 +25,62 @@ export function isExceptedImport(
   symbol: string,
   importSource: string,
   convention: AcceptedConvention,
-  now: string
+  now: string,
+  context: Omit<ConventionExceptionContext, "filePath" | "symbol" | "importSource"> = {}
 ): boolean {
   return convention.exceptions.some((exception) =>
     isActiveException(exception, now) &&
-    (
-      (exception.path_globs ?? []).some((glob) => matchesGlob(filePath, glob)) ||
-      (exception.symbols ?? []).includes(symbol) ||
-      (exception.imports ?? []).includes(importSource)
-    )
+    exceptionMatchesContext(exception, { filePath, symbol, importSource, ...context }, now)
   );
+}
+
+export function exceptionMatchesContext(
+  exception: AcceptedConvention["exceptions"][number],
+  context: ConventionExceptionContext,
+  now: string
+): boolean {
+  if (!isActiveException(exception, now)) {
+    return false;
+  }
+  const checks = [
+    selectorMatches(exception.path_globs, [context.filePath], (glob, value) => matchesGlob(value, glob)),
+    selectorMatches(exception.symbols, context.symbol ? [context.symbol] : []),
+    selectorMatches(exception.imports, context.importSource ? [context.importSource] : []),
+    selectorMatches(exception.endpoint_paths, context.endpointPaths ?? []),
+    selectorMatches(exception.methods, context.methods ?? []),
+    selectorMatches(exception.resolved_modules, context.resolvedModules ?? [], (glob, value) => matchesGlob(value, glob)),
+    selectorMatches(exception.resolved_symbols, context.resolvedSymbols ?? []),
+    selectorMatches(exception.data_stores, context.dataStores ?? [], undefined, "all"),
+    selectorMatches(exception.operation_kinds, context.operationKinds ?? [], undefined, "all")
+  ];
+  return checks.some((check) => check.configured) &&
+    checks.every((check) => !check.configured || check.matched);
+}
+
+function selectorMatches(
+  selectors: string[] | undefined,
+  values: string[],
+  matches: (selector: string, value: string) => boolean = (selector, value) => selector === value,
+  mode: "any" | "all" = "any"
+): { configured: boolean; matched: boolean } {
+  const uniqueSelectors = [...new Set(selectors ?? [])];
+  if (uniqueSelectors.length === 0) {
+    return { configured: false, matched: false };
+  }
+  const uniqueValues = [...new Set(values)];
+  if (uniqueValues.length === 0) {
+    return { configured: true, matched: false };
+  }
+  if (mode === "all") {
+    return {
+      configured: true,
+      matched: uniqueValues.every((value) => uniqueSelectors.some((selector) => matches(selector, value)))
+    };
+  }
+  return {
+    configured: true,
+    matched: uniqueValues.some((value) => uniqueSelectors.some((selector) => matches(selector, value)))
+  };
 }
 
 export function findContractWaiverForImport(

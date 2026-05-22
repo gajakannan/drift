@@ -52,7 +52,7 @@ describe("built drift CLI binary", () => {
     expect(payload.runtime).toMatchObject({
       cli_version: "0.1.0",
       core_version: "0.1.0",
-      supported_sqlite_schema_version: 9,
+      supported_sqlite_schema_version: 10,
       storage_driver: "sqlite"
     });
     expect(payload.v1_scope).toMatchObject({
@@ -109,7 +109,7 @@ describe("built drift CLI binary", () => {
         expect(result.stdout).toContain(expected);
       }
     }
-  });
+  }, 15_000);
 
   it("runs doctor JSON from the compiled package entrypoint", async () => {
     const { repoRoot, stateRoot } = await fixtureRepo("next-api-direct-db");

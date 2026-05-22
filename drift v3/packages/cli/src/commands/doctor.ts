@@ -6,6 +6,7 @@ import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { doctorNextCommands } from "../args/doctor-commands.js";
 import { stringFlag } from "../args/flag-readers.js";
 import { defaultDatabasePath,resolveRepoRoot } from "../args/repo-flags.js";
+import { engineProvenance,type EngineProvenance } from "../domain/engine-provenance.js";
 import { contractFingerprint,repoIdForRoot } from "../domain/identifiers.js";
 import { detectPackageManager,detectWorkspace,isApiRoutePath } from "../domain/repo-paths.js";
 import { scanStatusPayload } from "../domain/scan-status.js";
@@ -215,6 +216,7 @@ export function doctorRepo(parsed: ParsedArgs): CommandPayload {
           repo_root: repoRoot,
           database_path: databasePath,
           runtime,
+          engine: runtimeEngineProvenance(),
           v1_scope: v1Scope,
           state_summary: stateSummary,
           checks,
@@ -223,6 +225,10 @@ export function doctorRepo(parsed: ParsedArgs): CommandPayload {
         }
       : text
   };
+}
+
+function runtimeEngineProvenance(): EngineProvenance {
+  return engineProvenance();
 }
 
 export function inspectDoctorState(databasePath: string, repoId: string): DoctorStateSummary {

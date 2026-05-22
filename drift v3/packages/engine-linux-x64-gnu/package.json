@@ -2,7 +2,7 @@
   "name": "@drift/engine-linux-x64-gnu",
   "version": "0.1.0",
   "description": "Drift Rust engine binary for Linux x64 glibc.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "os": [
     "linux"
   ],

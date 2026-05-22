@@ -1,4 +1,5 @@
 import { openDriftStorage } from "@drift/storage";
+import { createAgentEnvelopeV2 } from "@drift/core";
 import { unknownCommandError,validateCommandShape } from "../args/command-shape.js";
 import { helpText,isHelpRequest,isVersionRequest } from "../args/help.js";
 import { parseArgs } from "../args/parse-args.js";
@@ -13,6 +14,7 @@ import { formatOutput,normalizeCommandResult } from "./output.js";
 import { runCommand } from "./router.js";
 
 export async function runCli(argv: string[]): Promise<CliResult> {
+  const wantsJson = argv.includes("--json");
   try {
     const parsed = parseArgs(argv);
     if (isVersionRequest(parsed)) {
@@ -93,10 +95,40 @@ export async function runCli(argv: string[]): Promise<CliResult> {
       storage.close();
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown CLI error.";
+    if (wantsJson) {
+      const staleRefusal = message.startsWith("Scan is stale");
+      return {
+        exitCode: 1,
+        stdout: `${JSON.stringify({
+          error: {
+            message,
+            type: "refusal"
+          },
+          agent_envelope: createAgentEnvelopeV2({
+            surface: "cli-error",
+            policy: {
+              allowed: staleRefusal,
+              surface: "cli-preflight",
+              reason: message
+            },
+            scan: staleRefusal
+              ? {
+                required_fresh: true,
+                stale: true,
+                latest_scan_id: null
+              }
+              : undefined,
+            diagnostics: [message]
+          })
+        }, null, 2)}\n`,
+        stderr: `${message}\n`
+      };
+    }
     return {
       exitCode: 1,
       stdout: "",
-      stderr: error instanceof Error ? `${error.message}\n` : "Unknown CLI error.\n"
+      stderr: `${message}\n`
     };
   }
 }

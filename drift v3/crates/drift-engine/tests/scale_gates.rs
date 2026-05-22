@@ -129,3 +129,58 @@ fn scan_skips_symlinks_before_leaving_the_repo_root() {
     assert_eq!(payload["stats"]["files_seen"], 0);
     assert_eq!(payload["stats"]["files_parsed"], 0);
 }
+
+#[test]
+fn scan_large_synthetic_repo_stays_within_ci_budget() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let modules = dir.path().join("src/modules");
+    fs::create_dir_all(&modules).expect("create modules dir");
+    for index in 0..1_000 {
+        fs::write(
+            modules.join(format!("module_{index}.ts")),
+            format!("export const module_{index} = {index};\n"),
+        )
+        .expect("write synthetic module");
+    }
+    let route = dir.path().join("app/api/users");
+    fs::create_dir_all(&route).expect("create route dir");
+    fs::write(
+        route.join("route.ts"),
+        "export async function GET() { return Response.json({ ok: true }); }\n",
+    )
+    .expect("write route");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_drift-engine"))
+        .args([
+            "scan-repo",
+            dir.path().to_str().expect("utf8 temp dir"),
+            "--format",
+            "json",
+            "--repo-id",
+            "repo_scale",
+            "--scan-id",
+            "scan_scale",
+        ])
+        .output()
+        .expect("run drift-engine");
+    assert!(
+        output.status.success(),
+        "engine failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload = serde_json::from_slice::<Value>(&output.stdout).expect("json output");
+    let stats = &payload["stats"];
+    let duration_ms = stats["duration_ms"].as_u64().expect("duration");
+
+    assert_eq!(stats["files_seen"], 1_001);
+    assert_eq!(stats["files_parsed"], 1_001);
+    assert_eq!(stats["truncated"], false);
+    assert!(stats["facts_emitted"].as_u64().expect("facts") <= 3_100);
+    assert!(stats["graph_nodes"].as_u64().expect("nodes") <= 4_200);
+    assert!(stats["graph_edges"].as_u64().expect("edges") <= 4_200);
+    assert!(
+        duration_ms < 15_000,
+        "scan duration budget exceeded: {duration_ms}ms"
+    );
+}

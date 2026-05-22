@@ -79,6 +79,19 @@ jobs:
       - name: Assert release versions
         run: node scripts/assert-release-versions.mjs "${{ steps.version.outputs.version }}"
 
+      - name: Validate engine release matrix
+        run: node scripts/validate-engine-release-matrix.mjs
+
+      - name: Generate release proof
+        run: node scripts/generate-release-proof.mjs --require-clean --require-built-cli --output release-proof.json
+
+      - name: Upload release proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-release-proof
+          path: release-proof.json
+          if-no-files-found: error
+
   build-engine:
     name: Build ${{ matrix.target }}
     needs: preflight

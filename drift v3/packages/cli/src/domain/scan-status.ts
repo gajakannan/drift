@@ -28,6 +28,15 @@ export interface ScanRepoInput {
   databasePath: string;
 }
 
+export interface IncrementalScanPlan {
+  previous_scan_id: string | null;
+  execution_mode: "full_scan";
+  reuse_applied: false;
+  reusable_file_count: number;
+  changed_file_count: number;
+  blocked_reasons: string[];
+}
+
 export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoInput): Promise<{
   repo: RepoRecord;
   scan: ScanManifest;
@@ -40,6 +49,7 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
     candidates_count: number;
     engine_source: "rust" | "typescript";
     incremental_changes: ReturnType<typeof scanFileChangeSummary>;
+    incremental_plan: IncrementalScanPlan;
   };
   database_path: string;
 }> {
@@ -155,6 +165,11 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
       createdAt: now
     });
     const incrementalChanges = scanFileChangeSummary(scanFileChanges);
+    const incrementalPlan = incrementalScanPlan({
+      previousScan,
+      currentScan: scan,
+      changes: scanFileChanges
+    });
 
     storage.transaction(() => {
       storage.upsertScanManifest(scan);
@@ -181,7 +196,8 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
           diagnostics_count: scanData.diagnostics.length,
           candidates_count: candidates.length,
           engine_source: scanData.engineSource,
-          incremental_changes: incrementalChanges
+          incremental_changes: incrementalChanges,
+          incremental_plan: incrementalPlan
         },
         createdAt: now
       }));
@@ -198,7 +214,8 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
         diagnostics_count: scanData.diagnostics.length,
         candidates_count: candidates.length,
         engine_source: scanData.engineSource,
-        incremental_changes: incrementalChanges
+        incremental_changes: incrementalChanges,
+        incremental_plan: incrementalPlan
       },
       database_path: input.databasePath
     };
@@ -318,6 +335,37 @@ export function scanFileChangeSummary(changes: ScanFileChange[]): {
     deleted: changes.filter((change) => change.change_kind === "deleted").length,
     unchanged: changes.filter((change) => change.change_kind === "unchanged").length,
     total: changes.length
+  };
+}
+
+export function incrementalScanPlan(input: {
+  previousScan?: ScanManifest;
+  currentScan: ScanManifest;
+  changes: ScanFileChange[];
+}): IncrementalScanPlan {
+  const summary = scanFileChangeSummary(input.changes);
+  const versionReasons = input.previousScan
+    ? scanInvalidationReasons(input.previousScan, {
+        currentBranch: input.currentScan.branch,
+        currentResolverInputFingerprint: input.currentScan.adapter_versions.resolver_inputs
+      })
+    : [];
+  const changedFileCount = summary.added + summary.modified + summary.deleted;
+  const blockedReasons = [
+    ...(!input.previousScan ? ["previous_scan_missing"] : []),
+    ...versionReasons,
+    ...(changedFileCount > 0 ? ["source_files_changed"] : []),
+    ...(summary.deleted > 0 ? ["deleted_files_present"] : []),
+    "engine_reuse_not_enabled"
+  ];
+
+  return {
+    previous_scan_id: input.previousScan?.id ?? null,
+    execution_mode: "full_scan",
+    reuse_applied: false,
+    reusable_file_count: input.previousScan ? summary.unchanged : 0,
+    changed_file_count: changedFileCount,
+    blocked_reasons: [...new Set(blockedReasons)].sort((left, right) => left.localeCompare(right))
   };
 }
 

@@ -1,10 +1,10 @@
-import type { AcceptedConvention,ConventionCandidate,ConventionStatus,EnforcementMode,EvidenceRef,FactRecord,RepoContract,Severity } from "@drift/core";
+import { DRIFT_CONTRACT_SCHEMA_VERSION,type AcceptedConvention,type ConventionCandidate,type ConventionStatus,type EnforcementMode,type EvidenceRef,type FactRecord,type RepoContract,type Severity } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { join } from "node:path";
 import { fileLooksLikeDataAccess,resolveImportTarget } from "../engine/import-resolution.js";
 import { fileContentHash } from "../io/file-hash.js";
-import { contractSummary,materializeRepoContract } from "./contract-materialization.js";
-import { auditEvent,mutationGovernance } from "./governance.js";
+import { contractSummary,defaultRequiredChecksForConventions,defaultRiskyAreasForConventions,defaultSafeCommandsForRepo,materializeRepoContract } from "./contract-materialization.js";
+import { auditEvent,mutationGovernance,preflightGovernance } from "./governance.js";
 import { contractIdForRepo,conventionIdForCandidate,hashStable } from "./identifiers.js";
 import { countBy } from "./pagination.js";
 import { requiredCandidate,requiredRepo } from "./repo-paths.js";
@@ -19,14 +19,18 @@ export function acceptConventionCandidate(
     severity?: Severity;
     mode?: EnforcementMode;
     confirmed: boolean;
+    dryRun?: boolean;
   }
 ): {
   accepted: AcceptedConvention;
   contract: RepoContract;
   changed: boolean;
-  governance: ReturnType<typeof mutationGovernance>;
+  governance: ReturnType<typeof mutationGovernance> | ReturnType<typeof preflightGovernance>;
   contract_summary: ReturnType<typeof contractSummary>;
   next_commands: string[];
+  dry_run?: boolean;
+  write_intent?: boolean;
+  would_accept?: boolean;
 } {
   const candidate = requiredCandidate(storage, input.candidateId);
   if (input.repoId) {
@@ -42,7 +46,10 @@ export function acceptConventionCandidate(
   if (mode === "block" && candidate.enforcement_capability !== "deterministic_check") {
     throw new Error("Only deterministic conventions can use --mode block. Use --mode warn, brief, or off for heuristic/briefing conventions.");
   }
-  if (!input.confirmed) {
+  if (input.dryRun && input.confirmed) {
+    throw new Error("Use either --dry-run or --confirm, not both.");
+  }
+  if (!input.confirmed && !input.dryRun) {
     throw new Error("Convention acceptance requires --confirm.");
   }
   const contractId = storage.getRepoContract(candidate.repo_id)?.id ?? contractIdForRepo(candidate.repo_id);
@@ -86,6 +93,23 @@ export function acceptConventionCandidate(
     updated_at: now
   };
 
+  if (input.dryRun) {
+    const previewContract = previewRepoContractWithConvention(storage, candidate.repo_id, contractId, convention, now);
+    return {
+      accepted: convention,
+      contract: previewContract,
+      changed: true,
+      governance: preflightGovernance(),
+      contract_summary: contractSummary(previewContract),
+      next_commands: [
+        `drift conventions accept ${candidate.id} --repo ${candidate.repo_id} --severity ${severity} --mode ${mode} --confirm --json`
+      ],
+      dry_run: true,
+      write_intent: false,
+      would_accept: true
+    };
+  }
+
   const contract = storage.transaction(() => {
     storage.upsertAcceptedConvention(candidate.repo_id, convention);
     storage.upsertConventionCandidate({ ...candidate, status: "accepted" });
@@ -111,6 +135,48 @@ export function acceptConventionCandidate(
     governance: mutationGovernance(),
     contract_summary: contractSummary(contract),
     next_commands: acceptedConventionNextCommands(candidate.repo_id)
+  };
+}
+
+function previewRepoContractWithConvention(
+  storage: SqliteDriftStorage,
+  repoId: string,
+  contractId: string,
+  convention: AcceptedConvention,
+  now: string
+): RepoContract {
+  const existing = storage.getRepoContract(repoId);
+  const repo = storage.getRepo(repoId);
+  const acceptedConventions = [
+    ...storage.listAcceptedConventions(repoId).filter((accepted) => accepted.id !== convention.id),
+    convention
+  ];
+  return {
+    id: contractId,
+    repo_id: repoId,
+    contract_schema_version: existing?.contract_schema_version ?? DRIFT_CONTRACT_SCHEMA_VERSION,
+    repo_fingerprint: repo?.fingerprint ?? existing?.repo_fingerprint ?? "unknown",
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+    conventions: acceptedConventions,
+    rejected_inferences: existing?.rejected_inferences ?? [],
+    waivers: existing?.waivers ?? [],
+    risky_areas: existing?.risky_areas.length
+      ? existing.risky_areas
+      : defaultRiskyAreasForConventions(acceptedConventions),
+    safe_commands: existing?.safe_commands.length
+      ? existing.safe_commands
+      : defaultSafeCommandsForRepo(repo?.root_path),
+    required_checks: existing?.required_checks.length
+      ? existing.required_checks
+      : defaultRequiredChecksForConventions(repoId, acceptedConventions),
+    context_egress: existing?.context_egress ?? {
+      default_mode: "local_only",
+      denied_globs: [".env*", "**/*.pem", "**/*.key", "**/*.crt"],
+      max_snippet_chars: 1200,
+      allow_full_file_content: false
+    },
+    agent_permissions: existing?.agent_permissions ?? []
   };
 }
 

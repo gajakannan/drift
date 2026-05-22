@@ -6,14 +6,13 @@ use std::{
 use drift_engine::{
     BaselineStatus, BaselineViolation, DiffFile, DiffScope, DirectDataAccessRule, EnforcementMode,
     Fact, FactKind, FindingStatus, ParsedDiff, RuleFinding, Severity,
-    classify_findings_against_baseline, classify_findings_against_diff,
-    materialize_direct_data_access_findings,
+    classify_findings_against_diff, materialize_direct_data_access_findings,
 };
 
 use crate::protocol::{
     CheckBaselineViolation, CheckEvidence, CheckFact, CheckFinding, CheckGraphData, CheckRequest,
     CheckResult, ENGINE_CHECK_RESULT_SCHEMA_VERSION, EngineCompleteness, GraphEdge, GraphNode,
-    adapter_versions, engine_stats,
+    adapter_versions, capability_stats, engine_stats,
 };
 
 pub fn check_repo(request: CheckRequest) -> CheckResult {
@@ -81,6 +80,7 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
                     import_source: finding.import_source,
                     line: finding.line,
                     evidence_id: format!("evidence_{}", &finding.fingerprint[..16]),
+                    legacy_fingerprints: Vec::new(),
                     related_node_ids: Vec::new(),
                 })
                 .collect::<Vec<_>>();
@@ -106,19 +106,10 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
             .iter()
             .map(|finding| (finding.fingerprint.clone(), finding.clone()))
             .collect::<BTreeMap<_, _>>();
-        let baseline_classified = classify_findings_against_baseline(
-            rule_findings.into_iter().map(RuleFinding::from).collect(),
-            &baseline,
-        );
-        let statuses_by_fingerprint = baseline_classified
-            .iter()
-            .map(|classified| (classified.finding.fingerprint.clone(), classified.status))
-            .collect::<std::collections::BTreeMap<_, _>>();
+        let statuses_by_fingerprint =
+            classify_pending_findings_against_baseline(&rule_findings, &baseline);
         let diff_classified = classify_findings_against_diff(
-            baseline_classified
-                .into_iter()
-                .map(|classified| classified.finding)
-                .collect(),
+            rule_findings.into_iter().map(RuleFinding::from).collect(),
             &parsed_diff,
             diff_scope,
         );
@@ -167,6 +158,7 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
     stats.graph_nodes = graph_node_count;
     stats.graph_edges = graph_edge_count;
     stats.truncated = !can_block;
+    stats.capabilities = capability_stats(&["direct_data_access_check"], &[]);
     let diagnostics = completeness_reasons
         .iter()
         .take(request.limits.max_diagnostics)
@@ -250,7 +242,9 @@ fn check_graph_completeness_reasons(request: &CheckRequest) -> Vec<String> {
         .filter(|diagnostic| {
             matches!(
                 diagnostic.code.as_str(),
-                "unresolved_import" | "unresolved_import_symbol" | "unsupported_namespace_import_symbol"
+                "unresolved_import"
+                    | "unresolved_import_symbol"
+                    | "unsupported_namespace_import_symbol"
             )
         })
         .filter_map(|diagnostic| {
@@ -287,6 +281,7 @@ struct PendingFinding {
     import_source: String,
     line: usize,
     evidence_id: String,
+    legacy_fingerprints: Vec<String>,
     related_node_ids: Vec<String>,
 }
 
@@ -393,7 +388,7 @@ fn graph_direct_data_access_findings(
             .unwrap_or_else(|| {
                 format!(
                     "evidence_graph_{}",
-                    stable_hash(&format!("{}:{}", file_path, import_source))[..16].to_string()
+                    &stable_hash(&format!("{}:{}", file_path, import_source))[..16]
                 )
             });
         let line = evidence_lines
@@ -404,6 +399,12 @@ fn graph_direct_data_access_findings(
             "{}:{}:graph_direct_data_access:{}",
             rule.convention_id, file_path, forbidden_path
         ));
+        let legacy_fingerprints = vec![legacy_direct_data_access_fingerprint(
+            &rule.convention_id,
+            file_path.as_str(),
+            import_name,
+            import_source,
+        )];
         let message = if reexport_chain.is_empty() {
             format!(
                 "API route {file_path} imports {import_source}, which resolves to forbidden data-access module {forbidden_path}."
@@ -439,6 +440,7 @@ fn graph_direct_data_access_findings(
             import_source: import_source.to_string(),
             line,
             evidence_id,
+            legacy_fingerprints,
             related_node_ids,
         });
     }
@@ -504,7 +506,7 @@ fn graph_service_delegation_findings(
         let evidence_id = edge.evidence_ids.first().cloned().unwrap_or_else(|| {
             format!(
                 "evidence_graph_{}",
-                stable_hash(&format!("{route_file}:{data_file}"))[..16].to_string()
+                &stable_hash(&format!("{route_file}:{data_file}"))[..16]
             )
         });
         let line = evidence_lines
@@ -529,6 +531,7 @@ fn graph_service_delegation_findings(
             import_source: (*data_file).to_string(),
             line,
             evidence_id,
+            legacy_fingerprints: Vec::new(),
             related_node_ids: vec![edge.from.clone(), edge.to.clone()],
         });
     }
@@ -615,9 +618,10 @@ fn forbidden_graph_import_target<'a>(
             let mut next_chain = chain.clone();
             next_chain.push(edge.from.clone());
             next_chain.push(edge.to.clone());
-            if forbidden_imports.iter().any(|forbidden| {
-                target_path == forbidden || target_path.contains(forbidden)
-            }) {
+            if forbidden_imports
+                .iter()
+                .any(|forbidden| target_path == forbidden || target_path.contains(forbidden))
+            {
                 return Some((edge.to.as_str(), target_path, next_chain));
             }
             queue.push((edge.to.as_str(), next_chain));
@@ -649,9 +653,65 @@ fn dedupe_pending_findings(findings: &mut Vec<PendingFinding>) {
     findings.retain(|finding| seen.insert(finding.fingerprint.clone()));
 }
 
+fn classify_pending_findings_against_baseline(
+    findings: &[PendingFinding],
+    baseline: &[BaselineViolation],
+) -> BTreeMap<String, FindingStatus> {
+    let active_baseline = baseline
+        .iter()
+        .filter(|violation| violation.status == BaselineStatus::Active)
+        .map(|violation| {
+            (
+                violation.convention_id.as_str(),
+                violation.fingerprint.as_str(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+
+    findings
+        .iter()
+        .map(|finding| {
+            let matched = active_baseline
+                .contains(&(finding.convention_id.as_str(), finding.fingerprint.as_str()))
+                || finding.legacy_fingerprints.iter().any(|fingerprint| {
+                    active_baseline
+                        .contains(&(finding.convention_id.as_str(), fingerprint.as_str()))
+                });
+            (
+                finding.fingerprint.clone(),
+                if matched {
+                    FindingStatus::PreExisting
+                } else {
+                    FindingStatus::New
+                },
+            )
+        })
+        .collect()
+}
+
 fn stable_hash(value: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+fn legacy_direct_data_access_fingerprint(
+    convention_id: &str,
+    file_path: &str,
+    import_name: &str,
+    import_source: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"direct-data-access-v1\0");
+    hasher.update(convention_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(file_path.replace('\\', "/").as_bytes());
+    hasher.update(b"\0");
+    hasher.update(import_name.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(import_source.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn check_fact_to_engine_fact(fact: CheckFact) -> Option<Fact> {
