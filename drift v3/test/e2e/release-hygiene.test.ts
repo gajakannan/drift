@@ -96,6 +96,7 @@ describe("release hygiene", () => {
     expect(workflow).toContain("${{ runner.temp }}/drift-release-proof/beta-proof.json");
     expect(workflow).toContain("${{ runner.temp }}/drift-release-proof/release-proof.json");
     expect(workflow.indexOf("name: Build JavaScript packages")).toBeLessThan(workflow.indexOf("name: Prepare exact publish manifests"));
+    expect(workflow).toContain("npm pack \"./${package_dir}\" --ignore-scripts --json --pack-destination .release/npm");
     expect(workflow).toContain("name: Final release proof");
     expect(workflow).toContain("drift-beta-preflight-proof");
     expect(workflow).toContain("drift-final-release-proof");
