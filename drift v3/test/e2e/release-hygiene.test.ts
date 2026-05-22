@@ -33,6 +33,13 @@ describe("release hygiene", () => {
     );
   });
 
+  it("keeps root ignores from hiding Drift V3 package source files", async () => {
+    const rootIgnore = await readFile("../.gitignore", "utf8");
+
+    expect(rootIgnore).toContain("/packages/");
+    expect(rootIgnore).not.toMatch(/^packages\/$/m);
+  });
+
   it("runs the production verification gate in CI with least repository permissions", async () => {
     const workflow = await readFile("../.github/workflows/ci.yml", "utf8");
 
