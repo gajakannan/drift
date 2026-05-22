@@ -40,6 +40,7 @@ function parsePnpmPackFilename(stdout: string): string {
 }
 
 async function installDriftPackages(): Promise<string> {
+  const enginePackage = currentEnginePackageFixture();
   const consumerDir = await mkdtemp(join(tmpdir(), "drift-installed-consumer-"));
   tempDirs.push(consumerDir);
   await writeFile(join(consumerDir, "package.json"), [
@@ -56,7 +57,7 @@ async function installDriftPackages(): Promise<string> {
     packPackage("packages/engine-contract"),
     packPackage("packages/storage"),
     packPackage("packages/query"),
-    packPackage(currentEnginePackageDir()),
+    packPackage(enginePackage.packageDir),
     packPackage("packages/cli"),
     packPackage("packages/mcp")
   ]);
@@ -77,11 +78,23 @@ async function runInstalledDrift(consumerDir: string, args: string[]) {
   });
 }
 
-function currentEnginePackageDir(): string {
-  if (process.platform === "darwin" && process.arch === "arm64") {
-    return "packages/engine-darwin-arm64";
+function currentEnginePackageFixture(platform = process.platform, arch = process.arch): { packageDir: string } {
+  if (platform === "darwin" && arch === "arm64") {
+    return { packageDir: "packages/engine-darwin-arm64" };
   }
-  throw new Error(`No current-platform engine package fixture for ${process.platform}-${process.arch}.`);
+  if (platform === "darwin" && arch === "x64") {
+    return { packageDir: "packages/engine-darwin-x64" };
+  }
+  if (platform === "linux" && arch === "x64") {
+    return { packageDir: "packages/engine-linux-x64-gnu" };
+  }
+  if (platform === "linux" && arch === "arm64") {
+    return { packageDir: "packages/engine-linux-arm64-gnu" };
+  }
+  if (platform === "win32" && arch === "x64") {
+    return { packageDir: "packages/engine-win32-x64" };
+  }
+  throw new Error(`No current-platform engine package fixture for ${platform}-${arch}.`);
 }
 
 async function callInstalledMcp(consumerDir: string, databasePath: string, request: unknown) {
