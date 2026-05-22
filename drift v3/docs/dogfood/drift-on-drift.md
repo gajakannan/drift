@@ -1,365 +1,179 @@
 # Dogfood Transcript: Drift On Drift
 
-Date: 2026-05-21
+Date: 2026-05-22
 Repo: `/Users/geoffreyfernald/Downloads/driftv3`
-Commit: record before running
-Drift version: record from `drift version --json`
-Machine: local developer machine
+Commit: `32d1373baff3a3bf0d41a66565da39d90b6e562b`
+Branch: `codex/drift-v1-core`
+Drift version: `0.1.0`
+State root: `output/dogfood/drift-state`
+Artifacts: `output/dogfood/artifacts`
 
 ## Purpose
 
-This transcript should prove whether Drift is useful on its own codebase.
+This run checks whether Drift is useful on its own repo without teaching itself from fixture code. The important result is not that every product surface succeeds. The important result is whether the behavior is honest, local-only, and actionable when the repo has no accepted conventions.
 
-Do not polish this into marketing copy. The point is to capture what worked, what was confusing, what context was missing, and what needs to improve before beta.
-
-## Rules
-
-- Run commands against the real Drift checkout.
-- Keep source code private/local.
-- Record summaries, not full source snippets.
-- Preserve command JSON artifacts where useful under a local ignored output directory.
-- Call out false positives and missing intelligence honestly.
-- If a command fails, record the failure and the next command Drift suggested.
-
-## 1. Doctor
-
-Command:
+## Commands Run
 
 ```bash
-drift doctor --repo-root . --json
+DRIFT_ENGINE_BIN=target/debug/drift-engine node packages/cli/dist/main.js doctor --repo-root . --state-root output/dogfood/drift-state --json
+DRIFT_ENGINE_BIN=target/debug/drift-engine node packages/cli/dist/main.js start --repo-root . --state-root output/dogfood/drift-state --accept-defaults --json
+DRIFT_ENGINE_BIN=target/debug/drift-engine node packages/cli/dist/main.js scan status --repo-root . --state-root output/dogfood/drift-state --json
+DRIFT_ENGINE_BIN=target/debug/drift-engine node packages/cli/dist/main.js --db <db> repo map --repo <repo> --limit 10 --json
+DRIFT_ENGINE_BIN=target/debug/drift-engine node packages/cli/dist/main.js --db <db> audit verify --repo <repo> --json
+DRIFT_ENGINE_BIN=target/debug/drift-engine node packages/cli/dist/main.js --db <db> backup create --repo <repo> --confirm --json
+DRIFT_ENGINE_BIN=target/debug/drift-engine node packages/cli/dist/main.js --db <db> prepare "Add engine-owned direct data-access checks" --repo <repo> --json
+DRIFT_ENGINE_BIN=target/debug/drift-engine node packages/cli/dist/main.js --db <db> ask "what should I know before changing the checker or engine?" --repo <repo> --json
 ```
 
-Record:
+## Doctor
 
-- status:
-- database path:
-- repo id:
-- migration compatibility:
-- contract compatibility:
-- scan freshness:
-- audit integrity:
-- backup artifact health:
-- next commands:
+Status: `warn`
 
-Observation:
+Reason: local state did not exist yet.
 
-- What was clear:
-- What was confusing:
-- What should change:
-
-## 2. Start / Onboarding
-
-Command:
-
-```bash
-drift start --repo-root . --accept-defaults --json
-```
-
-Record:
-
-- scan id:
-- repo id:
-- accepted default convention:
-- baseline count:
-- next commands:
-
-Observation:
-
-- Did `--accept-defaults` feel explicit enough?
-- Was the resulting contract understandable?
-- Were candidates overbroad or too narrow?
-
-## 3. Scan
-
-Command:
-
-```bash
-drift scan --repo-root . --json
-```
-
-Record:
-
-- files indexed:
-- facts emitted:
-- candidates emitted:
-- engine source:
-- diagnostics:
-- scan fingerprint:
-
-Observation:
-
-- Were important files skipped?
-- Were generated/vendor files skipped correctly?
-- Did the scan stats explain enough?
-
-## 4. Convention Review
-
-Command:
-
-```bash
-drift conventions list --repo <repo_id> --status candidate --json
-drift conventions show <candidate_id> --repo <repo_id> --json
-```
-
-Record:
-
-- candidate count:
-- deterministic candidates:
-- heuristic candidates:
-- best candidate:
-- rejected/noisy candidate:
-
-Observation:
-
-- Are candidates machine-checkable?
-- Is evidence understandable?
-- Are counterexamples shown?
-
-## 5. Contract
-
-Command:
-
-```bash
-drift contract show --repo <repo_id> --json
-drift contract validate --repo <repo_id> --json
-```
-
-Record:
-
-- contract id:
-- contract fingerprint:
-- accepted conventions:
-- waivers:
-- risky areas:
-- required checks:
-- safe commands:
-
-Observation:
-
-- Does the contract explain the repo's real patterns?
-- Is anything missing for an agent about to edit Drift?
-
-## 6. Prepare
-
-Task:
+Database path:
 
 ```text
-Add engine-owned direct data-access checks.
+output/dogfood/drift-state/repo_90c827dbe9584f56/drift.sqlite
 ```
 
-Command:
+The next command was clear and preserved the selected state root:
 
 ```bash
-drift prepare "Add engine-owned direct data-access checks" --repo <repo_id> --json
+drift start --repo-root /Users/geoffreyfernald/Downloads/driftv3 --state-root /Users/geoffreyfernald/Downloads/driftv3/output/dogfood/drift-state --accept-defaults
 ```
 
-Record:
+## Start / Onboarding
 
-- matched conventions:
-- relevant files:
-- risky areas:
-- open findings:
-- required checks:
-- policy result:
-- scan freshness:
+Repo: `repo_90c827dbe9584f56`
+Scan: `scan_ac291618e800b610`
+Files indexed: `122`
+Facts emitted: `14518`
+Diagnostics emitted: `651`
+Candidates emitted: `0`
+Engine source: `rust`
 
-Observation:
+Onboarding result:
 
-- Did this give useful guidance?
-- Did it mention the right files?
-- What graph context was missing?
-- Would an agent avoid bad code after reading it?
-
-## 7. Ask
-
-Command:
-
-```bash
-drift ask "what should I know before changing the checker or engine?" --repo <repo_id> --json
+```json
+{
+  "status": "needs_more_signal",
+  "accepted_default": false,
+  "baselined_count": 0,
+  "candidate_count": 0
+}
 ```
 
-Record:
+This is the right behavior. Drift has API-route fixtures under `test/fixtures`, but those should not teach conventions for the Drift repo itself. The Rust-owned candidate inference path now excludes fixture routes from accepted onboarding signal.
 
-- answer summary:
-- conventions referenced:
-- findings referenced:
-- files referenced:
+## Scan Status
 
-Observation:
+Latest scan: `scan_ac291618e800b610`
+Indexed files: `122`
+Facts: `14518`
+Stale: `false`
+Audit valid: `true`
 
-- Was the answer concrete?
-- Did it feel like repo intelligence or generic advice?
+Scan status works without a contract and reports governance correctly as read-only.
 
-## 8. Repo Map
+## Repo Map
 
-Command:
+Repo map now works before a contract exists, using a default local-only egress policy.
 
-```bash
-drift repo map --repo <repo_id> --limit 50 --offset 0 --json
+Summary:
+
+```json
+{
+  "indexed_file_count": 122,
+  "filtered_file_count": 122,
+  "listed_file_count": 10,
+  "role_counts": {},
+  "import_count": 40,
+  "export_count": 47,
+  "call_count": 143
+}
 ```
 
-Record:
-
-- files returned:
-- roles detected:
-- imports/exports/calls quality:
-- impact summary:
-
-Observation:
-
-- Could this map help someone navigate Drift?
-- What relationships were missing?
-- Did lack of true graph edges show up?
-
-## 9. Check
-
-Command:
-
-```bash
-drift check --repo <repo_id> --diff main...HEAD --scope changed-hunks --json
-```
-
-Record:
-
-- findings count:
-- blocking count:
-- waived count:
-- expired count:
-- diagnostics:
-- exit code:
-
-Observation:
-
-- Were findings actionable?
-- Were there false positives?
-- Did baseline behavior work?
-- Was diff classification intuitive?
-
-## 10. Findings
-
-Command:
-
-```bash
-drift findings list --repo <repo_id> --json
-drift findings show <finding_id> --repo <repo_id> --json
-```
-
-Record:
-
-- new:
-- pre-existing:
-- needs review:
-- suppressed:
-- fixed:
-
-Observation:
-
-- Is evidence enough to resolve the finding?
-- Are next commands clear?
-
-## 11. MCP
-
-Tool calls:
+First mapped files included CLI modules such as:
 
 ```text
-get_runtime_info
-get_capabilities
-get_scan_status
-get_repo_contract
-get_task_preflight
-get_repo_map
-get_findings
-get_allowed_context
-get_audit_status
+packages/cli/scripts/check-boundaries.mjs
+packages/cli/src/app/command-types.ts
+packages/cli/src/app/output.ts
+packages/cli/src/app/router.ts
+packages/cli/src/app/run-cli.ts
 ```
 
-Record:
+No source snippets were emitted. Default denied globs were active:
 
-- CLI/MCP parity:
-- policy metadata:
-- missing fields:
-- oversized responses:
-
-Observation:
-
-- Would an agent have enough context?
-- Did MCP stay safely read-only?
-
-## 12. Audit
-
-Command:
-
-```bash
-drift audit verify --repo <repo_id> --json
-drift audit list --repo <repo_id> --limit 20 --offset 0 --json
+```text
+.env*
+**/*.pem
+**/*.key
+**/*.crt
 ```
 
-Record:
+Current limitation: role counts are empty for this repo because the V1 role detector is focused on TypeScript API/server layering, and Drift itself is mostly CLI/package code.
 
-- valid:
-- event count:
-- head hash:
-- recent events:
+## Audit
 
-Observation:
+Audit verification works before a contract exists.
 
-- Is governance history clear?
-- Are mutation events complete?
-
-## 13. Backup
-
-Command:
-
-```bash
-drift backup create --repo <repo_id> --confirm --json
-drift backup list --repo <repo_id> --json
+```json
+{
+  "valid": true,
+  "event_count": 2,
+  "verified_count": 2,
+  "broken_at_event_id": null,
+  "reason_count": 0
+}
 ```
 
-Record:
+This matters because audit is Drift state integrity, not convention context export. It should not be blocked by missing conventions.
 
-- backup path:
-- checksum:
-- size:
-- verify command:
-- restore dry-run command:
+## Backup
 
-Observation:
+Backup creation works before a contract exists, with explicit `--confirm`.
 
-- Is recovery guidance clear?
-- Does backup avoid source code?
+Backup: `backup_5186dea643a4fad6`
+Schema version: `7`
+Size: `60768256` bytes
+Checksum prefix: `fa877a35926b`
 
-## 14. Product Notes
+This is the correct product behavior. Backup is governance-state protection and should be available immediately after first scan.
 
-What felt strong:
+## Prepare / Ask
 
--
+Both commands refused to run:
+
+```text
+No repo contract exists for repo_90c827dbe9584f56.
+```
+
+This is acceptable for V1 because `prepare` and `ask` are contract-backed briefing surfaces. They should not invent conventions when no human-approved contract exists.
+
+Future improvement: add a separate no-contract mode that says "scan exists, no approved conventions yet" and returns repo-map style metadata without pretending it is a convention briefing.
+
+## Product Notes
+
+What worked:
+
+- First scan is local-only and deterministic.
+- Fixture routes no longer pollute onboarding.
+- Engine-owned inference is the authority for candidates on Rust-backed scans.
+- Read-only scan status, repo map, and audit now work before a contract exists.
+- Backup works immediately after first scan with explicit confirmation.
+- Output contains metadata and graph facts, not source snippets.
 
 What was confusing:
 
--
-
-What intelligence was missing:
-
--
-
-What was too noisy:
-
--
+- `start --accept-defaults` still suggests `drift check` even when no contract was accepted. That command will not be useful until a convention exists.
+- `prepare` and `ask` fail correctly, but they should return a more helpful no-contract explanation and next command list.
+- Repo map has useful file-level facts, but not enough higher-level package/module narrative yet.
 
 What should change before beta:
 
--
-
-## 15. Beta Readiness Checklist
-
-- [ ] First run is understandable without reading docs.
-- [ ] `doctor` gives useful next commands.
-- [ ] `prepare` gives task-relevant guidance.
-- [ ] `repo map` helps navigate the repo.
-- [ ] `check` produces actionable findings.
-- [ ] Findings have enough evidence to resolve.
-- [ ] Baselines prevent legacy noise.
-- [ ] Audit chain verifies.
-- [ ] Backup/restore guidance is clear.
-- [ ] MCP responses are safe and useful.
-- [ ] Missing graph intelligence is documented.
+- Add a no-contract prepare/ask response that points users to scan status, repo map, and convention review.
+- Add richer non-API repo roles for CLI/package code.
+- Add dogfood fixture coverage where Drift analyzes a small internal API-style package so the full candidate, accept, baseline, prepare, check loop runs against non-fixture code.
+- Keep fixture exclusion as a hard rule for candidate inference.

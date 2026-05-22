@@ -6,13 +6,13 @@ import { resolveRepoId } from "../args/repo-flags.js";
 import { auditListNextCommands,auditListSummary,auditVerifyNextCommands,auditVerifySummary } from "../domain/audit-review.js";
 import { preflightGovernance } from "../domain/governance.js";
 import { orderAuditEventsForReview,paginateAuditEvents,paginationSummary } from "../domain/pagination.js";
-import { requiredRepo,requiredRepoContract } from "../domain/repo-paths.js";
+import { repoContractOrDefault,requiredRepo } from "../domain/repo-paths.js";
 import { formatAuditListText,formatAuditVerifyText } from "../formatters/audit.js";
 
 export function listAudit(storage: SqliteDriftStorage, parsed: ParsedArgs): CommandPayload {
   const repoId = resolveRepoId(parsed);
   requiredRepo(storage, repoId);
-  const contract = requiredRepoContract(storage, repoId);
+  const contract = repoContractOrDefault(storage, repoId);
   const policy = authorizeContextExport(contract, "log");
   if (!policy.allowed) {
     throw new Error(`Policy denied audit output: ${policy.reason}`);
@@ -72,7 +72,7 @@ export function listAudit(storage: SqliteDriftStorage, parsed: ParsedArgs): Comm
 export function verifyAudit(storage: SqliteDriftStorage, parsed: ParsedArgs): CommandPayload {
   const repoId = resolveRepoId(parsed);
   requiredRepo(storage, repoId);
-  const contract = requiredRepoContract(storage, repoId);
+  const contract = repoContractOrDefault(storage, repoId);
   const policy = authorizeContextExport(contract, "log");
   if (!policy.allowed) {
     throw new Error(`Policy denied audit output: ${policy.reason}`);

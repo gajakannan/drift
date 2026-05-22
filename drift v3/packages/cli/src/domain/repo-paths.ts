@@ -1,4 +1,4 @@
-import type { ConventionCandidate,RepoContract,RepoRecord } from "@drift/core";
+import { DRIFT_CONTRACT_SCHEMA_VERSION,type ConventionCandidate,type RepoContract,type RepoRecord } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,mkdirSync,readFileSync,statSync } from "node:fs";
 import { dirname,join } from "node:path";
@@ -11,6 +11,31 @@ export function requiredRepoContract(storage: SqliteDriftStorage, repoId: string
     throw new Error(`No repo contract exists for ${repoId}.`);
   }
   return contract;
+}
+
+export function repoContractOrDefault(storage: SqliteDriftStorage, repoId: string): RepoContract {
+  const repo = requiredRepo(storage, repoId);
+  return storage.getRepoContract(repoId) ?? {
+    id: `contract_default_${repoId}`,
+    repo_id: repoId,
+    contract_schema_version: DRIFT_CONTRACT_SCHEMA_VERSION,
+    repo_fingerprint: repo.fingerprint,
+    created_at: repo.created_at,
+    updated_at: repo.updated_at,
+    conventions: [],
+    rejected_inferences: [],
+    waivers: [],
+    risky_areas: [],
+    safe_commands: [],
+    required_checks: [],
+    context_egress: {
+      default_mode: "local_only",
+      denied_globs: [".env*", "**/*.pem", "**/*.key", "**/*.crt"],
+      max_snippet_chars: 1200,
+      allow_full_file_content: false
+    },
+    agent_permissions: []
+  };
 }
 
 export function requiredRepo(storage: SqliteDriftStorage, repoId: string): RepoRecord {

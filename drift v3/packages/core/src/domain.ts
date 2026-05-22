@@ -12,7 +12,13 @@ export type FileRole =
   | "data_access_module"
   | "component"
   | "test"
-  | "config";
+  | "config"
+  | "cli_command_module"
+  | "storage_module"
+  | "engine_bridge_module"
+  | "mcp_module"
+  | "docs"
+  | "package_manifest";
 
 export interface ConventionScope {
   path_globs: string[];
@@ -109,6 +115,47 @@ export interface FileSnapshot {
   indexed: boolean;
 }
 
+export type ScanFileChangeKind = "added" | "modified" | "deleted" | "unchanged";
+
+export interface ScanFileChange {
+  repo_id: string;
+  scan_id: string;
+  file_path: string;
+  change_kind: ScanFileChangeKind;
+  previous_hash?: string;
+  current_hash?: string;
+  created_at: string;
+}
+
+export interface ResolverDependency {
+  repo_id: string;
+  scan_id: string;
+  id: string;
+  source_path: string;
+  dependency_path: string;
+  dependency_kind: string;
+}
+
+export interface ModuleDependent {
+  repo_id: string;
+  scan_id: string;
+  module_id: string;
+  dependent_module_id: string;
+  edge_id: string;
+}
+
+export interface SymbolOccurrence {
+  repo_id: string;
+  scan_id: string;
+  id: string;
+  symbol_id: string;
+  occurrence_kind: "declaration" | "reference";
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  evidence_id?: string;
+}
+
 export interface BackupManifest {
   id: string;
   repo_id: string;
@@ -124,8 +171,10 @@ export interface BackupManifest {
 export type FactKind =
   | "file_detected"
   | "import_used"
+  | "re_export_used"
   | "exported_symbol"
   | "symbol_called"
+  | "data_operation_detected"
   | "route_declared"
   | "file_role_detected"
   | "test_declared";
@@ -140,6 +189,44 @@ export interface FactRecord {
   value?: string;
   start_line: number;
   end_line: number;
+}
+
+export interface GraphNodeRecord {
+  id: string;
+  kind: "file" | "module" | "symbol" | "import" | "route" | "role" | "data_store" | "data_operation" | "endpoint" | "re_export";
+  label: string;
+}
+
+export interface GraphEdgeRecord {
+  id: string;
+  kind:
+    | "FILE_CONTAINS_SYMBOL"
+    | "MODULE_IMPORTS_MODULE"
+    | "FILE_HAS_ROLE"
+    | "ROUTE_DECLARED_IN_FILE"
+    | "ROUTE_HAS_ENDPOINT"
+    | "MODULE_REEXPORTS_MODULE"
+    | "REEXPORT_RESOLVES_TO_SYMBOL"
+    | "IMPORT_RESOLVES_TO_MODULE"
+    | "IMPORT_RESOLVES_TO_SYMBOL"
+    | "DATA_OPERATION_READS_DATA_STORE"
+    | "DATA_OPERATION_WRITES_DATA_STORE"
+    | "DATA_OPERATION_DELETES_DATA_STORE"
+    | "DATA_OPERATION_TOUCHES_DATA_STORE";
+  from: string;
+  to: string;
+}
+
+export interface FactGraphArtifact {
+  id: string;
+  repo_id: string;
+  scan_id: string;
+  schema_version: "factgraph.v1" | "factgraph.v2";
+  graph_hash: string;
+  graph: Record<string, unknown>;
+  node_count: number;
+  edge_count: number;
+  created_at: string;
 }
 
 export interface AuditEvent {

@@ -10,7 +10,7 @@ import { assertExpectedRepoFingerprint } from "../domain/contract-materializatio
 import { auditEvent,mutationGovernance,preflightGovernance } from "../domain/governance.js";
 import { hashStable } from "../domain/identifiers.js";
 import { paginationSummary } from "../domain/pagination.js";
-import { requiredRepo,requiredRepoContract } from "../domain/repo-paths.js";
+import { repoContractOrDefault,requiredRepo } from "../domain/repo-paths.js";
 import { restoreDryRunCommandForBackup } from "../domain/restore-review.js";
 import { sqliteSchemaCompatibility } from "../domain/versions.js";
 import { formatBackupCreatedText,formatBackupListText,formatBackupVerifyText } from "../formatters/backup.js";
@@ -19,7 +19,7 @@ import { fileContentHash } from "../io/file-hash.js";
 export function createBackup(storage: SqliteDriftStorage, parsed: ParsedArgs): CommandPayload {
   const repoId = resolveRepoId(parsed);
   const repo = requiredRepo(storage, repoId);
-  const contract = requiredRepoContract(storage, repoId);
+  const contract = repoContractOrDefault(storage, repoId);
   const policy = authorizeContextExport(contract, "artifact");
   if (!policy.allowed) {
     throw new Error(`Policy denied backup output: ${policy.reason}`);
@@ -83,7 +83,7 @@ export function createBackup(storage: SqliteDriftStorage, parsed: ParsedArgs): C
 export function listBackups(storage: SqliteDriftStorage, parsed: ParsedArgs): CommandPayload {
   const repoId = resolveRepoId(parsed);
   requiredRepo(storage, repoId);
-  const contract = requiredRepoContract(storage, repoId);
+  const contract = repoContractOrDefault(storage, repoId);
   const policy = authorizeContextExport(contract, "artifact");
   if (!policy.allowed) {
     throw new Error(`Policy denied backup output: ${policy.reason}`);

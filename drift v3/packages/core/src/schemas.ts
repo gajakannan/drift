@@ -22,7 +22,13 @@ export const FileRoleSchema = z.enum([
   "data_access_module",
   "component",
   "test",
-  "config"
+  "config",
+  "cli_command_module",
+  "storage_module",
+  "engine_bridge_module",
+  "mcp_module",
+  "docs",
+  "package_manifest"
 ]);
 
 export const ConventionScopeSchema = z.object({
@@ -121,6 +127,47 @@ export const FileSnapshotSchema = z.object({
   indexed: z.boolean()
 });
 
+export const ScanFileChangeKindSchema = z.enum(["added", "modified", "deleted", "unchanged"]);
+
+export const ScanFileChangeSchema = z.object({
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  file_path: z.string().min(1),
+  change_kind: ScanFileChangeKindSchema,
+  previous_hash: z.string().min(1).optional(),
+  current_hash: z.string().min(1).optional(),
+  created_at: z.string().min(1)
+});
+
+export const ResolverDependencySchema = z.object({
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  id: z.string().min(1),
+  source_path: z.string().min(1),
+  dependency_path: z.string().min(1),
+  dependency_kind: z.string().min(1)
+});
+
+export const ModuleDependentSchema = z.object({
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  module_id: z.string().min(1),
+  dependent_module_id: z.string().min(1),
+  edge_id: z.string().min(1)
+});
+
+export const SymbolOccurrenceSchema = z.object({
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  id: z.string().min(1),
+  symbol_id: z.string().min(1),
+  occurrence_kind: z.enum(["declaration", "reference"]),
+  file_path: z.string().min(1),
+  start_line: z.number().int().positive(),
+  end_line: z.number().int().positive(),
+  evidence_id: z.string().min(1).optional()
+});
+
 export const BackupManifestSchema = z.object({
   id: z.string().min(1),
   repo_id: z.string().min(1),
@@ -136,8 +183,10 @@ export const BackupManifestSchema = z.object({
 export const FactKindSchema = z.enum([
   "file_detected",
   "import_used",
+  "re_export_used",
   "exported_symbol",
   "symbol_called",
+  "data_operation_detected",
   "route_declared",
   "file_role_detected",
   "test_declared"
@@ -153,6 +202,45 @@ export const FactRecordSchema = z.object({
   value: z.string().optional(),
   start_line: z.number().int().positive(),
   end_line: z.number().int().positive()
+});
+
+export const GraphNodeRecordSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(["file", "module", "symbol", "import", "route", "role", "data_store", "data_operation", "endpoint", "re_export"]),
+  label: z.string().min(1)
+});
+
+export const GraphEdgeRecordSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum([
+    "FILE_CONTAINS_SYMBOL",
+    "MODULE_IMPORTS_MODULE",
+    "FILE_HAS_ROLE",
+    "ROUTE_DECLARED_IN_FILE",
+    "ROUTE_HAS_ENDPOINT",
+    "MODULE_REEXPORTS_MODULE",
+    "REEXPORT_RESOLVES_TO_SYMBOL",
+    "IMPORT_RESOLVES_TO_MODULE",
+    "IMPORT_RESOLVES_TO_SYMBOL",
+    "DATA_OPERATION_READS_DATA_STORE",
+    "DATA_OPERATION_WRITES_DATA_STORE",
+    "DATA_OPERATION_DELETES_DATA_STORE",
+    "DATA_OPERATION_TOUCHES_DATA_STORE"
+  ]),
+  from: z.string().min(1),
+  to: z.string().min(1)
+});
+
+export const FactGraphArtifactSchema = z.object({
+  id: z.string().min(1),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  schema_version: z.enum(["factgraph.v1", "factgraph.v2"]),
+  graph_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  graph: z.record(z.unknown()),
+  node_count: z.number().int().nonnegative(),
+  edge_count: z.number().int().nonnegative(),
+  created_at: z.string().datetime()
 });
 
 export const AuditEventSchema = z.object({
