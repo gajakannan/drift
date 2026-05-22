@@ -1,0 +1,14 @@
+node_modules/
+dist/
+target/
+coverage/
+.drift/
+*.sqlite
+*.drift-backup.sqlite
+*.tgz
+.DS_Store
+.env*
+!.env.example
+avatar-*.js
+avatar-overlay-page-*.js
+main-*.js
