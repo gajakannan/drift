@@ -372,10 +372,32 @@ export const FindingDiffStatusSchema = z.enum([
   "outside_diff"
 ]);
 
+export const CheckRunStatusSchema = z.enum(["pass", "fail", "blocked"]);
+
+export const CheckRunSchema = z.object({
+  id: z.string().min(1),
+  repo_id: z.string().min(1),
+  repo_contract_id: z.string().min(1),
+  contract_fingerprint: z.string().min(1),
+  scan_id: z.string().min(1),
+  status: CheckRunStatusSchema,
+  scope: z.enum(["changed-hunks", "changed-files", "full"]),
+  engine_source: z.enum(["rust", "typescript"]),
+  fallback_used: z.boolean(),
+  stale_scan: z.boolean(),
+  capability_complete: z.boolean(),
+  findings_count: z.number().int().nonnegative(),
+  blocking_count: z.number().int().nonnegative(),
+  started_at: z.string().datetime(),
+  completed_at: z.string().datetime()
+});
+
 export const FindingSchema = z.object({
   id: z.string().min(1),
   repo_id: z.string().min(1),
   convention_id: z.string().min(1),
+  check_id: z.string().min(1).optional(),
+  repo_contract_id: z.string().min(1).optional(),
   fingerprint: z.string().min(1),
   title: z.string().min(1),
   message: z.string().min(1),
@@ -384,6 +406,11 @@ export const FindingSchema = z.object({
   status: FindingStatusSchema,
   diff_status: FindingDiffStatusSchema,
   evidence_refs: z.array(EvidenceRefSchema),
+  expected_layer: z.string().min(1).optional(),
+  actual_layer: z.string().min(1).optional(),
+  graph_path: z.array(z.string().min(1)).optional(),
+  suggested_fix: z.string().min(1).optional(),
+  related_node_ids: z.array(z.string().min(1)).optional(),
   created_at: z.string().datetime()
 });
 

@@ -5,6 +5,7 @@ import type {
   AcceptedConvention,
   BackupManifest,
   BaselineViolation,
+  CheckRun,
   ConventionCandidate,
   ConventionStatus,
   FactKind,
@@ -24,6 +25,7 @@ import {
   AcceptedConventionSchema,
   BackupManifestSchema,
   BaselineViolationSchema,
+  CheckRunSchema,
   ConventionCandidateSchema,
   FactRecordSchema,
   FileSnapshotSchema,
@@ -672,17 +674,64 @@ export class SqliteDriftStorage {
       .map(symbolOccurrenceFromRow);
   }
 
+  upsertCheckRun(checkRun: CheckRun): void {
+    const parsed = CheckRunSchema.parse(checkRun);
+    this.db
+      .prepare(`
+        INSERT INTO check_runs (
+          id, repo_id, repo_contract_id, contract_fingerprint, scan_id, status, scope,
+          engine_source, fallback_used, stale_scan, capability_complete, findings_count,
+          blocking_count, started_at, completed_at
+        )
+        VALUES (
+          @id, @repo_id, @repo_contract_id, @contract_fingerprint, @scan_id, @status, @scope,
+          @engine_source, @fallback_used, @stale_scan, @capability_complete, @findings_count,
+          @blocking_count, @started_at, @completed_at
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          repo_contract_id = excluded.repo_contract_id,
+          contract_fingerprint = excluded.contract_fingerprint,
+          scan_id = excluded.scan_id,
+          status = excluded.status,
+          scope = excluded.scope,
+          engine_source = excluded.engine_source,
+          fallback_used = excluded.fallback_used,
+          stale_scan = excluded.stale_scan,
+          capability_complete = excluded.capability_complete,
+          findings_count = excluded.findings_count,
+          blocking_count = excluded.blocking_count,
+          completed_at = excluded.completed_at
+      `)
+      .run({
+        ...parsed,
+        fallback_used: parsed.fallback_used ? 1 : 0,
+        stale_scan: parsed.stale_scan ? 1 : 0,
+        capability_complete: parsed.capability_complete ? 1 : 0
+      });
+  }
+
+  listCheckRuns(repoId: string): CheckRun[] {
+    return this.db
+      .prepare("SELECT * FROM check_runs WHERE repo_id = ? ORDER BY completed_at, id")
+      .all(repoId)
+      .map(checkRunFromRow);
+  }
+
   upsertFinding(finding: Finding): void {
     const parsed = FindingSchema.parse(finding);
     this.db
       .prepare(`
         INSERT INTO findings (
           id, repo_id, convention_id, fingerprint, title, message, severity,
-          enforcement_result, status, diff_status, evidence_refs_json, created_at
+          enforcement_result, status, diff_status, evidence_refs_json, check_id,
+          repo_contract_id, expected_layer, actual_layer, graph_path_json,
+          suggested_fix, related_node_ids_json, created_at
         )
         VALUES (
           @id, @repo_id, @convention_id, @fingerprint, @title, @message, @severity,
-          @enforcement_result, @status, @diff_status, @evidence_refs_json, @created_at
+          @enforcement_result, @status, @diff_status, @evidence_refs_json, @check_id,
+          @repo_contract_id, @expected_layer, @actual_layer, @graph_path_json,
+          @suggested_fix, @related_node_ids_json, @created_at
         )
         ON CONFLICT(repo_id, fingerprint) DO UPDATE SET
           title = excluded.title,
@@ -691,11 +740,25 @@ export class SqliteDriftStorage {
           enforcement_result = excluded.enforcement_result,
           status = excluded.status,
           diff_status = excluded.diff_status,
-          evidence_refs_json = excluded.evidence_refs_json
+          evidence_refs_json = excluded.evidence_refs_json,
+          check_id = excluded.check_id,
+          repo_contract_id = excluded.repo_contract_id,
+          expected_layer = excluded.expected_layer,
+          actual_layer = excluded.actual_layer,
+          graph_path_json = excluded.graph_path_json,
+          suggested_fix = excluded.suggested_fix,
+          related_node_ids_json = excluded.related_node_ids_json
       `)
       .run({
         ...parsed,
-        evidence_refs_json: stringifyJson(parsed.evidence_refs)
+        check_id: parsed.check_id ?? null,
+        repo_contract_id: parsed.repo_contract_id ?? null,
+        evidence_refs_json: stringifyJson(parsed.evidence_refs),
+        expected_layer: parsed.expected_layer ?? null,
+        actual_layer: parsed.actual_layer ?? null,
+        graph_path_json: stringifyJson(parsed.graph_path ?? []),
+        suggested_fix: parsed.suggested_fix ?? null,
+        related_node_ids_json: stringifyJson(parsed.related_node_ids ?? [])
       });
   }
 
@@ -1093,7 +1156,24 @@ function findingFromRow(row: unknown): Finding {
   const record = row as Record<string, unknown>;
   return FindingSchema.parse({
     ...record,
-    evidence_refs: parseJsonArray(record.evidence_refs_json)
+    check_id: record.check_id ?? undefined,
+    repo_contract_id: record.repo_contract_id ?? undefined,
+    evidence_refs: parseJsonArray(record.evidence_refs_json),
+    expected_layer: record.expected_layer ?? undefined,
+    actual_layer: record.actual_layer ?? undefined,
+    graph_path: parseJsonArray(record.graph_path_json ?? "[]"),
+    suggested_fix: record.suggested_fix ?? undefined,
+    related_node_ids: parseJsonArray(record.related_node_ids_json ?? "[]")
+  });
+}
+
+function checkRunFromRow(row: unknown): CheckRun {
+  const record = row as Record<string, unknown>;
+  return CheckRunSchema.parse({
+    ...record,
+    fallback_used: record.fallback_used === 1,
+    stale_scan: record.stale_scan === 1,
+    capability_complete: record.capability_complete === 1
   });
 }
 

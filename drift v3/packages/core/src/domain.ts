@@ -354,10 +354,32 @@ export type FindingDiffStatus =
   | "touched_existing"
   | "outside_diff";
 
+export type CheckRunStatus = "pass" | "fail" | "blocked";
+
+export interface CheckRun {
+  id: string;
+  repo_id: string;
+  repo_contract_id: string;
+  contract_fingerprint: string;
+  scan_id: string;
+  status: CheckRunStatus;
+  scope: "changed-hunks" | "changed-files" | "full";
+  engine_source: "rust" | "typescript";
+  fallback_used: boolean;
+  stale_scan: boolean;
+  capability_complete: boolean;
+  findings_count: number;
+  blocking_count: number;
+  started_at: string;
+  completed_at: string;
+}
+
 export interface Finding {
   id: string;
   repo_id: string;
   convention_id: string;
+  check_id?: string;
+  repo_contract_id?: string;
   fingerprint: string;
   title: string;
   message: string;
@@ -366,6 +388,11 @@ export interface Finding {
   status: FindingStatus;
   diff_status: FindingDiffStatus;
   evidence_refs: EvidenceRef[];
+  expected_layer?: string;
+  actual_layer?: string;
+  graph_path?: string[];
+  suggested_fix?: string;
+  related_node_ids?: string[];
   created_at: string;
 }
 

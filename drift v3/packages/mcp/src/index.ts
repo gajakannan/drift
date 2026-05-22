@@ -3,7 +3,6 @@ import type {
   AuditChainVerification,
   ConventionKind,
   EnforcementCapability,
-  FactRecord,
   FileSnapshot,
   FileRole,
   Finding,
@@ -30,7 +29,14 @@ import {
   DRIFT_SCANNER_VERSION,
   DRIFT_TYPESCRIPT_ADAPTER_VERSION
 } from "@drift/core";
-import { createGraphQueryService, fallbackFactRepoMapFiles, type GraphRepoMapFile } from "@drift/query";
+import {
+  buildRepoMapReadModel,
+  createGraphQueryService,
+  fallbackFactRepoMapFiles,
+  repoMapConventionIds,
+  repoMapOpenFindingIds,
+  repoMapRiskyAreaIds
+} from "@drift/query";
 import { MIGRATIONS, openDriftStorage } from "@drift/storage";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -47,8 +53,7 @@ import type {
   PreparedRequiredCheck,
   PreparedRiskArea,
   PreparedWaiver,
-  RelevantFile,
-  RepoMapFile
+  RelevantFile
 } from "./types.js";
 
 export { DRIFT_READ_ONLY_MCP_TOOLS } from "./tools.js";
@@ -1099,8 +1104,13 @@ function policyFileContext(
   const facts = latestScan ? storage.listFacts(latestScan.id) : [];
   const findings = storage.listFindings(repoId);
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
-  const file = repoMapFiles(snapshots, facts, contract, findings, graphMap?.files ?? [])
-    .find((entry) => entry.path === filePath);
+  const readModel = buildRepoMapReadModel({
+    graphFiles: graphMap?.files ?? [],
+    factFiles: fallbackFactRepoMapFiles(snapshots, facts),
+    contract,
+    findings
+  });
+  const file = readModel.all_files.find((entry) => entry.path === filePath);
   if (!file) {
     return {
       path: filePath,
@@ -1137,19 +1147,25 @@ function repoMapPayload(
   if (!repo) {
     throw new Error(`Unknown repo ${repoId}.`);
   }
-  const { contract, policy } = requiredAuthorizedMcpContract(storage, repoId, options.surface);
+  const { contract, policy } = authorizedMcpContractOrDefault(storage, repoId, options.surface);
   const latestScan = latestIndexedScan(storage.listScanManifests(repoId));
   const snapshots = latestScan ? storage.listFileSnapshots(repoId, latestScan.id) : [];
   const facts = latestScan ? storage.listFacts(latestScan.id) : [];
   const findings = storage.listFindings(repoId);
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
-  const allFiles = repoMapFiles(snapshots, facts, contract, findings, graphMap?.files ?? []);
-  const files = allFiles.filter((file) =>
-    (!options.role || file.roles.includes(options.role)) &&
-    (!options.path || file.path === options.path || matchesPolicyGlob(file.path, options.path))
-  );
   const offset = options.offset ?? 0;
-  const listedFiles = paginateRepoMapFiles(files, options.limit, offset);
+  const readModel = buildRepoMapReadModel({
+    graphFiles: graphMap?.files ?? [],
+    factFiles: fallbackFactRepoMapFiles(snapshots, facts),
+    contract,
+    findings,
+    filters: {
+      role: options.role,
+      path: options.path
+    },
+    limit: options.limit,
+    offset
+  });
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
   return {
@@ -1170,11 +1186,11 @@ function repoMapPayload(
       role: options.role ?? null,
       path: options.path ?? null
     },
-    summary: repoMapSummary(allFiles, files, listedFiles),
-    impact_summary: repoMapImpactSummary(listedFiles),
-    pagination: paginationSummary(files.length, listedFiles.length, options.limit, offset),
+    summary: readModel.summary,
+    impact_summary: readModel.impact_summary,
+    pagination: readModel.pagination,
     freshness_requirement: freshnessRequirement(Boolean(options.requireFresh), scanStatus),
-    files: listedFiles,
+    files: readModel.listed_files,
     redactions: {
       denied_globs: contract.context_egress.denied_globs,
       snippets_included: false,
@@ -1187,94 +1203,6 @@ function repoMapPayload(
       `drift scan status --repo ${repoId} --json`
     ]
   };
-}
-
-function repoMapFiles(
-  snapshots: FileSnapshot[],
-  facts: FactRecord[],
-  contract: RepoContract,
-  findings: Finding[],
-  graphFiles: GraphRepoMapFile[] = []
-): RepoMapFile[] {
-  return decorateRepoMapFiles(
-    mergeGraphAndFactRepoMapFiles(graphFiles, fallbackFactRepoMapFiles(snapshots, facts)),
-    contract,
-    findings
-  );
-}
-
-function mergeGraphAndFactRepoMapFiles(graphFiles: GraphRepoMapFile[], factFiles: GraphRepoMapFile[]): GraphRepoMapFile[] {
-  const factByPath = new Map(factFiles.map((file) => [file.path, file]));
-  const graphByPath = new Map(graphFiles.map((file) => [file.path, file]));
-  const paths = uniqueSorted([...graphByPath.keys(), ...factByPath.keys()]);
-  return paths.map((path) => {
-    const graphFile = graphByPath.get(path);
-    const factFile = factByPath.get(path);
-    if (!graphFile) {
-      return factFile!;
-    }
-    if (!factFile) {
-      return graphFile;
-    }
-    return {
-      path,
-      content_hash: graphFile.content_hash,
-      byte_size: graphFile.byte_size,
-      indexed: graphFile.indexed,
-      roles: uniqueSorted([...graphFile.roles, ...factFile.roles]),
-      imports: uniqueSorted([...graphFile.imports, ...factFile.imports]),
-      exported_symbols: uniqueSorted([...graphFile.exported_symbols, ...factFile.exported_symbols]),
-      calls: uniqueSorted([...graphFile.calls, ...factFile.calls]),
-      graph_node_ids: uniqueSorted([...graphFile.graph_node_ids, ...factFile.graph_node_ids]),
-      evidence_ids: uniqueSorted([...graphFile.evidence_ids, ...factFile.evidence_ids]),
-      fact_count: Math.max(graphFile.fact_count, factFile.fact_count)
-    };
-  });
-}
-
-function decorateRepoMapFiles(
-  files: GraphRepoMapFile[],
-  contract: RepoContract,
-  findings: Finding[]
-): RepoMapFile[] {
-  return files.map((file) => ({
-    path: file.path,
-    content_hash: file.content_hash,
-    byte_size: file.byte_size,
-    indexed: file.indexed,
-    roles: file.roles,
-    imports: file.imports,
-    exported_symbols: file.exported_symbols,
-    calls: file.calls,
-    convention_ids: repoMapConventionIds(contract, file.path),
-    risky_area_ids: repoMapRiskyAreaIds(contract, file.path),
-    open_finding_ids: repoMapOpenFindingIds(findings, file.path),
-    fact_count: file.fact_count
-  })).sort((left, right) => left.path.localeCompare(right.path));
-}
-
-function repoMapConventionIds(contract: RepoContract, filePath: string): string[] {
-  return uniqueSorted(contract.conventions
-    .filter((convention) =>
-      convention.scope.path_globs.some((glob) => matchesPolicyGlob(filePath, glob)) &&
-      !(convention.scope.exclude_path_globs ?? []).some((glob) => matchesPolicyGlob(filePath, glob))
-    )
-    .map((convention) => convention.id));
-}
-
-function repoMapRiskyAreaIds(contract: RepoContract, filePath: string): string[] {
-  return uniqueSorted(contract.risky_areas
-    .filter((area) => area.path_globs.some((glob) => matchesPolicyGlob(filePath, glob)))
-    .map((area) => area.id));
-}
-
-function repoMapOpenFindingIds(findings: Finding[], filePath: string): string[] {
-  return uniqueSorted(findings
-    .filter((finding) =>
-      isOpenPreflightFinding(finding) &&
-      finding.evidence_refs.some((ref) => ref.file_path === filePath)
-    )
-    .map((finding) => finding.id));
 }
 
 function findingMatchesPath(finding: Finding, path: string): boolean {
@@ -1314,12 +1242,6 @@ function paginateAcceptedConventions(
     : conventions.slice(offset, offset + limit);
 }
 
-function paginateRepoMapFiles(files: RepoMapFile[], limit: number | undefined, offset: number): RepoMapFile[] {
-  return limit === undefined
-    ? files.slice(offset)
-    : files.slice(offset, offset + limit);
-}
-
 function paginationSummary(total: number, returnedCount: number, limit: number | undefined, offset: number): {
   limit: number | null;
   offset: number;
@@ -1335,44 +1257,6 @@ function paginationSummary(total: number, returnedCount: number, limit: number |
     returned_count: returnedCount,
     has_more: hasMore,
     next_offset: hasMore ? nextOffset : null
-  };
-}
-
-function repoMapImpactSummary(files: RepoMapFile[]): {
-  convention_coverage_count: number;
-  risky_file_count: number;
-  open_finding_count: number;
-} {
-  return {
-    convention_coverage_count: files.filter((file) => file.convention_ids.length > 0).length,
-    risky_file_count: files.filter((file) => file.risky_area_ids.length > 0).length,
-    open_finding_count: files.reduce((count, file) => count + file.open_finding_ids.length, 0)
-  };
-}
-
-function repoMapSummary(allFiles: RepoMapFile[], filteredFiles: RepoMapFile[], listedFiles: RepoMapFile[]): {
-  indexed_file_count: number;
-  filtered_file_count: number;
-  listed_file_count: number;
-  role_counts: Record<string, number>;
-  import_count: number;
-  export_count: number;
-  call_count: number;
-} {
-  const roleCounts: Record<string, number> = {};
-  for (const file of listedFiles) {
-    for (const role of file.roles) {
-      roleCounts[role] = (roleCounts[role] ?? 0) + 1;
-    }
-  }
-  return {
-    indexed_file_count: allFiles.length,
-    filtered_file_count: filteredFiles.length,
-    listed_file_count: listedFiles.length,
-    role_counts: roleCounts,
-    import_count: listedFiles.reduce((count, file) => count + file.imports.length, 0),
-    export_count: listedFiles.reduce((count, file) => count + file.exported_symbols.length, 0),
-    call_count: listedFiles.reduce((count, file) => count + file.calls.length, 0)
   };
 }
 

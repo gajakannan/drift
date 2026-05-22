@@ -306,6 +306,8 @@ jobs:
           mkdir -p .release/npm
           for package_dir in \
             packages/core \
+            packages/factgraph \
+            packages/query \
             packages/engine-contract \
             packages/storage \
             packages/engine-darwin-arm64 \
@@ -354,6 +356,8 @@ jobs:
           cd "${TMP}"
           npm init -y >/dev/null
           npm install "${GITHUB_WORKSPACE}"/.release/npm/drift-core-*.tgz \
+            "${GITHUB_WORKSPACE}"/.release/npm/drift-factgraph-*.tgz \
+            "${GITHUB_WORKSPACE}"/.release/npm/drift-query-*.tgz \
             "${GITHUB_WORKSPACE}"/.release/npm/drift-engine-contract-*.tgz \
             "${GITHUB_WORKSPACE}"/.release/npm/drift-storage-*.tgz \
             "${GITHUB_WORKSPACE}"/.release/npm/drift-engine-linux-x64-gnu-*.tgz \
@@ -393,6 +397,8 @@ jobs:
           set -euo pipefail
           for package in \
             drift-core-*.tgz \
+            drift-factgraph-*.tgz \
+            drift-query-*.tgz \
             drift-engine-contract-*.tgz \
             drift-storage-*.tgz \
             drift-engine-darwin-arm64-*.tgz \

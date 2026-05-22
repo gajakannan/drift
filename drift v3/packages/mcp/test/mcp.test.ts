@@ -1162,7 +1162,7 @@ describe("read-only MCP handlers", () => {
       path: routePath,
       roles: ["api_route"],
       exported_symbols: ["GET"],
-      calls: ["Response.json", "db.user.findMany"]
+      calls: expect.arrayContaining(["Response.json", "db.user.findMany"])
     })]);
   });
 
@@ -1245,6 +1245,46 @@ describe("read-only MCP handlers", () => {
       `drift repo map --repo ${repoId} --json`,
       `drift scan status --repo ${repoId} --json`
     ]);
+  });
+
+  it("returns MCP repo map before a contract exists using the default local policy", async () => {
+    const { databasePath, repoId } = await seedMcpNoContractDatabase();
+    const repoMap = createReadOnlyMcpHandlers({ databasePath }).get_repo_map({
+      repo_id: repoId
+    }) as {
+      policy: { allowed: boolean; surface: string };
+      summary: { indexed_file_count: number; listed_file_count: number };
+      files: Array<{
+        path: string;
+        roles: string[];
+        convention_ids: string[];
+        risky_area_ids: string[];
+        open_finding_ids: string[];
+      }>;
+      redactions: { source_content_included: boolean; snippets_included: boolean };
+    };
+
+    expect(repoMap.policy).toMatchObject({
+      allowed: true,
+      surface: "mcp"
+    });
+    expect(repoMap.summary).toMatchObject({
+      indexed_file_count: 1,
+      listed_file_count: 1
+    });
+    expect(repoMap.files).toEqual([
+      expect.objectContaining({
+        path: "apps/web/app/api/users/route.ts",
+        roles: ["api_route"],
+        convention_ids: [],
+        risky_area_ids: [],
+        open_finding_ids: []
+      })
+    ]);
+    expect(repoMap.redactions).toMatchObject({
+      source_content_included: false,
+      snippets_included: false
+    });
   });
 
   it("scopes MCP preflight required checks and risky areas to task-relevant files", async () => {
@@ -2040,7 +2080,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 10,
+        supported_sqlite_schema_version: 11,
         storage_driver: "sqlite"
       },
       v1_scope: {

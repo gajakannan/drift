@@ -35,7 +35,7 @@ Current live dogfood state:
 - Worktree: dirty, with many modified files and untracked docs/fixtures.
 - Dogfood scan: completed but stale; `scan status` reports `resolver_inputs_changed` and 18 modified files.
 - Dogfood DB counts from the built CLI artifact: 9 migrations, 15907 facts, 16128 graph nodes, 23337 graph edges, 11488 graph evidence rows, 0 convention candidates, 0 repo contracts, 4 audit events.
-- Source currently defines 10 migrations in `packages/storage/src/migrations.ts:6`, with `010_audit_sequence` at `packages/storage/src/migrations.ts:437`; source tests expect `supported_sqlite_schema_version: 10`. The built dogfood artifact reporting schema 9 is release-hygiene evidence that generated/runtime artifacts can drift from source unless rebuilt and gated.
+- Source now defines 11 migrations in `packages/storage/src/migrations.ts:6`, with `011_check_runs_and_finding_context` adding persisted check runs and finding evidence context; source tests expect `supported_sqlite_schema_version: 11`. The older built dogfood artifact reporting schema 9 is release-hygiene evidence that generated/runtime artifacts can drift from source unless rebuilt and gated.
 - Dogfood `check --scope full`: fails closed with `No repo contract exists for repo_8e87fba3c58ea49b.`
 
 ## Status Labels
@@ -514,9 +514,9 @@ Purpose: durable local SQLite state.
 
 Current implementation:
 
-- 10 migrations exist in source in `packages/storage/src/migrations.ts:6`; `010_audit_sequence` is declared at `packages/storage/src/migrations.ts:437`.
+- 11 migrations exist in source in `packages/storage/src/migrations.ts:6`; `011_check_runs_and_finding_context` persists check runs and finding evidence context.
 - Tables cover repos, scan manifests, file snapshots, findings, baselines, audit events, facts, convention candidates, accepted conventions, repo contracts, backup manifests, fact graph artifacts, graph projections, scan file changes, symbol occurrence kind.
-- Source tests expect `supported_sqlite_schema_version: 10` in `packages/cli/test/cli.test.ts:410` and `test/e2e/installed-flow.test.ts:143`.
+- Source tests expect `supported_sqlite_schema_version: 11` in `packages/cli/test/cli.test.ts:410` and `test/e2e/installed-flow.test.ts:143`.
 - Storage test persists repo, scan, findings, baselines, facts, and more in `packages/storage/test/sqlite-storage.test.ts:165`.
 - The built dogfood DB currently has 9 migrations applied; that is a source/build artifact freshness risk, not proof that source has only 9 migrations.
 

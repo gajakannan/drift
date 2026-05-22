@@ -9,6 +9,7 @@ const outputPath = valueFlag("--output");
 const requireClean = args.has("--require-clean");
 const requireBuiltCli = args.has("--require-built-cli");
 const requireComplete = args.has("--require-complete");
+const requireBetaProof = args.has("--require-beta-proof");
 
 const root = process.cwd();
 const rootManifest = readJson("package.json");
@@ -44,6 +45,13 @@ const installedCliSmokeResults = {
 const installedMcpSmokeResults = {
   present: existsSync("packages/mcp/dist/index.js")
 };
+const betaProof = betaProofFields({
+  dirtyState,
+  sourceBuildSchemaMatch,
+  installedCliSmokeResults
+});
+const betaMissing = missingBetaProofFields(betaProof);
+const betaReady = betaMissing.length === 0;
 const releaseReady = !dirtyState &&
   sourceBuildSchemaMatch &&
   npmTarballs.length > 0 &&
@@ -68,21 +76,18 @@ const proof = {
   npm_tarballs: npmTarballs,
   installed_cli_smoke_results: installedCliSmokeResults,
   installed_mcp_smoke_results: installedMcpSmokeResults,
-  dogfood_or_fixture_repo_id: process.env.DRIFT_RELEASE_REPO_ID ?? null,
-  scan_id: process.env.DRIFT_RELEASE_SCAN_ID ?? null,
-  repo_contract_id: process.env.DRIFT_RELEASE_REPO_CONTRACT_ID ?? null,
-  check_id: process.env.DRIFT_RELEASE_CHECK_ID ?? null,
-  mcp_cli_parity_hash: process.env.DRIFT_RELEASE_MCP_CLI_PARITY_HASH ?? null,
-  audit_head_hash: process.env.DRIFT_RELEASE_AUDIT_HEAD_HASH ?? null,
+  beta_proof: betaProof,
   created_at: new Date().toISOString(),
   verification: {
     source_build_schema_match: sourceBuildSchemaMatch,
     release_ready: releaseReady,
+    beta_ready: betaReady,
     missing: missingProofFields({
       built_schema_version: builtSchemaVersion,
       npm_tarballs: npmTarballs,
       engine_artifact_sha256: engineArtifactSha256
-    })
+    }),
+    beta_missing: betaMissing
   }
 };
 
@@ -102,6 +107,10 @@ if (requireBuiltCli && !sourceBuildSchemaMatch) {
 }
 if (requireComplete && !releaseReady) {
   console.error(`Release proof failed: incomplete proof (${proof.verification.missing.join(", ") || "unknown"}).`);
+  process.exit(1);
+}
+if (requireBetaProof && !betaReady) {
+  console.error(`Release proof failed: incomplete beta proof (${proof.verification.beta_missing.join(", ") || "unknown"}).`);
   process.exit(1);
 }
 
@@ -219,6 +228,82 @@ function listFiles(dir, suffix) {
 
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(resolve(path))).digest("hex");
+}
+
+function betaProofFields({ dirtyState, sourceBuildSchemaMatch, installedCliSmokeResults }) {
+  const fallbackUsed = booleanEnv("DRIFT_RELEASE_FALLBACK_USED");
+  const goodRoutePassed = booleanEnv("DRIFT_RELEASE_GOOD_ROUTE_PASSED");
+  const badRouteBlocked = booleanEnv("DRIFT_RELEASE_BAD_ROUTE_BLOCKED");
+  const findingEvidenceComplete = booleanEnv("DRIFT_RELEASE_FINDING_EVIDENCE_COMPLETE");
+  const auditVerified = booleanEnv("DRIFT_RELEASE_AUDIT_VERIFIED");
+  return {
+    clean_git: !dirtyState,
+    verify_ci_status: process.env.DRIFT_VERIFY_CI_STATUS ?? null,
+    verify_ci_passed: process.env.DRIFT_VERIFY_CI_STATUS === "passed",
+    source_build_schema_match: sourceBuildSchemaMatch,
+    rust_engine_required: true,
+    installed_engine_source: installedCliSmokeResults.engine_source,
+    fallback_used: fallbackUsed,
+    fallback_absent: fallbackUsed === false,
+    dogfood_or_fixture_repo_id: process.env.DRIFT_RELEASE_REPO_ID ?? null,
+    scan_id: process.env.DRIFT_RELEASE_SCAN_ID ?? null,
+    repo_contract_id: process.env.DRIFT_RELEASE_REPO_CONTRACT_ID ?? null,
+    check_id: process.env.DRIFT_RELEASE_CHECK_ID ?? null,
+    good_route_passed: goodRoutePassed,
+    bad_route_blocked: badRouteBlocked,
+    finding_evidence_complete: findingEvidenceComplete,
+    mcp_cli_parity_hash: process.env.DRIFT_RELEASE_MCP_CLI_PARITY_HASH ?? null,
+    mcp_cli_parity_verified: Boolean(process.env.DRIFT_RELEASE_MCP_CLI_PARITY_HASH),
+    audit_head_hash: process.env.DRIFT_RELEASE_AUDIT_HEAD_HASH ?? null,
+    audit_verified: auditVerified
+  };
+}
+
+function booleanEnv(name) {
+  const value = process.env[name];
+  if (value === undefined) {
+    return null;
+  }
+  if (value === "true" || value === "1" || value === "passed") {
+    return true;
+  }
+  if (value === "false" || value === "0" || value === "failed") {
+    return false;
+  }
+  return null;
+}
+
+function missingBetaProofFields(proof) {
+  const missing = [];
+  if (!proof.clean_git) {
+    missing.push("clean_git");
+  }
+  if (!proof.verify_ci_passed) {
+    missing.push("verify_ci_passed");
+  }
+  if (!proof.source_build_schema_match) {
+    missing.push("source_build_schema_match");
+  }
+  if (proof.installed_engine_source === "typescript" || proof.fallback_absent !== true) {
+    missing.push("rust_engine_no_fallback");
+  }
+  for (const [field, value] of Object.entries({
+    dogfood_or_fixture_repo_id: proof.dogfood_or_fixture_repo_id,
+    scan_id: proof.scan_id,
+    repo_contract_id: proof.repo_contract_id,
+    check_id: proof.check_id,
+    good_route_passed: proof.good_route_passed,
+    bad_route_blocked: proof.bad_route_blocked,
+    finding_evidence_complete: proof.finding_evidence_complete,
+    mcp_cli_parity_verified: proof.mcp_cli_parity_verified,
+    audit_head_hash: proof.audit_head_hash,
+    audit_verified: proof.audit_verified
+  })) {
+    if (value !== true && (typeof value !== "string" || value.length === 0)) {
+      missing.push(field);
+    }
+  }
+  return missing;
 }
 
 function missingProofFields(fields) {

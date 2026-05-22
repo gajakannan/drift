@@ -42,6 +42,45 @@ export interface GraphRepoMap {
   };
 }
 
+export interface RepoMapFile extends GraphRepoMapFile {
+  convention_ids: string[];
+  risky_area_ids: string[];
+  open_finding_ids: string[];
+}
+
+export interface RepoMapReadModel {
+  all_files: RepoMapFile[];
+  filtered_files: RepoMapFile[];
+  listed_files: RepoMapFile[];
+  summary: RepoMapSummary;
+  impact_summary: RepoMapImpactSummary;
+  pagination: RepoMapPagination;
+}
+
+export interface RepoMapSummary {
+  indexed_file_count: number;
+  filtered_file_count: number;
+  listed_file_count: number;
+  role_counts: Record<string, number>;
+  import_count: number;
+  export_count: number;
+  call_count: number;
+}
+
+export interface RepoMapImpactSummary {
+  convention_coverage_count: number;
+  risky_file_count: number;
+  open_finding_count: number;
+}
+
+export interface RepoMapPagination {
+  limit: number | null;
+  offset: number;
+  returned_count: number;
+  has_more: boolean;
+  next_offset: number | null;
+}
+
 export interface GraphQueryStorage {
   listFileSnapshots(repoId: string, scanId: string): FileSnapshot[];
   listGraphNodes(repoId: string, scanId: string): GraphNode[];
@@ -629,6 +668,169 @@ export function createGraphQueryService(storage: SqliteDriftStorage): GraphQuery
   return new GraphQueryService(storage);
 }
 
+export function buildRepoMapReadModel(input: {
+  graphFiles: GraphRepoMapFile[];
+  factFiles: GraphRepoMapFile[];
+  contract: RepoContract;
+  findings: Finding[];
+  filters?: {
+    role?: string;
+    path?: string;
+  };
+  limit?: number;
+  offset?: number;
+}): RepoMapReadModel {
+  const allFiles = buildRepoMapFiles(input);
+  const filteredFiles = allFiles.filter((file) =>
+    (!input.filters?.role || file.roles.includes(input.filters.role)) &&
+    (!input.filters?.path || file.path === input.filters.path || matchesRepoGlob(file.path, input.filters.path))
+  );
+  const offset = input.offset ?? 0;
+  const listedFiles = paginateRepoMapFiles(filteredFiles, input.limit, offset);
+  return {
+    all_files: allFiles,
+    filtered_files: filteredFiles,
+    listed_files: listedFiles,
+    summary: repoMapSummary(allFiles, filteredFiles, listedFiles),
+    impact_summary: repoMapImpactSummary(listedFiles),
+    pagination: repoMapPagination(filteredFiles.length, listedFiles.length, input.limit, offset)
+  };
+}
+
+export function buildRepoMapFiles(input: {
+  graphFiles: GraphRepoMapFile[];
+  factFiles: GraphRepoMapFile[];
+  contract: RepoContract;
+  findings: Finding[];
+}): RepoMapFile[] {
+  return mergeGraphAndFactRepoMapFiles(input.graphFiles, input.factFiles)
+    .map((file) => ({
+      ...file,
+      convention_ids: repoMapConventionIds(input.contract, file.path),
+      risky_area_ids: repoMapRiskyAreaIds(input.contract, file.path),
+      open_finding_ids: repoMapOpenFindingIds(input.findings, file.path)
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+export function mergeGraphAndFactRepoMapFiles(
+  graphFiles: GraphRepoMapFile[],
+  factFiles: GraphRepoMapFile[]
+): GraphRepoMapFile[] {
+  const factByPath = new Map(factFiles.map((file) => [file.path, file]));
+  const graphByPath = new Map(graphFiles.map((file) => [file.path, file]));
+  const paths = unique([...graphByPath.keys(), ...factByPath.keys()]);
+  return paths.map((path) => {
+    const graphFile = graphByPath.get(path);
+    const factFile = factByPath.get(path);
+    if (!graphFile) {
+      return factFile!;
+    }
+    if (!factFile) {
+      return graphFile;
+    }
+    return {
+      path,
+      content_hash: graphFile.content_hash,
+      byte_size: graphFile.byte_size,
+      indexed: graphFile.indexed,
+      roles: unique([...graphFile.roles, ...factFile.roles]),
+      imports: unique([...graphFile.imports, ...factFile.imports]),
+      exported_symbols: unique([...graphFile.exported_symbols, ...factFile.exported_symbols]),
+      calls: unique([...graphFile.calls, ...factFile.calls]),
+      graph_node_ids: unique([...graphFile.graph_node_ids, ...factFile.graph_node_ids]),
+      evidence_ids: unique([...graphFile.evidence_ids, ...factFile.evidence_ids]),
+      fact_count: Math.max(graphFile.fact_count, factFile.fact_count)
+    };
+  });
+}
+
+export function repoMapConventionIds(contract: RepoContract, filePath: string): string[] {
+  return unique(contract.conventions
+    .filter((convention) =>
+      convention.scope.path_globs.some((glob) => matchesRepoGlob(filePath, glob)) &&
+      !(convention.scope.exclude_path_globs ?? []).some((glob) => matchesRepoGlob(filePath, glob))
+    )
+    .map((convention) => convention.id));
+}
+
+export function repoMapRiskyAreaIds(contract: RepoContract, filePath: string): string[] {
+  return unique(contract.risky_areas
+    .filter((area) => area.path_globs.some((glob) => matchesRepoGlob(filePath, glob)))
+    .map((area) => area.id));
+}
+
+export function repoMapOpenFindingIds(findings: Finding[], filePath: string): string[] {
+  return unique(findings
+    .filter((finding) =>
+      !isClosedFindingStatus(finding.status) &&
+      finding.evidence_refs.some((ref) => ref.file_path === filePath)
+    )
+    .map((finding) => finding.id));
+}
+
+export function paginateRepoMapFiles(files: RepoMapFile[], limit: number | undefined, offset: number): RepoMapFile[] {
+  return limit === undefined
+    ? files.slice(offset)
+    : files.slice(offset, offset + limit);
+}
+
+export function repoMapImpactSummary(files: RepoMapFile[]): RepoMapImpactSummary {
+  return {
+    convention_coverage_count: files.filter((file) => file.convention_ids.length > 0).length,
+    risky_file_count: files.filter((file) => file.risky_area_ids.length > 0).length,
+    open_finding_count: files.reduce((count, file) => count + file.open_finding_ids.length, 0)
+  };
+}
+
+export function repoMapSummary(
+  allFiles: RepoMapFile[],
+  filteredFiles: RepoMapFile[],
+  listedFiles: RepoMapFile[]
+): RepoMapSummary {
+  const roleCounts: Record<string, number> = {};
+  for (const file of listedFiles) {
+    for (const role of file.roles) {
+      roleCounts[role] = (roleCounts[role] ?? 0) + 1;
+    }
+  }
+  return {
+    indexed_file_count: allFiles.length,
+    filtered_file_count: filteredFiles.length,
+    listed_file_count: listedFiles.length,
+    role_counts: roleCounts,
+    import_count: listedFiles.reduce((count, file) => count + file.imports.length, 0),
+    export_count: listedFiles.reduce((count, file) => count + file.exported_symbols.length, 0),
+    call_count: listedFiles.reduce((count, file) => count + file.calls.length, 0)
+  };
+}
+
+export function repoMapPagination(
+  total: number,
+  returnedCount: number,
+  limit: number | undefined,
+  offset: number
+): RepoMapPagination {
+  const nextOffset = offset + returnedCount;
+  const hasMore = nextOffset < total;
+  return {
+    limit: limit ?? null,
+    offset,
+    returned_count: returnedCount,
+    has_more: hasMore,
+    next_offset: hasMore ? nextOffset : null
+  };
+}
+
+export function matchesRepoGlob(filePath: string, glob: string): boolean {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "\u0000")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\u0000/g, ".*");
+  return new RegExp(`^${escaped}$`).test(filePath);
+}
+
 export function decorateRepoMapFiles<T extends {
   path: string;
   convention_ids?: string[];
@@ -654,6 +856,10 @@ export function decorateRepoMapFiles<T extends {
     risky_area_ids: input.riskyAreaIdsForPath(input.contract, file.path),
     open_finding_ids: input.openFindingIdsForPath(input.findings, file.path)
   }));
+}
+
+function isClosedFindingStatus(status: Finding["status"]): boolean {
+  return ["fixed", "false_positive", "suppressed", "accepted_drift", "expired"].includes(status);
 }
 
 export function fallbackFactRepoMapFiles(

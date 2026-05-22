@@ -7,6 +7,8 @@ const expectedVersion = process.argv[2] ?? JSON.parse(readFileSync("package.json
 const packagePaths = [
   "package.json",
   "packages/core/package.json",
+  "packages/factgraph/package.json",
+  "packages/query/package.json",
   "packages/storage/package.json",
   "packages/engine-contract/package.json",
   "packages/cli/package.json",

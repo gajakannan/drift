@@ -1,4 +1,4 @@
-import { authorizeContextExport,type Finding,type RepoContract } from "@drift/core";
+import { authorizeContextExport,type CheckRun,type Finding,type RepoContract } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -7,7 +7,7 @@ import { actorFlag,stringFlag } from "../args/flag-readers.js";
 import { resolveRepoId } from "../args/repo-flags.js";
 import { isClosedFindingStatus,preservedGovernanceStatus,reviewFinding } from "../domain/findings.js";
 import { auditEvent,preflightGovernance } from "../domain/governance.js";
-import { hashStable } from "../domain/identifiers.js";
+import { contractFingerprint,hashStable } from "../domain/identifiers.js";
 import { WaivedFinding } from "../domain/preflight.js";
 import { isApiRoutePath } from "../domain/repo-paths.js";
 import { collectScanData,type ScanData } from "../engine/collect-scan-data.js";
@@ -42,6 +42,9 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
   }
 
   const now = stringFlag(parsed, "now") ?? new Date().toISOString();
+  const checkId = `check_${hashStable(`${repoId}:${scope}:${now}`).slice(0, 16)}`;
+  const checkScanId = `scan_check_${hashStable(`${repoId}:${now}`).slice(0, 16)}`;
+  const contractFingerprintValue = contractFingerprint(contract);
   const parsedDiff = scope === "full"
     ? fullRepoDiff(repo.root_path)
     : parseUnifiedDiff(loadDiff(repo.root_path, parsed));
@@ -52,10 +55,77 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
   const expiredFindingsCount = expireFindingsForExpiredConventions(storage, parsed, repoId, contract, now);
   const checkData = await collectScanData({
     repoId,
-    scanId: `scan_check_${hashStable(`${repoId}:${now}`).slice(0, 16)}`,
+    scanId: checkScanId,
     repoRoot: repo.root_path
   });
   const snapshotsByPath = new Map(checkData.snapshots.map((snapshot) => [snapshot.file_path, snapshot]));
+  if (checkData.fallbackStatus.fallback_used) {
+    const fallbackStatus = fallbackStatusForCheck(checkData);
+    const capabilityCompleteness = capabilityCompletenessForCheck(checkData);
+    const check = checkEnvelope({
+      checkId,
+      repoId,
+      contract,
+      contractFingerprintValue,
+      checkScanId,
+      scope,
+      status: "blocked",
+      fallbackStatus,
+      capabilityCompleteness
+    });
+    storage.upsertCheckRun({
+      id: checkId,
+      repo_id: repoId,
+      repo_contract_id: contract.id,
+      contract_fingerprint: contractFingerprintValue,
+      scan_id: checkScanId,
+      status: "blocked",
+      scope: scope as "changed-hunks" | "changed-files" | "full",
+      engine_source: checkData.engineSource,
+      fallback_used: true,
+      stale_scan: false,
+      capability_complete: false,
+      findings_count: 0,
+      blocking_count: 0,
+      started_at: now,
+      completed_at: now
+    });
+    const payload = {
+      check,
+      policy,
+      governance: preflightGovernance(),
+      audit_integrity: storage.verifyAuditChain(repoId),
+      summary: {
+        repo_id: repoId,
+        scope,
+        findings_count: 0,
+        blocking_count: 0,
+        waived_findings_count: 0,
+        expired_findings_count: expiredFindingsCount,
+        skipped_deleted_files: parsedDiff.deletedFiles,
+        engine_source: checkData.engineSource,
+        affected_scope: affectedScopeSummary(parsedDiff, scope),
+        outcome: checkOutcomeSummary([], {
+          waivedFindingsCount: 0,
+          expiredFindingsCount,
+          scope: scope as "changed-hunks" | "changed-files" | "full"
+        }),
+        blocked_reasons: ["typescript_fallback_used"]
+      },
+      review_items: [],
+      waived_findings: [],
+      diagnostics: checkData.diagnostics,
+      next_commands: [
+        "drift doctor --json",
+        `drift scan status --repo ${repoId} --json`
+      ],
+      findings: []
+    };
+    return {
+      exitCode: 1,
+      payload: parsed.flags.has("json") ? payload : formatCheckText(payload)
+    };
+  }
   const findings: Finding[] = [];
   const waivedFindings: WaivedFinding[] = [];
   let waivedFindingsCount = 0;
@@ -70,7 +140,9 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     baseline,
     existingFindings,
     checkData,
-    snapshotsByPath
+    snapshotsByPath,
+    checkId,
+    checkScanId
   });
 
   if (engineOwned) {
@@ -143,6 +215,8 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
           id: `finding_${fingerprint.slice(0, 16)}`,
           repo_id: repoId,
           convention_id: convention.id,
+          check_id: checkId,
+          repo_contract_id: contract.id,
           fingerprint,
           title: "API route imports data access directly",
           message: `${filePath} imports ${importUsed.name} from ${importUsed.value} directly; route modules should delegate through the accepted service/data-access layer.`,
@@ -159,10 +233,15 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
             symbol: importUsed.name,
             import_source: importUsed.value,
             fact_ids: importUsed.fact_id ? [importUsed.fact_id] : [],
-            scan_id: checkData.snapshots[0]?.scan_id ?? `scan_check_${hashStable(`${repoId}:${now}`).slice(0, 16)}`,
+            scan_id: checkData.snapshots[0]?.scan_id ?? checkScanId,
             file_hash: snapshot?.content_hash ?? "",
             redaction_state: "none"
           }],
+          expected_layer: "service",
+          actual_layer: "data_access",
+          graph_path: [filePath, importUsed.value],
+          suggested_fix: directDataAccessSuggestedFix(),
+          related_node_ids: [],
           created_at: now
         };
         storage.upsertFinding(finding);
@@ -177,6 +256,37 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     finding.diff_status === "new_in_diff" &&
     finding.enforcement_result === "block"
   ).length;
+  const checkStatus: CheckRun["status"] = blockingCount > 0 ? "fail" : "pass";
+  const fallbackStatus = fallbackStatusForCheck(checkData);
+  const capabilityCompleteness = capabilityCompletenessForCheck(checkData);
+  const check = checkEnvelope({
+    checkId,
+    repoId,
+    contract,
+    contractFingerprintValue,
+    checkScanId,
+    scope,
+    status: checkStatus,
+    fallbackStatus,
+    capabilityCompleteness
+  });
+  storage.upsertCheckRun({
+    id: checkId,
+    repo_id: repoId,
+    repo_contract_id: contract.id,
+    contract_fingerprint: contractFingerprintValue,
+    scan_id: checkScanId,
+    status: checkStatus,
+    scope: scope as "changed-hunks" | "changed-files" | "full",
+    engine_source: checkData.engineSource,
+    fallback_used: fallbackStatus.fallback_used,
+    stale_scan: false,
+    capability_complete: capabilityCompleteness.complete,
+    findings_count: findings.length,
+    blocking_count: blockingCount,
+    started_at: now,
+    completed_at: now
+  });
   const openNewCount = findings.filter((finding) => finding.status === "new").length;
   const outcome = checkOutcomeSummary(findings, {
     waivedFindingsCount,
@@ -184,6 +294,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     scope: scope as "changed-hunks" | "changed-files" | "full"
   });
   const payload = {
+    check,
     policy,
     governance: preflightGovernance(),
     audit_integrity: storage.verifyAuditChain(repoId),
@@ -213,6 +324,83 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     exitCode: blockingCount > 0 ? 1 : 0,
     payload: parsed.flags.has("json") ? payload : formatCheckText(payload)
   };
+}
+
+function fallbackStatusForCheck(checkData: ScanData): ScanData["fallbackStatus"] {
+  return checkData.fallbackStatus;
+}
+
+function capabilityCompletenessForCheck(checkData: ScanData): {
+  complete: boolean;
+  missing_capabilities: string[];
+  can_block: boolean;
+} {
+  return {
+    complete: checkData.engineSource === "rust" && !checkData.fallbackStatus.fallback_used,
+    missing_capabilities: checkData.fallbackStatus.fallback_used
+      ? checkData.fallbackStatus.degraded_capabilities
+      : [],
+    can_block: checkData.engineSource === "rust" && !checkData.fallbackStatus.enforcement_degraded
+  };
+}
+
+function checkEnvelope(input: {
+  checkId: string;
+  repoId: string;
+  contract: RepoContract;
+  contractFingerprintValue: string;
+  checkScanId: string;
+  scope: string;
+  status: CheckRun["status"];
+  fallbackStatus: ScanData["fallbackStatus"];
+  capabilityCompleteness: ReturnType<typeof capabilityCompletenessForCheck>;
+}): {
+  id: string;
+  repo_id: string;
+  repo_contract_id: string;
+  contract_fingerprint: string;
+  scope: string;
+  status: CheckRun["status"];
+  scan_status: {
+    mode: "check_time_collection";
+    stored_scan_required: false;
+    stale: false;
+    scan_id: string;
+  };
+  fallback_status: ScanData["fallbackStatus"];
+  capability_completeness: ReturnType<typeof capabilityCompletenessForCheck>;
+} {
+  return {
+    id: input.checkId,
+    repo_id: input.repoId,
+    repo_contract_id: input.contract.id,
+    contract_fingerprint: input.contractFingerprintValue,
+    scope: input.scope,
+    status: input.status,
+    scan_status: {
+      mode: "check_time_collection",
+      stored_scan_required: false,
+      stale: false,
+      scan_id: input.checkScanId
+    },
+    fallback_status: input.fallbackStatus,
+    capability_completeness: input.capabilityCompleteness
+  };
+}
+
+function directDataAccessSuggestedFix(): string {
+  return "Move data access behind a service layer before returning from the route.";
+}
+
+function graphPathForFinding(
+  relatedNodeIds: string[],
+  filePath: string,
+  importSource: string | undefined
+): string[] {
+  if (relatedNodeIds.length > 0) {
+    return relatedNodeIds;
+  }
+  return [filePath, importSource].filter((value): value is string => Boolean(value));
 }
 
 function affectedScopeSummary(
@@ -321,6 +509,8 @@ async function runEngineOwnedDirectDataAccessCheck(input: {
   existingFindings: Map<string, Finding>;
   checkData: ScanData;
   snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
+  checkId: string;
+  checkScanId: string;
 }): Promise<{ findings: Finding[]; waivedFindings: WaivedFinding[]; waivedFindingsCount: number }> {
   const findings: Finding[] = [];
   const waivedFindings: WaivedFinding[] = [];
@@ -392,7 +582,7 @@ async function runEngineOwnedDirectDataAccessCheck(input: {
     const result = await runEngineCheck({
       repoId: input.repoId,
       repoRoot: input.repoRoot,
-      scanId: input.checkData.snapshots[0]?.scan_id ?? `scan_check_${hashStable(`${input.repoId}:${input.now}`).slice(0, 16)}`,
+      scanId: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
       facts,
       snapshots,
       graphNodes: graph.nodes,
@@ -416,6 +606,8 @@ async function runEngineOwnedDirectDataAccessCheck(input: {
         id: engineFinding.id,
         repo_id: input.repoId,
         convention_id: engineFinding.convention_id,
+        check_id: input.checkId,
+        repo_contract_id: input.contract.id,
         fingerprint: engineFinding.fingerprint,
         title: engineFinding.title,
         message: engineFinding.message,
@@ -432,10 +624,15 @@ async function runEngineOwnedDirectDataAccessCheck(input: {
           symbol: importUsed?.name,
           import_source: importUsed?.value,
           fact_ids: importUsed?.fact_id ? [importUsed.fact_id] : [],
-          scan_id: input.checkData.snapshots[0]?.scan_id ?? `scan_check_${hashStable(`${input.repoId}:${input.now}`).slice(0, 16)}`,
+          scan_id: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
           file_hash: snapshot?.content_hash ?? "",
           redaction_state: "none"
         }],
+        expected_layer: "service",
+        actual_layer: "data_access",
+        graph_path: graphPathForFinding(engineFinding.related_node_ids, evidence.file_path, importUsed?.value),
+        suggested_fix: directDataAccessSuggestedFix(),
+        related_node_ids: engineFinding.related_node_ids,
         created_at: input.now
       });
     }

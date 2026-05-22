@@ -34,7 +34,8 @@ describe("SQLite Drift storage", () => {
       "007_fact_graph_v2_projections",
       "008_scan_file_changes",
       "009_symbol_occurrence_kind",
-      "010_audit_sequence"
+      "010_audit_sequence",
+      "011_check_runs_and_finding_context"
     ]);
     storage.close();
   });
@@ -56,6 +57,22 @@ describe("SQLite Drift storage", () => {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE findings (
+        id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL,
+        convention_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        enforcement_result TEXT NOT NULL,
+        status TEXT NOT NULL,
+        diff_status TEXT NOT NULL,
+        evidence_refs_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(repo_id, fingerprint),
+        FOREIGN KEY (repo_id) REFERENCES repos(id)
+      );
       INSERT INTO repos (id, root_path, fingerprint, created_at, updated_at)
       VALUES ('repo_abc', '/repo', 'repo-fp', '2026-05-10T00:00:00.000Z', '2026-05-10T00:00:00.000Z');
     `);
@@ -74,7 +91,8 @@ describe("SQLite Drift storage", () => {
       "007_fact_graph_v2_projections",
       "008_scan_file_changes",
       "009_symbol_occurrence_kind",
-      "010_audit_sequence"
+      "010_audit_sequence",
+      "011_check_runs_and_finding_context"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -191,10 +209,29 @@ describe("SQLite Drift storage", () => {
       started_at: "2026-05-10T00:00:00.000Z",
       completed_at: "2026-05-10T00:00:01.000Z"
     });
+    storage.upsertCheckRun({
+      id: "check_abc",
+      repo_id: "repo_abc",
+      repo_contract_id: "contract_abc",
+      contract_fingerprint: "contract-fp",
+      scan_id: "scan_abc",
+      status: "fail",
+      scope: "changed-hunks",
+      engine_source: "rust",
+      fallback_used: false,
+      stale_scan: false,
+      capability_complete: true,
+      findings_count: 1,
+      blocking_count: 1,
+      started_at: "2026-05-10T00:00:01.500Z",
+      completed_at: "2026-05-10T00:00:02.000Z"
+    });
     storage.upsertFinding({
       id: "finding_abc",
       repo_id: "repo_abc",
       convention_id: "convention_abc",
+      check_id: "check_abc",
+      repo_contract_id: "contract_abc",
       fingerprint: "finding-fp",
       title: "API route imports data access directly",
       message: "Route imports prisma directly.",
@@ -203,6 +240,11 @@ describe("SQLite Drift storage", () => {
       status: "new",
       diff_status: "new_in_diff",
       evidence_refs: [],
+      expected_layer: "service",
+      actual_layer: "data_access",
+      graph_path: ["route:users", "import:prisma", "data:prisma"],
+      suggested_fix: "Move data access behind a service.",
+      related_node_ids: ["route:users", "data:prisma"],
       created_at: "2026-05-10T00:00:02.000Z"
     });
     storage.upsertBaselineViolation({
@@ -243,6 +285,14 @@ describe("SQLite Drift storage", () => {
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     expect(storage.getScanManifest("scan_abc")?.adapter_versions).toEqual({ typescript: "0.1.0" });
     expect(storage.listScanManifests("repo_abc")[0]?.id).toBe("scan_abc");
+    expect(storage.listCheckRuns("repo_abc")).toEqual([
+      expect.objectContaining({
+        id: "check_abc",
+        repo_contract_id: "contract_abc",
+        status: "fail",
+        capability_complete: true
+      })
+    ]);
     expect(storage.listFacts("scan_abc", { kind: "import_used" })).toEqual([
       {
         id: "fact_import_prisma",
@@ -256,7 +306,18 @@ describe("SQLite Drift storage", () => {
         end_line: 1
       }
     ]);
-    expect(storage.listFindings("repo_abc")).toHaveLength(1);
+    expect(storage.listFindings("repo_abc")).toEqual([
+      expect.objectContaining({
+        id: "finding_abc",
+        check_id: "check_abc",
+        repo_contract_id: "contract_abc",
+        expected_layer: "service",
+        actual_layer: "data_access",
+        graph_path: ["route:users", "import:prisma", "data:prisma"],
+        suggested_fix: "Move data access behind a service.",
+        related_node_ids: ["route:users", "data:prisma"]
+      })
+    ]);
     expect(storage.listBaselineViolations("repo_abc")).toHaveLength(1);
     storage.close();
   });

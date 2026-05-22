@@ -58,6 +58,10 @@ describe("release hygiene", () => {
       "SHA256SUMS",
       "npm publish",
       "npm_config_provenance=true",
+      "packages/factgraph",
+      "packages/query",
+      "drift-factgraph-*.tgz",
+      "drift-query-*.tgz",
       "node scripts/validate-engine-release-matrix.mjs"
     ]) {
       expect(workflow).toContain(expected);
@@ -74,13 +78,34 @@ describe("release hygiene", () => {
 
     expect(proof.schema_version).toBe("drift.release.proof.v1");
     expect(proof.release_version).toBe("0.1.0");
-    expect(proof.source_schema_version).toBe(10);
-    expect(proof.built_schema_version === null || proof.built_schema_version === 10).toBe(true);
+    expect(proof.source_schema_version).toBe(11);
+    expect(proof.built_schema_version === null || proof.built_schema_version === 11).toBe(true);
     expect(proof.dirty_state).toEqual(expect.any(Boolean));
     expect(proof.engine_targets).toHaveLength(5);
+    expect(proof.beta_proof).toMatchObject({
+      clean_git: expect.any(Boolean),
+      verify_ci_passed: expect.any(Boolean),
+      rust_engine_required: true,
+      fallback_absent: expect.any(Boolean),
+      good_route_passed: null,
+      bad_route_blocked: null,
+      finding_evidence_complete: null,
+      mcp_cli_parity_verified: false,
+      audit_verified: null
+    });
     expect(proof.verification).toMatchObject({
       source_build_schema_match: expect.any(Boolean),
-      release_ready: expect.any(Boolean)
+      release_ready: expect.any(Boolean),
+      beta_ready: false,
+      beta_missing: expect.arrayContaining([
+        "verify_ci_passed",
+        "rust_engine_no_fallback",
+        "good_route_passed",
+        "bad_route_blocked",
+        "finding_evidence_complete",
+        "mcp_cli_parity_verified",
+        "audit_verified"
+      ])
     });
   });
 
@@ -94,6 +119,8 @@ describe("release hygiene", () => {
 
   it("keeps engine binary package versions exact and workspace-free for publication", async () => {
     const cliManifest = JSON.parse(await readFile("packages/cli/package.json", "utf8"));
+    const assertReleaseVersionsScript = await readFile("scripts/assert-release-versions.mjs", "utf8");
+    const preparePublishManifestsScript = await readFile("scripts/prepare-npm-publish-manifests.mjs", "utf8");
     const enginePackages = [
       "engine-darwin-arm64",
       "engine-darwin-x64",
@@ -107,6 +134,10 @@ describe("release hygiene", () => {
       expect(manifest.name).toBe(`@drift/${packageName}`);
       expect(manifest.version).toBe(cliManifest.version);
       expect(cliManifest.optionalDependencies?.[`@drift/${packageName}`]).toBe("workspace:*");
+    }
+    for (const runtimePackage of ["factgraph", "query"]) {
+      expect(assertReleaseVersionsScript).toContain(`packages/${runtimePackage}/package.json`);
+      expect(preparePublishManifestsScript).toContain(`packages/${runtimePackage}/package.json`);
     }
   });
 

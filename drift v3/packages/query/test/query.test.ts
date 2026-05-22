@@ -1,10 +1,11 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Finding, RepoContract } from "@drift/core";
 import { buildFactGraphArtifact, buildFactGraphArtifactFromParts } from "@drift/factgraph";
 import { openDriftStorage } from "@drift/storage";
 import { afterEach, describe, expect, it } from "vitest";
-import { createGraphQueryService } from "../src/index.js";
+import { buildRepoMapReadModel, createGraphQueryService, fallbackFactRepoMapFiles } from "../src/index.js";
 
 const tempDirs: string[] = [];
 
@@ -13,6 +14,148 @@ afterEach(async () => {
 });
 
 describe("GraphQueryService", () => {
+  it("builds a shared repo-map read model from graph, facts, contracts, and findings", () => {
+    const contract: RepoContract = {
+      id: "contract_abc",
+      repo_id: "repo_abc",
+      contract_schema_version: 1,
+      repo_fingerprint: "repo-fp",
+      created_at: "2026-05-22T00:00:00.000Z",
+      updated_at: "2026-05-22T00:00:00.000Z",
+      conventions: [{
+        id: "convention_api_routes",
+        contract_id: "contract_abc",
+        kind: "api_route_no_direct_data_access",
+        statement: "API routes should delegate data access.",
+        scope: { path_globs: ["app/api/**/route.ts"], file_roles: ["api_route"] },
+        matcher: { kind: "api_route_no_direct_data_access", forbidden_imports: ["@/lib/db"] },
+        severity: "error",
+        enforcement_mode: "block",
+        enforcement_capability: "deterministic_check",
+        exceptions: [],
+        evidence_refs: [],
+        counterexample_refs: [],
+        accepted_by: "geoff",
+        accepted_at: "2026-05-22T00:00:00.000Z",
+        updated_at: "2026-05-22T00:00:00.000Z"
+      }],
+      rejected_inferences: [],
+      waivers: [],
+      risky_areas: [{
+        id: "risk_api",
+        path_globs: ["app/api/**/route.ts"],
+        risk_kind: "data_access",
+        reason: "API route boundary"
+      }],
+      safe_commands: [],
+      required_checks: [],
+      context_egress: {
+        default_mode: "local_only",
+        denied_globs: [],
+        max_snippet_chars: 1200,
+        allow_full_file_content: false
+      },
+      agent_permissions: []
+    };
+    const finding: Finding = {
+      id: "finding_abc",
+      repo_id: "repo_abc",
+      convention_id: "convention_api_routes",
+      fingerprint: "finding-fp",
+      title: "API route imports data access directly",
+      message: "Route imports db directly.",
+      severity: "error",
+      enforcement_result: "block",
+      status: "new",
+      diff_status: "new_in_diff",
+      evidence_refs: [{
+        id: "evidence_abc",
+        kind: "violation",
+        file_path: "app/api/users/route.ts",
+        start_line: 1,
+        end_line: 1,
+        scan_id: "scan_abc",
+        file_hash: "a".repeat(64),
+        redaction_state: "none"
+      }],
+      created_at: "2026-05-22T00:00:01.000Z"
+    };
+    const factFiles = fallbackFactRepoMapFiles([
+      {
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        file_path: "app/api/users/route.ts",
+        content_hash: "a".repeat(64),
+        byte_size: 120,
+        indexed: true
+      },
+      {
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        file_path: "app/services/users.ts",
+        content_hash: "b".repeat(64),
+        byte_size: 80,
+        indexed: true
+      }
+    ], [
+      {
+        id: "fact_role",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        kind: "file_role_detected",
+        file_path: "app/api/users/route.ts",
+        name: "api_route",
+        start_line: 1,
+        end_line: 1
+      }
+    ]);
+
+    const model = buildRepoMapReadModel({
+      graphFiles: [{
+        path: "app/api/users/route.ts",
+        content_hash: "a".repeat(64),
+        byte_size: 120,
+        indexed: true,
+        roles: [],
+        imports: ["@/lib/db"],
+        exported_symbols: ["GET"],
+        calls: ["GET"],
+        graph_node_ids: ["file:app/api/users/route.ts"],
+        evidence_ids: ["evidence_abc"],
+        fact_count: 1
+      }],
+      factFiles,
+      contract,
+      findings: [finding],
+      filters: { role: "api_route" },
+      limit: 1,
+      offset: 0
+    });
+
+    expect(model.summary).toMatchObject({
+      indexed_file_count: 2,
+      filtered_file_count: 1,
+      listed_file_count: 1,
+      import_count: 1,
+      export_count: 1
+    });
+    expect(model.listed_files[0]).toMatchObject({
+      path: "app/api/users/route.ts",
+      roles: ["api_route"],
+      imports: ["@/lib/db"],
+      convention_ids: ["convention_api_routes"],
+      risky_area_ids: ["risk_api"],
+      open_finding_ids: ["finding_abc"],
+      graph_node_ids: ["file:app/api/users/route.ts"],
+      evidence_ids: ["evidence_abc"]
+    });
+    expect(model.impact_summary).toEqual({
+      convention_coverage_count: 1,
+      risky_file_count: 1,
+      open_finding_count: 1
+    });
+  });
+
   it("maps repo files from persisted FactGraph projections without reading raw facts", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-query-"));
     tempDirs.push(dir);
