@@ -420,6 +420,7 @@ describe("drift CLI convention review", () => {
       agent_can_mutate: false
     });
     expect(payload.capabilities.read_only_cli).toContain("prepare");
+    expect(payload.capabilities.read_only_cli).toContain("conventions accepted");
     expect(payload.capabilities.human_confirmed_cli).toEqual(expect.arrayContaining([
       "conventions accept --confirm",
       "conventions reject --confirm",
@@ -2611,6 +2612,58 @@ describe("drift CLI convention review", () => {
     expect(text.exitCode).toBe(0);
     expect(text.stdout).toContain("apps/web/app/api/users/route.ts:1");
     expect(text.stdout).toContain("@/lib/prisma");
+  });
+
+  it("lists accepted conventions as the CLI equivalent of MCP get_conventions", async () => {
+    const { databasePath } = await seedAcceptedDatabase();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "conventions", "accepted",
+      "--repo", "repo_abc",
+      "--kind", "api_route_no_direct_data_access",
+      "--capability", "deterministic_check",
+      "--limit", "1",
+      "--offset", "0",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload).toMatchObject({
+      repo_id: "repo_abc",
+      governance: {
+        read_only: true,
+        agent_can_mutate: false
+      },
+      filters: {
+        kind: "api_route_no_direct_data_access",
+        capability: "deterministic_check"
+      },
+      summary: {
+        total_count: 1,
+        filtered_count: 1,
+        listed_count: 1,
+        deterministic_count: 1,
+        blocking_count: 1
+      },
+      pagination: {
+        limit: 1,
+        offset: 0,
+        returned_count: 1,
+        has_more: false,
+        next_offset: null
+      }
+    });
+    expect(payload.conventions).toEqual([
+      expect.objectContaining({
+        id: "convention_no_direct_db",
+        contract_id: "contract_abc",
+        kind: "api_route_no_direct_data_access",
+        enforcement_mode: "block",
+        enforcement_capability: "deterministic_check"
+      })
+    ]);
   });
 
   it("checks accepted deterministic conventions against changed hunks and stores findings", async () => {

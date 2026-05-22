@@ -386,6 +386,7 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
   if (!latestScan) {
     const nextCommands = scanStatusNextCommands(repoId, repo.root_path, true);
     return {
+      response_schema: "drift.scan.status.v1",
       repo_id: repoId,
       repo_root: repo.root_path,
       latest_scan: null,
@@ -443,6 +444,7 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
   const sourceChangeCount = changes.added.length + changes.modified.length + changes.deleted.length;
   const nextCommands = scanStatusNextCommands(repoId, repo.root_path, stale);
   const payload = {
+    response_schema: "drift.scan.status.v1",
     repo_id: repoId,
     repo_root: repo.root_path,
     current_branch: currentBranch,
@@ -450,6 +452,7 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     scan_fingerprint: scanFingerprint(latestScan, snapshots),
     indexed_file_count: latestScan.file_count,
     source_change_count: sourceChangeCount,
+    scan_count: indexedScanCount,
     latest_scan_change_summary: scanFileChangeSummary(scanFileChanges),
     governance: preflightGovernance(),
     summary: scanStatusSummary({

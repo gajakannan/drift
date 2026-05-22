@@ -11,6 +11,7 @@ import type {
   PolicyDecision,
   RepoContract,
   RepoRecord,
+  ScanFileChange,
   ScanManifest,
   Severity
 } from "@drift/core";
@@ -25,6 +26,7 @@ import {
 import {
   DRIFT_CONTRACT_SCHEMA_VERSION,
   DRIFT_CORE_VERSION,
+  DRIFT_RESOLVER_VERSION,
   DRIFT_RULE_ENGINE_VERSION,
   DRIFT_SCANNER_VERSION,
   DRIFT_TYPESCRIPT_ADAPTER_VERSION
@@ -89,9 +91,11 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const { policy } = requiredAuthorizedMcpContract(storage, requestedRepoId, "log");
       const verification = storage.verifyAuditChain(requestedRepoId);
       return {
+        response_schema: "drift.audit.status.v1",
         repo_id: requestedRepoId,
         policy,
         governance: preflightGovernance(),
+        verification,
         audit_integrity: verification,
         summary: auditVerifySummary(verification),
         next_commands: auditVerifyNextCommands(requestedRepoId, verification)
@@ -103,8 +107,9 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
 
     get_repo_contract: ({ repo_id }) => withStorage(options, (storage) => {
       const requestedRepoId = requiredMcpString(repo_id, "repo_id");
-      const { contract, policy } = requiredAuthorizedMcpContract(storage, requestedRepoId);
+      const { contract, policy } = requiredAuthorizedMcpContract(storage, requestedRepoId, "contract-export");
       return {
+        response_schema: "drift.repo.contract.v1",
         repo_id: requestedRepoId,
         policy,
         governance: preflightGovernance(),
@@ -120,7 +125,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const requestedLimit = optionalMcpPositiveInteger(limit, "limit");
       const requestedOffset = optionalMcpNonNegativeInteger(offset, "offset") ?? 0;
       return repoMapPayload(storage, requestedRepoId, {
-        surface: "mcp",
+        surface: "cli-preflight",
         role,
         path: requestedPath,
         requireFresh: Boolean(require_fresh),
@@ -134,7 +139,11 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const requestedTask = requiredMcpString(task, "task");
       const requestedPath = path ? requiredRepoRelativeMcpPath(path) : undefined;
       const generatedAt = optionalMcpIsoTimestamp(now, "now") ?? new Date().toISOString();
-      const { contract, policy, ready: contractReady } = authorizedMcpContractOrDefault(storage, requestedRepoId);
+      const { contract, policy, ready: contractReady } = authorizedMcpContractOrDefault(
+        storage,
+        requestedRepoId,
+        "cli-preflight"
+      );
       const activeConventions = contract.conventions.filter((convention) =>
         !convention.expires_at || convention.expires_at > generatedAt
       );
@@ -150,20 +159,37 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const candidateCount = storage.listConventionCandidates(requestedRepoId, { status: "candidate" }).length;
       const findings = storage.listFindings(requestedRepoId)
         .filter(isOpenPreflightFinding)
-        .map(preflightFinding);
+        .map(prepareFinding);
       const riskyAreas = riskyAreasForFiles(contract, relevantFiles);
-      const requiredChecks = requiredChecksForFiles(contract, relevantFiles);
+      const graphContext = graphPreflightContext({
+        storage,
+        repoId: requestedRepoId,
+        scanStatus,
+        targetPath: requestedPath,
+        relevantFiles
+      });
+      const requiredChecks = [
+        ...requiredChecksForFiles(contract, relevantFiles),
+        ...requiredChecksFromGraphRisk({
+          repoRoot: storage.getRepo(requestedRepoId)!.root_path,
+          graphContext,
+          relevantFiles,
+          safeCommands: contract.safe_commands
+        })
+      ];
       const waivers = waiversForFiles(contract, relevantFiles, generatedAt);
       return {
+        response_schema: "drift.task.preflight.v1",
         repo_id: requestedRepoId,
         task: requestedTask,
         target_path: requestedPath ?? null,
         generated_at: generatedAt,
         agent_envelope: mcpAgentEnvelope({
-          surface: "mcp",
+          surface: "cli-preflight",
           policy,
           scanStatus,
-          requireFresh: Boolean(require_fresh)
+          requireFresh: Boolean(require_fresh),
+          diagnostics: graphContext.diagnostics
         }),
         policy,
         contract: {
@@ -192,6 +218,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         audit_integrity: scanStatus.audit_integrity,
         scan_status: scanStatus,
         freshness_requirement: freshnessRequirement(Boolean(require_fresh), scanStatus),
+        graph_context: graphContext,
         baseline,
         findings,
         relevant_files: relevantFiles,
@@ -208,7 +235,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
           ),
           snippets_included: false,
           source_content_included: false,
-          graph_context_included: false,
+          graph_context_included: graphContext.available,
           context_truncated: false
         },
         next_commands: contractReady
@@ -226,7 +253,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
 
     get_conventions: ({ repo_id, kind, capability, limit, offset }) => withStorage(options, (storage) => {
       const requestedRepoId = requiredMcpString(repo_id, "repo_id");
-      const { policy } = requiredAuthorizedMcpContract(storage, requestedRepoId);
+      const { policy } = requiredAuthorizedMcpContract(storage, requestedRepoId, "cli-preflight");
       const requestedKind = validateConventionKind(kind);
       const requestedCapability = validateEnforcementCapability(capability);
       const requestedLimit = optionalMcpPositiveInteger(limit, "limit");
@@ -238,6 +265,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       ));
       const conventions = paginateAcceptedConventions(filteredConventions, requestedLimit, requestedOffset);
       return {
+        response_schema: "drift.conventions.accepted.v1",
         repo_id: requestedRepoId,
         policy,
         filters: {
@@ -253,7 +281,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
 
     get_findings: ({ repo_id, status, severity, diff_status, convention_id, path, limit, offset, require_fresh }) => withStorage(options, (storage) => {
       const requestedRepoId = requiredMcpString(repo_id, "repo_id");
-      const { policy } = requiredAuthorizedMcpContract(storage, requestedRepoId);
+      const { policy } = requiredAuthorizedMcpContract(storage, requestedRepoId, "cli-check");
       const requestedStatus = validateFindingStatus(status);
       const requestedSeverity = validateSeverity(severity);
       const requestedDiffStatus = validateFindingDiffStatus(diff_status);
@@ -274,9 +302,10 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const orderedFindings = orderFindingsForReview(filteredFindings);
       const findings = paginateFindings(orderedFindings, requestedLimit, requestedOffset);
       return {
+        response_schema: "drift.findings.list.v1",
         repo_id: requestedRepoId,
         agent_envelope: mcpAgentEnvelope({
-          surface: "mcp",
+          surface: "cli-check",
           policy,
           scanStatus,
           requireFresh: Boolean(require_fresh)
@@ -294,7 +323,8 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         freshness_requirement: freshnessRequirement(Boolean(require_fresh), scanStatus),
         summary: findingsSummary(allFindings, filteredFindings),
         pagination: paginationSummary(filteredFindings.length, findings.length, requestedLimit, requestedOffset),
-        findings: findings.map(preflightFinding)
+        review_items: findings.map(preflightFinding),
+        findings
       };
     }),
 
@@ -329,6 +359,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
           request_full_file_content
         });
         return {
+          response_schema: "drift.allowed-context.v1",
           repo_id: requestedRepoId,
           path: requestedPath,
           request,
@@ -856,17 +887,6 @@ function requiredMcpRepoRecord(
   return repo;
 }
 
-function optionalAuthorizedMcpPolicy(
-  storage: ReturnType<typeof openDriftStorage>,
-  repoId: string
-): PolicyDecision | null {
-  const contract = storage.getRepoContract(repoId);
-  if (!contract) {
-    return null;
-  }
-  return authorizeContextExport(contract, "mcp");
-}
-
 function scanStatusPayload(
   storage: ReturnType<typeof openDriftStorage>,
   repoId: string
@@ -882,16 +902,19 @@ function scanStatusPayload(
     !scan.id.startsWith("scan_baseline_") &&
     !scan.id.startsWith("scan_restore_")
   ).length;
-  const policy = optionalAuthorizedMcpPolicy(storage, repoId);
   const snapshots = latestScan ? storage.listFileSnapshots(repoId, latestScan.id) : [];
+  const scanFileChanges = latestScan ? storage.listScanFileChanges(repoId, latestScan.id) : [];
   const repoRootMissing = !existsSync(repo.root_path);
   const currentBranch = repoRootMissing
     ? "unknown"
     : gitOutput(repo.root_path, ["branch", "--show-current"]) || "unknown";
+  const currentResolverInputFingerprint = repoRootMissing
+    ? undefined
+    : resolverInputFingerprint(repo.root_path);
   const invalidationReasons = latestScan
     ? [
         ...(repoRootMissing ? ["repo_root_missing"] : []),
-        ...scanInvalidationReasons(latestScan, { currentBranch })
+        ...scanInvalidationReasons(latestScan, { currentBranch, currentResolverInputFingerprint })
       ]
     : [];
   const changes = latestScan
@@ -913,8 +936,8 @@ function scanStatusPayload(
   const nextCommands = scanStatusNextCommands(repoId, repo.root_path, stale);
 
   return {
+    response_schema: "drift.scan.status.v1",
     repo_id: repoId,
-    policy,
     governance: preflightGovernance(),
     repo_root: repo.root_path,
     current_branch: currentBranch,
@@ -924,6 +947,7 @@ function scanStatusPayload(
     indexed_file_count: latestScan?.file_count ?? 0,
     source_change_count: sourceChangeCount,
     scan_count: indexedScanCount,
+    latest_scan_change_summary: scanFileChangeSummary(scanFileChanges),
     summary: scanStatusSummary({
       latestScanId: latestScan?.id ?? null,
       scanCount: indexedScanCount,
@@ -969,6 +993,22 @@ function scanStatusSummary(options: {
   };
 }
 
+function scanFileChangeSummary(changes: ScanFileChange[]): {
+  added: number;
+  modified: number;
+  deleted: number;
+  unchanged: number;
+  total: number;
+} {
+  return {
+    added: changes.filter((change) => change.change_kind === "added").length,
+    modified: changes.filter((change) => change.change_kind === "modified").length,
+    deleted: changes.filter((change) => change.change_kind === "deleted").length,
+    unchanged: changes.filter((change) => change.change_kind === "unchanged").length,
+    total: changes.length
+  };
+}
+
 function scanStatusNextCommands(repoId: string, repoRoot: string, stale: boolean): string[] {
   return stale
     ? [
@@ -986,6 +1026,8 @@ function auditVerifySummary(verification: AuditChainVerification): {
   valid: boolean;
   event_count: number;
   verified_count: number;
+  strict: boolean;
+  head_sequence?: number | null;
   broken_at_event_id: string | null;
   reason_count: number;
   head_event_hash: string | null;
@@ -994,6 +1036,8 @@ function auditVerifySummary(verification: AuditChainVerification): {
     valid: verification.valid,
     event_count: verification.event_count,
     verified_count: verification.verified_count,
+    strict: verification.strict === true,
+    head_sequence: verification.head_sequence,
     broken_at_event_id: verification.broken_at_event_id,
     reason_count: verification.reasons.length,
     head_event_hash: verification.head_event_hash
@@ -1169,8 +1213,10 @@ function repoMapPayload(
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
   return {
+    response_schema: "drift.repo.map.v1",
     repo_id: repoId,
     repo_root: repo.root_path,
+    generated_at: new Date().toISOString(),
     agent_envelope: mcpAgentEnvelope({
       surface: options.surface,
       policy,
@@ -1280,7 +1326,10 @@ function gitOutput(repoRoot: string, args: string[]): string {
   }
 }
 
-function scanInvalidationReasons(scan: ScanManifest, input: { currentBranch?: string } = {}): string[] {
+function scanInvalidationReasons(
+  scan: ScanManifest,
+  input: { currentBranch?: string; currentResolverInputFingerprint?: string } = {}
+): string[] {
   const reasons: string[] = [];
   if (input.currentBranch && scan.branch !== input.currentBranch) {
     reasons.push("branch_changed");
@@ -1290,6 +1339,16 @@ function scanInvalidationReasons(scan: ScanManifest, input: { currentBranch?: st
   }
   if (scan.adapter_versions.typescript !== DRIFT_TYPESCRIPT_ADAPTER_VERSION) {
     reasons.push("adapter_version_changed:typescript");
+  }
+  if (scan.adapter_versions.resolver && scan.adapter_versions.resolver !== DRIFT_RESOLVER_VERSION) {
+    reasons.push("resolver_version_changed");
+  }
+  if (
+    scan.adapter_versions.resolver_inputs &&
+    input.currentResolverInputFingerprint &&
+    scan.adapter_versions.resolver_inputs !== input.currentResolverInputFingerprint
+  ) {
+    reasons.push("resolver_inputs_changed");
   }
   if (scan.rule_engine_version !== DRIFT_RULE_ENGINE_VERSION) {
     reasons.push("rule_engine_version_changed");
@@ -1338,6 +1397,58 @@ function compareSnapshotsToCurrentFiles(
     modified: modified.sort(),
     deleted: deleted.sort()
   };
+}
+
+function resolverInputFingerprint(repoRoot: string): string {
+  const inputs = resolverInputPaths(repoRoot)
+    .map((path) => [path, fileContentHash(join(repoRoot, path))])
+    .sort((left, right) => left[0].localeCompare(right[0]));
+  return createHash("sha256").update(JSON.stringify(inputs)).digest("hex");
+}
+
+function resolverInputPaths(repoRoot: string): string[] {
+  if (!existsSync(repoRoot) || !statSync(repoRoot).isDirectory()) {
+    return [];
+  }
+  const paths: string[] = [];
+  collectResolverInputPaths(repoRoot, "", paths, 0);
+  return paths.sort();
+}
+
+function collectResolverInputPaths(
+  repoRoot: string,
+  relativeDir: string,
+  paths: string[],
+  depth: number
+): void {
+  if (depth > 4) {
+    return;
+  }
+  const absoluteDir = join(repoRoot, relativeDir);
+  for (const entry of readdirSync(absoluteDir, { withFileTypes: true })) {
+    if (entry.name.startsWith(".") && entry.name !== ".npmrc") {
+      continue;
+    }
+    const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (["node_modules", "dist", "build", "coverage", ".next", "target", "vendor"].includes(entry.name)) {
+        continue;
+      }
+      collectResolverInputPaths(repoRoot, relativePath, paths, depth + 1);
+      continue;
+    }
+    if (!entry.isFile() || !isResolverInputPath(relativePath)) {
+      continue;
+    }
+    paths.push(relativePath);
+  }
+}
+
+function isResolverInputPath(filePath: string): boolean {
+  const fileName = filePath.split("/").at(-1) ?? filePath;
+  return fileName === "package.json" ||
+    fileName === "jsconfig.json" ||
+    /^tsconfig(?:\.[^.]+)?\.json$/.test(fileName);
 }
 
 function walkIndexableFiles(repoRoot: string): string[] {
@@ -1545,6 +1656,208 @@ function requiredChecksForFiles(
   });
 }
 
+function requiredChecksFromGraphRisk(input: {
+  repoRoot: string;
+  graphContext: ReturnType<typeof graphPreflightContext>;
+  relevantFiles: RelevantFile[];
+  safeCommands: RepoContract["safe_commands"];
+}): PreparedRequiredCheck[] {
+  if (!input.graphContext.available || input.graphContext.reachable_data_access.length === 0) {
+    return [];
+  }
+
+  const relevantPaths = new Set(input.relevantFiles.map((file) => file.path));
+  const command = firstTestCommand(input.safeCommands) ??
+    firstTestCommand(defaultSafeCommandsForRepo(input.repoRoot));
+  if (!command) {
+    return [];
+  }
+
+  const checks = new Map<string, PreparedRequiredCheck>();
+  for (const access of input.graphContext.reachable_data_access) {
+    if (!access.path || !relevantPaths.has(access.path)) {
+      continue;
+    }
+    const riskKinds = uniqueSorted(access.risk_reasons
+      .map((reason) => reason.risk_kind)
+      .filter((riskKind) => riskKind === "data_write" || riskKind === "data_delete"));
+    if (riskKinds.length === 0) {
+      continue;
+    }
+    const evidenceNodeIds = uniqueSorted(access.data_operations
+      .filter((operation) =>
+        operation.operation_kind === "write" || operation.operation_kind === "delete"
+      )
+      .flatMap((operation) => [
+        operation.operation_node_id,
+        operation.data_store_node_id
+      ])
+      .filter((id): id is string => Boolean(id)));
+    const key = `${command.command}\0${access.path}\0${riskKinds.join(",")}`;
+    checks.set(key, {
+      command: command.command,
+      applies_to: {
+        path_globs: [access.path],
+        file_roles: ["api_route"]
+      },
+      reason: `Graph risk: ${access.path} reaches ${riskKinds.join(", ")} data operations; run API/service tests before finishing.`,
+      source: "graph_risk",
+      evidence_node_ids: evidenceNodeIds,
+      risk_kinds: riskKinds,
+      matched_files: [access.path]
+    });
+  }
+
+  return [...checks.values()].sort((left, right) =>
+    `${left.command}:${left.matched_files.join(",")}`.localeCompare(`${right.command}:${right.matched_files.join(",")}`)
+  );
+}
+
+function graphPreflightContext(input: {
+  storage: ReturnType<typeof openDriftStorage>;
+  repoId: string;
+  scanStatus: ReturnType<typeof scanStatusPayload>;
+  targetPath?: string;
+  relevantFiles: RelevantFile[];
+}) {
+  const latestScan = input.scanStatus.latest_scan;
+  if (!latestScan) {
+    return unavailableGraphContext(["scan_missing"]);
+  }
+  const artifact = input.storage.getFactGraphArtifact(input.repoId, latestScan.id);
+  if (!artifact) {
+    return unavailableGraphContext(["graph_artifact_missing"], latestScan.id);
+  }
+
+  const graph = createGraphQueryService(input.storage);
+  const paths = uniqueSorted([
+    input.targetPath,
+    ...input.relevantFiles.map((file) => file.path)
+  ].filter((path): path is string => Boolean(path))).slice(0, 10);
+  const routePaths = paths.filter(isApiRoutePath);
+  const routeFlows = routePaths.map((path) =>
+    graph.getRouteFlow({
+      repo_id: input.repoId,
+      scan_id: latestScan.id,
+      path,
+      policy_surface: "cli-preflight"
+    })
+  );
+  const reachableDataAccess = routePaths.map((path) =>
+    graph.getReachableDataAccess({
+      repo_id: input.repoId,
+      scan_id: latestScan.id,
+      path,
+      policy_surface: "cli-preflight"
+    })
+  );
+  const affectedFiles = paths.map((path) =>
+    graph.getAffectedFiles({
+      repo_id: input.repoId,
+      scan_id: latestScan.id,
+      path,
+      policy_surface: "cli-preflight"
+    })
+  );
+  const completeness = graph.getCompleteness({
+    repo_id: input.repoId,
+    scan_id: latestScan.id,
+    policy_surface: "cli-preflight"
+  });
+  const diagnosticSummary = graph.getDiagnosticSummary({
+    repo_id: input.repoId,
+    scan_id: latestScan.id,
+    policy_surface: "cli-preflight",
+    limit: 3
+  });
+
+  return {
+    available: true,
+    scan_id: latestScan.id,
+    completeness: {
+      complete: completeness.complete,
+      reasons: completeness.reasons
+    },
+    route_flows: routeFlows,
+    reachable_data_access: reachableDataAccess,
+    affected_files: affectedFiles,
+    diagnostic_summary: diagnosticSummary,
+    diagnostics: uniqueSorted([
+      ...completeness.reasons,
+      ...diagnosticSummary.completeness_reasons,
+      ...diagnosticSummary.groups.map((group) => `${group.code}:${group.count}`),
+      ...routeFlows.flatMap((flow) => flow.diagnostics),
+      ...reachableDataAccess.flatMap((access) => access.diagnostics),
+      ...affectedFiles.flatMap((affected) => affected.diagnostics)
+    ])
+  };
+}
+
+function unavailableGraphContext(diagnostics: string[], scanId: string | null = null) {
+  return {
+    available: false,
+    scan_id: scanId,
+    completeness: null,
+    route_flows: [],
+    reachable_data_access: [],
+    affected_files: [],
+    diagnostic_summary: null,
+    diagnostics
+  };
+}
+
+function firstTestCommand(commands: RepoContract["safe_commands"]): RepoContract["safe_commands"][number] | undefined {
+  return commands.find((command) => /\b(test|vitest|jest)\b/.test(command.command));
+}
+
+function defaultSafeCommandsForRepo(repoRoot: string | undefined): RepoContract["safe_commands"] {
+  if (!repoRoot || !hasPackageScript(repoRoot, "test")) {
+    return [];
+  }
+
+  const packageManager = detectPackageManager(repoRoot);
+  const command = packageManager === "pnpm"
+    ? "pnpm test"
+    : packageManager === "yarn"
+      ? "yarn test"
+      : packageManager === "bun"
+        ? "bun test"
+        : "npm test";
+  return [{
+    command,
+    reason: "Run the repo test script after AI-assisted changes.",
+    requires_explicit_run: true
+  }];
+}
+
+function hasPackageScript(repoRoot: string, scriptName: string): boolean {
+  const manifestPath = join(repoRoot, "package.json");
+  if (!existsSync(manifestPath)) {
+    return false;
+  }
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    return typeof manifest.scripts?.[scriptName] === "string";
+  } catch {
+    return false;
+  }
+}
+
+function detectPackageManager(repoRoot: string): "pnpm" | "yarn" | "bun" | "npm" {
+  if (existsSync(join(repoRoot, "pnpm-lock.yaml"))) {
+    return "pnpm";
+  }
+  if (existsSync(join(repoRoot, "yarn.lock"))) {
+    return "yarn";
+  }
+  if (existsSync(join(repoRoot, "bun.lockb")) || existsSync(join(repoRoot, "bun.lock"))) {
+    return "bun";
+  }
+  return "npm";
+}
+
 function requiredCheckMatchesFile(
   check: RepoContract["required_checks"][number],
   filePath: string,
@@ -1688,6 +2001,26 @@ function preflightGovernance(): {
 
 function isOpenPreflightFinding(finding: Finding): boolean {
   return !["fixed", "false_positive", "suppressed", "accepted_drift", "expired"].includes(finding.status);
+}
+
+function prepareFinding(finding: Finding): {
+  id: string;
+  convention_id: string;
+  title: string;
+  severity: Severity;
+  status: FindingStatus;
+  diff_status: FindingDiffStatus;
+  enforcement_result: Finding["enforcement_result"];
+} {
+  return {
+    id: finding.id,
+    convention_id: finding.convention_id,
+    title: finding.title,
+    severity: finding.severity,
+    status: finding.status,
+    diff_status: finding.diff_status,
+    enforcement_result: finding.enforcement_result
+  };
 }
 
 function preflightConvention(convention: AcceptedConvention): {

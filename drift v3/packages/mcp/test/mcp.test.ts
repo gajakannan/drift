@@ -535,6 +535,49 @@ describe("read-only MCP handlers", () => {
     });
   });
 
+  it("matches CLI scan-status resolver input invalidation semantics", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const repo = storage.getRepo("repo_abc")!;
+    const scan = storage.listScanManifests("repo_abc").find((entry) => entry.id === "scan_abc")!;
+    const routeSource = "export async function GET() { return Response.json({ ok: true }); }\n";
+    await writeFile(join(repo.root_path, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        baseUrl: ".",
+        paths: { "@/*": ["apps/web/*"] }
+      }
+    }));
+    storage.upsertScanManifest({
+      ...scan,
+      id: "scan_resolver_inputs",
+      branch: "unknown",
+      scanner_version: "0.1.0",
+      adapter_versions: {
+        typescript: "0.1.0",
+        resolver: "0.1.0",
+        resolver_inputs: "0".repeat(64)
+      },
+      rule_engine_version: "0.1.0",
+      started_at: "2026-05-10T00:00:03.000Z",
+      completed_at: "2026-05-10T00:00:04.000Z"
+    });
+    storage.upsertFileSnapshot({
+      repo_id: "repo_abc",
+      scan_id: "scan_resolver_inputs",
+      file_path: "apps/web/app/api/users/route.ts",
+      content_hash: createHash("sha256").update(routeSource).digest("hex"),
+      byte_size: Buffer.byteLength(routeSource),
+      indexed: true
+    });
+    storage.close();
+
+    expect(createReadOnlyMcpHandlers({ databasePath }).get_scan_status({ repo_id: "repo_abc" })).toMatchObject({
+      stale: true,
+      invalidation_reasons: ["resolver_inputs_changed"]
+    });
+  });
+
   it("returns scan, contract, preflight, findings, and policy context without mutating state", async () => {
     const databasePath = await seedMcpDatabase();
     const handlers = createReadOnlyMcpHandlers({ databasePath });
@@ -623,7 +666,7 @@ describe("read-only MCP handlers", () => {
       ]
     });
     expect(handlers.get_repo_contract({ repo_id: "repo_abc" })).toMatchObject({
-      policy: { allowed: true, surface: "mcp" },
+      policy: { allowed: true, surface: "contract-export" },
       governance: {
         read_only: true,
         agent_can_mutate: false
@@ -641,7 +684,7 @@ describe("read-only MCP handlers", () => {
     });
     expect(handlers.get_repo_map({ repo_id: "repo_abc" })).toMatchObject({
       repo_id: "repo_abc",
-      policy: { allowed: true, surface: "mcp" },
+      policy: { allowed: true, surface: "cli-preflight" },
       governance: {
         read_only: true,
         agent_can_mutate: false
@@ -710,7 +753,7 @@ describe("read-only MCP handlers", () => {
       agent_envelope: {
         policy_proof: {
           schema_version: "policy.proof.v1",
-          surface: "mcp",
+          surface: "cli-preflight",
           allowed: true,
           redaction_state: "metadata_only",
           snippets_included: false,
@@ -763,7 +806,7 @@ describe("read-only MCP handlers", () => {
         id: "contract_abc",
         schema_version: 1
       },
-      policy: { allowed: true, surface: "mcp" },
+      policy: { allowed: true, surface: "cli-preflight" },
       conventions: [{
         id: "convention_no_direct_db",
         severity: "error",
@@ -820,7 +863,7 @@ describe("read-only MCP handlers", () => {
       require_fresh: true
     } as never)).toThrow("Scan is stale for repo_abc.");
     expect(handlers.get_conventions({ repo_id: "repo_abc" })).toMatchObject({
-      policy: { allowed: true, surface: "mcp" },
+      policy: { allowed: true, surface: "cli-preflight" },
       summary: {
         total_count: 1,
         deterministic_count: 1,
@@ -835,10 +878,11 @@ describe("read-only MCP handlers", () => {
       conventions: [{ id: "convention_no_direct_db" }]
     });
     const allFindings = handlers.get_findings({ repo_id: "repo_abc" }) as {
+      review_items: Array<Record<string, unknown>>;
       findings: Array<Record<string, unknown>>;
     };
     expect(allFindings).toMatchObject({
-      policy: { allowed: true, surface: "mcp" },
+      policy: { allowed: true, surface: "cli-check" },
       governance: {
         read_only: true,
         agent_can_mutate: false
@@ -859,9 +903,10 @@ describe("read-only MCP handlers", () => {
           outside_diff: 1
         }
       },
+      review_items: [{ id: "finding_abc" }, { id: "finding_suppressed" }],
       findings: [{ id: "finding_abc" }, { id: "finding_suppressed" }]
     });
-    expect(allFindings.findings[0]).toMatchObject({
+    expect(allFindings.review_items[0]).toMatchObject({
       id: "finding_abc",
       convention_id: "convention_no_direct_db",
       title: "API route imports data access directly",
@@ -877,8 +922,8 @@ describe("read-only MCP handlers", () => {
         symbol: "prisma"
       }
     });
-    expect(allFindings.findings[0]).not.toHaveProperty("message");
-    expect(allFindings.findings[0]).not.toHaveProperty("evidence_refs");
+    expect(allFindings.findings[0]).toHaveProperty("message");
+    expect(allFindings.findings[0]).toHaveProperty("evidence_refs");
     const pathFindings = handlers.get_findings({
       repo_id: "repo_abc",
       path: "apps/web/app/api/users/route.ts"
@@ -1266,7 +1311,7 @@ describe("read-only MCP handlers", () => {
 
     expect(repoMap.policy).toMatchObject({
       allowed: true,
-      surface: "mcp"
+      surface: "cli-preflight"
     });
     expect(repoMap.summary).toMatchObject({
       indexed_file_count: 1,
@@ -1649,12 +1694,7 @@ describe("read-only MCP handlers", () => {
     const handlers = createReadOnlyMcpHandlers({ databasePath });
 
     expect(handlers.get_scan_status({ repo_id: "repo_abc" })).toMatchObject({
-      repo_id: "repo_abc",
-      policy: {
-        allowed: false,
-        surface: "mcp",
-        mode: "approval_required"
-      }
+      repo_id: "repo_abc"
     });
     expect(() => handlers.get_task_preflight({
       repo_id: "repo_abc",

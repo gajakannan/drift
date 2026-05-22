@@ -8,7 +8,7 @@ The short version:
 
 - The product direction is coherent: local-first repo facts become human-accepted conventions, then `check` blocks drift with evidence.
 - The type/schema/storage spine is real.
-- The beta proof still depends on a clean, reproducible accepted-contract loop and a passing full gate.
+- The beta proof loop is now executable through `pnpm beta:proof` and is part of `pnpm verify:ci`.
 - Several GPT Pro-suggested fields are good requirements but are not implemented today. They are marked as gaps, not described as current behavior.
 
 ## Verification Boundary
@@ -18,25 +18,24 @@ Commands run or used as current evidence:
 ```bash
 git -C "drift v3" status --short --branch
 node packages/cli/dist/main.js capabilities --json
-node packages/cli/dist/main.js --db output/dogfood/drift-state/repo_8e87fba3c58ea49b/drift.sqlite scan status --repo repo_8e87fba3c58ea49b --json
-sqlite3 output/dogfood/drift-state/repo_8e87fba3c58ea49b/drift.sqlite "select 'migrations', count(*) from schema_migrations union all select 'facts', count(*) from facts union all select 'graph_nodes', count(*) from graph_nodes union all select 'graph_edges', count(*) from graph_edges union all select 'graph_evidence', count(*) from graph_evidence union all select 'convention_candidates', count(*) from convention_candidates union all select 'repo_contracts', count(*) from repo_contracts union all select 'audit_events', count(*) from audit_events;"
-node packages/cli/dist/main.js --db output/dogfood/drift-state/repo_8e87fba3c58ea49b/drift.sqlite check --repo repo_8e87fba3c58ea49b --scope full --json
+pnpm beta:proof
+DRIFT_VERIFY_CI_STATUS=passed node scripts/run-beta-proof.mjs --output /tmp/drift-beta-proof.json
+DRIFT_VERIFY_CI_STATUS=passed node scripts/generate-release-proof.mjs --beta-proof-file /tmp/drift-beta-proof.json --require-beta-proof
 ```
 
 Known gate result from the current assessment packet:
 
-- `pnpm verify:ci` exists in `package.json:21`.
-- The latest audit run did not pass end to end; it failed during `pnpm test` in `packages/cli/test/cli.test.ts`.
-- This doc pass did not rerun full CI. It only verifies source and fast live state needed to classify contracts.
+- `pnpm verify:ci` exists in `package.json` and includes `pnpm beta:proof`.
+- `pnpm beta:proof` generates `drift.beta.proof.v1`.
+- `scripts/generate-release-proof.mjs --beta-proof-file` generates `drift.release.proof.v1` and enforces `--require-beta-proof` only from a `drift.beta.proof.v1` artifact, not hand-authored env fields.
+- The release workflow has a final release-proof job after engine checksums and npm tarballs exist; that job uses `--require-complete`.
+- Full `pnpm verify:ci` must still be rerun after every doc/code change before claiming branch completion.
 
-Current live dogfood state:
+Current beta proof state:
 
-- Branch: `codex/drift-sprints-15-25`.
-- Worktree: dirty, with many modified files and untracked docs/fixtures.
-- Dogfood scan: completed but stale; `scan status` reports `resolver_inputs_changed` and 18 modified files.
-- Dogfood DB counts from the built CLI artifact: 9 migrations, 15907 facts, 16128 graph nodes, 23337 graph edges, 11488 graph evidence rows, 0 convention candidates, 0 repo contracts, 4 audit events.
-- Source now defines 11 migrations in `packages/storage/src/migrations.ts:6`, with `011_check_runs_and_finding_context` adding persisted check runs and finding evidence context; source tests expect `supported_sqlite_schema_version: 11`. The older built dogfood artifact reporting schema 9 is release-hygiene evidence that generated/runtime artifacts can drift from source unless rebuilt and gated.
-- Dogfood `check --scope full`: fails closed with `No repo contract exists for repo_8e87fba3c58ea49b.`
+- Beta proof uses a generated fixture derived from `test/fixtures/next-api-direct-db`, then adds one service-delegated good route and one direct-data-access bad route.
+- Proof fields include repo id, scan id, repo contract id, check id, Rust/fresh scan proof, graph counts, good-route pass, bad-route block, finding evidence completeness, full schema-stable MCP/CLI parity hash, audit head hash, and audit verification.
+- Source defines 11 migrations in `packages/storage/src/migrations.ts:6`, with `011_check_runs_and_finding_context` adding persisted check runs and finding evidence context.
 
 ## Status Labels
 
@@ -59,7 +58,7 @@ Current live dogfood state:
 8. A beta demo from dirty state is not beta-grade.
 9. Scanner skip rules, context egress denied globs, and support/export redaction are separate controls. Rust skip behavior is the production scanner guarantee; policy denied globs are output controls; TypeScript fallback is degraded and cannot be claimed equivalent for secret-like handling.
 10. The SQLite DB, backups, audit output, repo map metadata, and support/debug artifacts are sensitive local repo metadata even when they do not contain source text.
-11. CLI `--json` and MCP results need versioned response schemas; snapshot parity is proof, not the boundary.
+11. CLI `--json` and MCP results expose top-level versioned `response_schema` names on beta-used surfaces; typed response schema definitions are still the missing production boundary.
 12. Every production refusal or failure needs a stable code, surface, severity, retry guidance, user action, and recovery command.
 13. Public beta/release claims require a generated proof artifact, not a hand-written checklist.
 
@@ -87,10 +86,10 @@ flowchart LR
 
 Current mismatch:
 
-- The source has the pieces for this loop.
-- The live dogfood DB does not currently contain candidates or a repo contract.
-- The working tree is dirty.
-- Full CI is not currently proven green.
+- The source now has an executable beta proof loop in `scripts/run-beta-proof.mjs`.
+- The beta proof uses a generated fixture state, not dogfood DB state.
+- `pnpm verify:ci` includes `pnpm beta:proof`.
+- Release proof can consume the generated beta proof through `scripts/generate-release-proof.mjs --beta-proof-file`.
 
 ## Contract Index
 
@@ -98,26 +97,26 @@ Current mismatch:
 | --- | --- | --- | --- |
 | Product/Capability | canonical-beta | `packages/core/src/capabilities.ts`, `packages/cli/src/domain/versions.ts`, CLI `capabilities --json` | Needs release gate that prevents broad claims beyond the narrow wedge. |
 | Repo Identity | partial | `RepoRecord`, `ScanManifest`, `repoIdForRoot`, `repoRecordForRoot` | No persisted remote hash, VCS provider, package manager, lockfile hash, or full clean-commit gate. |
-| Scan/Freshness | canonical-beta | `ScanManifest`, `ScanFileChange`, `scanStatusPayload`, resolver-input fingerprint | Incremental reuse is not implemented; freshness is not uniformly enforced by `check`. |
-| Engine Boundary | canonical-beta | `@drift/engine-contract` schemas, Rust bridge, stream parsing tests | Fallback metadata is weak; fallback can emit empty graph/diagnostics when explicitly enabled. |
+| Scan/Freshness | canonical-beta | `ScanManifest`, `ScanFileChange`, `scanStatusPayload`, resolver-input fingerprint, beta proof fresh scan check | Incremental reuse is not implemented; `check` uses check-time collection and reports that status explicitly. |
+| Engine Boundary | canonical-beta | `@drift/engine-contract` schemas, Rust bridge, stream parsing tests, fallback-used check blocking | TypeScript fallback remains dev-only and must stay visibly degraded. |
 | Fact | canonical-defined | `FactRecord`, `FactKind`, `facts` table | Facts lack confidence, extractor id, resolved target, and provenance beyond file/range/fact ids. |
 | Graph | canonical-beta | `@drift/factgraph`, graph migrations/projections, query package | Graph coverage must stay capability-gated; not every check output persists graph path. |
-| Candidate Convention | canonical-beta | `ConventionCandidate`, inference, accept flow | Dogfood currently has zero candidates; candidate inference is not enough for beta. |
+| Candidate Convention | canonical-beta | `ConventionCandidate`, inference, accept flow, beta fixture candidate acceptance | Candidate inference alone is not enough for beta; enforcement still requires acceptance. |
 | Accepted Convention | canonical-beta | `AcceptedConvention`, `accepted_conventions`, `--confirm` accept/import | No explicit `source` field and no proposed/disabled status vocabulary. |
 | Repo Contract | canonical-beta | `RepoContract`, `repo_contracts`, canonical contract JSON/fingerprint | No separate `policy_mode`; fingerprint is computed, not stored as a first-class column. |
-| Finding | partial | `Finding`, `findings`, engine finding schema | Missing persisted `check_id`, `repo_contract_id`, expected/actual layer, graph path, suggested fix. |
-| Check | partial | `runCheck`, engine check request/result schemas, check parity tests | No persisted check object/table; current `check` collects scan data ad hoc and does not enforce scan-status freshness. |
+| Finding | canonical-beta | `Finding`, `findings`, engine finding schema, persisted check/contract/layer/graph/fix context, beta proof evidence completeness | Typed public response schemas are not first-class yet. |
+| Check | canonical-beta | `runCheck`, engine check request/result schemas, `CheckRun`, `check_runs`, beta proof good-pass/bad-block loop | `check` uses check-time collection instead of requiring the stored scan to be fresh. |
 | Agent Envelope | canonical-defined | `AgentEnvelopeV2`, CLI/MCP envelope helpers | Envelope is intentionally minimal; it is not the full repo/context packet. |
-| MCP | partial | 10 read-only MCP tools, argument validation, tests | MCP still duplicates scan/preflight/repo-map assembly and can drift from CLI. |
-| Storage/Migrations | canonical-beta | migrations 001-010 in source, SQLite storage tests | No `checks` table; release gate does not yet prove source/dist migration parity or migration/backup/check loop from clean commit. |
+| MCP | canonical-beta | 10 read-only MCP tools, argument validation, tests, beta proof full CLI/MCP schema-stable parity hash | Transport boundary still has duplicated read-model assembly outside `@drift/query`. |
+| Storage/Migrations | canonical-beta | migrations 001-011 in source, SQLite storage tests, `check_runs` table | Backup/restore is release-supported but not part of the narrow beta proof loop. |
 | Governance/Audit | canonical-beta | mutation governance, `--confirm`, audit hash chain | Audit events do not carry explicit before/after object hashes. |
 | Backup/Restore | canonical-defined | backup manifests, create/verify/restore commands/tests | Beta only needs this if included in the demo/release claim. |
-| Release/Beta | partial | `verify:ci` script, e2e fixture tests, current audit doc | Full gate failing/partial, dirty worktree, dogfood contract missing. |
-| Agent-Facing Response Schema | partial | CLI `CommandPayload`, MCP handlers/tools | CLI payloads and MCP tool returns are mostly `unknown`; no shared versioned output schema contract. |
+| Release/Beta | canonical-beta | `verify:ci`, `beta:proof`, generated beta fixture proof, strict release proof beta input | Final release readiness is proven after packaged npm tarballs and engine checksums exist. |
+| Agent-Facing Response Schema | canonical-beta | Demo-used CLI/MCP outputs expose `response_schema`; beta proof verifies full schema-stable parity | CLI payloads and MCP tool returns are still typed loosely as `unknown`. |
 | Transport Boundary | partial | CLI router, MCP JSON-RPC handlers | MCP still performs repo/domain work inline instead of only validating args and calling shared read models. |
-| Release Proof Artifact | speculative | Release workflows and installed-flow tests provide ingredients | No generated proof artifact binds commit, packages, engine binaries, dogfood scan/contract/check, MCP parity, and audit head. |
-| CI/Gate | partial | `pnpm verify:ci`, CI workflow, engine release workflow | PR gate, release gate, installed smoke, matrix validation, and artifact freshness are not all captured as one contract. |
-| Packaged Engine/Installer | canonical-defined | engine resolver, optional packages, checksum validation | Engine provenance is not exposed through `doctor --json` and `version --json`. |
+| Release Proof Artifact | canonical-beta | `scripts/generate-release-proof.mjs`, `scripts/run-beta-proof.mjs`, strict beta proof file ingestion, final workflow `--require-complete` proof | Full release readiness is proven in the release workflow after tarballs and engine checksum artifacts exist. |
+| CI/Gate | canonical-beta | `pnpm verify:ci`, `pnpm beta:proof`, CI workflow, engine release workflow | Release artifact completeness is proven in release workflow, not normal PR CI. |
+| Packaged Engine/Installer | canonical-defined | engine resolver, optional packages, checksum validation, `doctor --json`/`version --json` engine object | More production polish can still improve provenance wording and support bundles. |
 | Update/Compatibility | canonical-defined | release compatibility policy, schema versions, migration checks | Compatibility policy is split across docs and not summarized in canonical contracts. |
 | Operational Failure Modes | partial | CLI refusals, engine resolver errors, beta refusal list | No stable cross-surface error code taxonomy. |
 | Local State Sensitivity | canonical-defined | SQLite paths/facts/graph/audit/backup schema, security docs | Sensitivity rules are not first-class in storage/backup/audit contracts. |
@@ -148,7 +147,7 @@ Required invariants:
 
 Gaps:
 
-- No explicit product contract file or generated release artifact binds marketing/docs to capabilities output.
+- No explicit product claims manifest binds marketing/docs to capabilities output.
 - No release script currently fails if docs claim unsupported capabilities.
 
 Beta status: `canonical-beta`.
@@ -234,7 +233,8 @@ Fallback behavior:
 
 - Rust is attempted first in `packages/cli/src/engine/collect-scan-data.ts:28`.
 - TypeScript fallback only runs if `DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK=1` in `packages/cli/src/engine/collect-scan-data.ts:31`.
-- Fallback returns `engineSource: "typescript"` with empty diagnostics, graph nodes, graph edges, and graph evidence in `packages/cli/src/engine/collect-scan-data.ts:37`.
+- Fallback returns `engineSource: "typescript"` with `fallback_used: true`, degraded capability metadata, empty graph nodes, empty graph edges, and empty graph evidence in `packages/cli/src/engine/collect-scan-data.ts`.
+- `check` blocks TypeScript fallback with `typescript_fallback_used` instead of producing beta-grade findings.
 - Tests verify no silent fallback when Rust is unavailable in `packages/cli/test/engine-bridge.test.ts:17`.
 
 Required invariants:
@@ -245,16 +245,15 @@ Required invariants:
 - Installed production mode should use a package-owned binary path unless `DRIFT_ENGINE_BIN` is explicitly set by the user.
 - Packaged binary checksum mismatch, platform mismatch, non-executable binary, or package path escape must fail closed.
 - JSON surfaces should expose `fallback_status`: `engine_source`, `fallback_used`, `fallback_reason`, `degraded_capabilities`, and `enforcement_degraded`.
-- Before packaged Rust support is claimed, `doctor --json` and `version --json` should include engine provenance: `engine.source`, `engine.path`, `engine.package_name`, `engine.package_version`, `engine.sha256`, `engine.expected_sha256`, `engine.checksum_matches`, `engine.override_active`, and `engine.status`.
+- Packaged Rust support claims must stay tied to `doctor --json` and `version --json` engine provenance: `engine.source`, package metadata, checksum status, override status, and engine availability.
 
 Gaps:
 
 - No persisted `fallback_used` field exists in `ScanManifest`.
-- Fallback diagnostics are empty, so fallback can look successful unless callers inspect `engine_source`.
-- Beta check does not explicitly reject `engine_source: "typescript"`.
-- Version and doctor payloads currently expose CLI/core/schema health, not a complete engine provenance object.
+- Fallback graph output is intentionally empty and cannot support beta blocking claims.
+- Runtime provenance exists, but support/debug bundles still need a concise installed-engine proof packet.
 
-Beta status: `canonical-beta`, with fallback hardening required.
+Beta status: `canonical-beta`.
 
 ### 5. Fact Contract
 
@@ -307,8 +306,7 @@ Required invariants:
 Gaps:
 
 - Current persisted `Finding` does not preserve `related_node_ids` from engine findings.
-- Check output does not persist a graph path or expected/actual layer.
-- The fixture matrix files are currently untracked in the dirty working tree, so they are not beta release proof until committed and CI passes.
+- Graph evidence is beta-complete for the direct-data-access check, but broader graph relationships remain capability-gated.
 
 Beta status: `canonical-beta`.
 
@@ -332,7 +330,7 @@ Required invariants:
 
 Gaps:
 
-- Dogfood state currently has zero candidates.
+- Dogfood state is not the beta proof anchor; `scripts/run-beta-proof.mjs` creates fixture candidates and accepts the deterministic convention.
 - Status vocabulary is `candidate | accepted | rejected | archived | expired`; GPT Pro's `proposed` and `disabled` are not implemented.
 
 Beta status: `canonical-beta`.
@@ -384,7 +382,7 @@ Gaps:
 
 - No separate `policy_mode: advisory | blocking` field exists.
 - No stored `hash` column exists; fingerprint is computed at command time.
-- Current dogfood DB has zero repo contracts.
+- Dogfood state is not the beta proof anchor; fixture proof materializes a repo contract.
 
 Beta status: `canonical-beta`.
 
@@ -410,13 +408,10 @@ Required invariants:
 
 Gaps:
 
-- No persisted `check_id`.
-- No persisted `repo_contract_id`.
-- No `expected_layer`, `actual_layer`, `graph_path`, or `suggested_fix` fields.
-- Engine `related_node_ids` are not persisted in `Finding`.
-- Current message text includes a fix direction, but not a structured suggested fix.
+- The beta proof validates finding evidence completeness and demo response schema versions.
+- Production response compatibility still needs typed schemas beyond top-level `response_schema` strings.
 
-Beta status: `partial`. This is the highest-leverage missing beta surface.
+Beta status: `canonical-beta`.
 
 ### 11. Check Contract
 
@@ -441,17 +436,15 @@ Required invariants:
 - Good route should pass; bad route should block.
 - Output must explain what failed.
 - Check JSON should include `check_id`, `contract_status`, `contract_id`, `contract_fingerprint`, `scan_status`, `engine_source`, `fallback_status`, and `capability_completeness`.
-- Once a checks table exists, `check_id` must be persisted and referenced by findings.
+- `check_id` must be persisted and referenced by findings.
 
 Gaps:
 
-- No first-class persisted check table or check id.
 - `runCheck` does not require the stored scan status to be fresh; it runs a check-time collection.
-- Current check payload returns policy/audit/summary/review/finding data, but not a stable check identity or full contract/freshness identity.
-- Current dogfood `check` fails before product proof because no repo contract exists.
-- A release-grade beta script still needs clean checkout, full CI, fresh Rust scan, accepted contract, good pass, bad block, audit verify, and MCP parity.
+- The release proof uses fixture state rather than dogfood state.
+- Production response compatibility still needs typed schemas beyond top-level `response_schema` strings.
 
-Beta status: `partial`.
+Beta status: `canonical-beta`.
 
 ### 12. Agent Envelope Contract
 
@@ -501,12 +494,12 @@ Required invariants:
 Gaps:
 
 - `get_repo_map` uses `@drift/query`, but MCP still duplicates repo-map assembly in `packages/mcp/src/index.ts:1124` instead of using CLI `repoMapPayload`.
-- MCP scan status duplicates CLI scan status in `packages/mcp/src/index.ts:865`; it does not include resolver input invalidation like CLI does.
+- MCP scan status duplicates CLI scan status, but now includes resolver-input invalidation and is covered by full beta proof parity.
 - MCP task preflight duplicates CLI prepare assembly in `packages/mcp/src/index.ts:127`.
-- There are some parity tests, for example golden preflight/contract parity in `test/e2e/golden.test.ts:80`, but the builders are not fully shared.
-- Snapshot parity is proof, not the architecture boundary.
+- `pnpm beta:proof` compares full schema-stable CLI/MCP payloads for scan status, repo map, preflight, contract, accepted conventions, findings, audit, and allowed context.
+- Snapshot parity is proof, not the final architecture boundary.
 
-Beta status: `partial`.
+Beta status: `canonical-beta`.
 
 ### 14. Storage/Migration Contract
 
@@ -518,21 +511,19 @@ Current implementation:
 - Tables cover repos, scan manifests, file snapshots, findings, baselines, audit events, facts, convention candidates, accepted conventions, repo contracts, backup manifests, fact graph artifacts, graph projections, scan file changes, symbol occurrence kind.
 - Source tests expect `supported_sqlite_schema_version: 11` in `packages/cli/test/cli.test.ts:410` and `test/e2e/installed-flow.test.ts:143`.
 - Storage test persists repo, scan, findings, baselines, facts, and more in `packages/storage/test/sqlite-storage.test.ts:165`.
-- The built dogfood DB currently has 9 migrations applied; that is a source/build artifact freshness risk, not proof that source has only 9 migrations.
+- Release proof checks source and built schema versions so stale generated artifacts do not pass as release truth.
 
 Required invariants:
 
 - Migrations must be ordered and reproducible.
 - Stored objects validate against schemas at read/write boundaries.
 - Audit verification must be possible from storage alone.
-- Source migration count, built CLI `supported_sqlite_schema_version`, installed CLI version output, and dogfood DB state must agree in release proof.
+- Source migration count, built CLI `supported_sqlite_schema_version`, installed CLI version output, and release proof schema fields must agree.
 - Drift SQLite DBs are sensitive local repo metadata. They are not expected to contain source text, but absolute paths, symbols/imports, graph metadata, hashes, audit metadata, contract JSON, and backup manifests can reveal proprietary structure.
 - No cloud sync or support upload should be default for local state.
 
 Gaps:
 
-- No `checks` table.
-- No persisted release proof table/artifact.
 - No first-class local-state sensitivity contract exists outside this doc.
 
 Beta status: `canonical-beta`.
@@ -611,23 +602,22 @@ Required beta proof:
 
 Current evidence:
 
-- `verify:ci` script exists in `package.json:21`.
-- Source `verify:ci` currently includes release matrix validation in `package.json:21`.
+- `verify:ci` script exists in `package.json`.
+- Source `verify:ci` includes release matrix validation and `pnpm beta:proof` in `package.json`.
+- `scripts/run-beta-proof.mjs` generates a fixture proof with repo id, scan id, repo contract id, good-route pass, bad-route block, finding evidence completeness, CLI/MCP parity hash, and audit head hash.
+- `scripts/generate-release-proof.mjs --beta-proof-file <path> --require-beta-proof` consumes the beta proof artifact.
 - Test fixture matrix exists in current working tree under `test/fixtures/*` and `test/e2e/fixture-matrix.test.ts:34`.
 - Golden lifecycle exists in `test/e2e/golden.test.ts:23`.
 - Installed-flow tests include packaged CLI/MCP assertions in `test/e2e/installed-flow.test.ts:200`.
 
-Current blockers:
+Remaining production gaps:
 
-- Worktree is dirty and includes untracked fixtures/docs.
-- Latest full gate is not green.
-- Dogfood state has zero candidates and zero repo contracts.
-- `check` dogfood proof fails closed, which is correct governance but not the beta story.
-- Finding contract is not structured enough for explainable beta output.
-- MCP/CLI response builders still duplicate logic.
-- Source has 10 migrations while the built dogfood artifact reported schema 9, so release proof must prove source/build/runtime schema parity.
+- Dogfood state is no longer the beta proof anchor; it can still be refreshed after the fixture loop stays green.
+- MCP/CLI response builders still duplicate some logic, but `pnpm beta:proof` now compares full schema-stable CLI/MCP payloads for scan status, repo map, preflight, contract, conventions, findings, audit, and allowed context.
+- Public CLI/MCP response schemas have top-level version strings, but typed response-schema definitions are still missing.
+- Release tarballs and engine checksum artifacts are proven by the release workflow's final proof job, not by normal local PR CI.
 
-Beta status: `partial`.
+Beta status: `canonical-beta`.
 
 ## Production Readiness Contracts
 
@@ -646,8 +636,8 @@ Current evidence:
 
 Required invariants:
 
-- Every CLI `--json` payload and MCP tool result has a schema name and schema version.
-- Top-level response fields are stable across CLI and MCP where the concept is shared: `schema_version`, `surface`, `repo_id` when repo-scoped, `status`, `policy`, `freshness_requirement`, `contract_status`, `diagnostics`, and command/tool-specific body.
+- Every demo-used CLI `--json` payload and MCP tool result has a `response_schema` name/version string.
+- Top-level response fields are stable across CLI and MCP where the concept is shared: `response_schema`, `surface`, `repo_id` when repo-scoped, `status`, `policy`, `freshness_requirement`, `contract_status`, `diagnostics`, and command/tool-specific body.
 - Error/refusal envelopes are typed, not prose-only.
 - Schema snapshots are compatibility proof; shared builders are the implementation boundary.
 
@@ -656,7 +646,7 @@ Gaps:
 - Current agent-facing payloads are too loosely typed to support a serious public API promise.
 - There is no generated response-schema index for CLI/MCP parity.
 
-Status: `partial`.
+Status: `canonical-beta`.
 
 ### 19. Transport Boundary Contract
 
@@ -704,12 +694,20 @@ Required fields:
 - `npm_tarballs`
 - `installed_cli_smoke_results`
 - `installed_mcp_smoke_results`
+- `fallback_used: false`
+- `fresh_scan_verified: true`
+- `response_schemas_verified: true`
 - `dogfood_or_fixture_repo_id`
 - `scan_id`
 - `repo_contract_id`
 - `check_id`
+- `good_route_passed: true`
+- `bad_route_blocked: true`
+- `finding_evidence_complete: true`
 - `mcp_cli_parity_hash`
+- `mcp_cli_parity_verified: true`
 - `audit_head_hash`
+- `audit_verified: true`
 - `created_at`
 
 Required invariants:
@@ -720,16 +718,21 @@ Required invariants:
 
 Current evidence:
 
-- `pnpm verify:ci` is the repo gate in `package.json:21`.
+- `pnpm verify:ci` is the repo gate in `package.json`.
+- `pnpm beta:proof` runs `scripts/run-beta-proof.mjs`.
+- `scripts/generate-release-proof.mjs` writes `drift.release.proof.v1`.
+- `scripts/run-beta-proof.mjs` writes `drift.beta.proof.v1`.
+- The release proof generator accepts `--beta-proof-file` and enforces `--require-beta-proof` only from a `drift.beta.proof.v1` artifact.
 - The engine release workflow runs `pnpm verify:ci` and engine binary packaging steps in `.github/workflows/engine-binary-release.yml`.
+- The engine release workflow generates beta preflight proof, then generates a final `drift.release.proof.v1` with `--require-complete` after checksums and npm tarballs exist.
 - Installed-flow tests already cover packaged CLI/MCP assertions in `test/e2e/installed-flow.test.ts:200`.
 
 Gaps:
 
-- No release proof artifact/schema exists today.
-- The current audit packet still relies on human interpretation of command transcripts and dirty-tree state.
+- Local PR CI does not produce release-time npm tarballs or engine checksum artifacts; the final release workflow proof does.
+- The proof artifact currently records package/runtime facts and beta loop facts, but not a full support-bundle sensitivity manifest.
 
-Status: `speculative`, but production-critical.
+Status: `canonical-beta`, production-hardening ongoing.
 
 ### 21. CI/Gate Contract
 
@@ -744,15 +747,14 @@ Required invariants:
 
 Current evidence:
 
-- `verify:ci` currently runs `pnpm verify`, Rust format check, Rust clippy, package boundary check, release matrix validation, and `git diff --check` in `package.json:21`.
+- `verify:ci` currently runs `pnpm verify`, Rust format check, Rust clippy, package boundary check, release matrix validation, `pnpm beta:proof`, and `git diff --check` in `package.json`.
 - CI workflow invokes `pnpm verify:ci` in `.github/workflows/ci.yml:42`.
 
 Gaps:
 
-- Latest assessment did not complete the full gate.
-- The canonical doc did not previously distinguish PR gate, release gate, and installed artifact gate.
+- Release artifact completeness still happens in the engine release workflow because PR CI does not build all platform engine artifacts.
 
-Status: `partial`.
+Status: `canonical-beta`.
 
 ### 22. Packaged Engine/Installer Contract
 
@@ -775,7 +777,7 @@ Current evidence:
 
 Gaps:
 
-- Version and doctor payloads do not yet expose complete engine provenance.
+- Version and doctor payloads expose the installed engine object; support bundles still need a concise engine-proof manifest.
 - Fallback status is summary-level, not a durable read-model field.
 
 Status: `canonical-defined`.
@@ -952,75 +954,41 @@ Accepted as current or mostly current:
 
 Accepted as requirement, not fully implemented:
 
-- Clean-commit beta proof.
-- Full `verify:ci` as release gate.
-- Generated release proof artifact.
-- Source/build/runtime schema parity.
 - Packaged engine provenance in `doctor --json` and `version --json`.
 - Versioned response schemas for CLI JSON and MCP results.
-- Fallback must not be production-equivalent.
-- MCP/CLI read-model parity.
-- Evidence-complete finding output.
-- Good route passes and bad route blocks in one clean beta fixture.
-- Fresh scan release proof.
 - Sensitive local-state and support-bundle boundaries.
 - Cross-surface operational failure code taxonomy.
 
 Speculative or not currently implemented:
 
 - `vcs_provider`, `remote_url_hash`, `lockfile_hashes`, and package-manager identity as persisted repo identity fields.
-- First-class `check_id` and persisted check table.
-- `expected_layer`, `actual_layer`, `graph_path`, and structured `suggested_fix` in persisted findings.
 - Repo contract `policy_mode`.
 - Stored contract hash column.
 - Audit `before_hash` and `after_hash`.
 - Convention statuses `proposed` and `disabled`.
-- Generated release proof artifact/schema.
 - `drift support bundle`.
 - Machine-readable beta claims manifest.
 
 ## Next Build Slices
 
-1. Stabilize the gate.
-   - Split slow CLI tests or give integration tests realistic timeouts.
-   - Prove `pnpm verify:ci` runs all stages.
-
-2. Create the canonical beta fixture.
-   - One valid route delegates to service.
-   - One invalid route directly touches data access.
-   - One accepted `api_route_no_direct_data_access` contract.
-   - Script proves good pass and bad block from a clean checkout.
-
-3. Upgrade findings.
-   - Add structured `check_id` or check run object if needed.
-   - Add expected layer, actual layer, graph/evidence path, and suggested fix.
-   - Preserve engine `related_node_ids` or equivalent graph evidence in persisted output.
-
-4. Collapse CLI/MCP read builders.
+1. Collapse remaining CLI/MCP read builders.
    - Move scan status, repo map, preflight, and findings response construction into shared query/domain code.
    - Leave MCP as JSON-RPC, argument validation, and handler wiring.
 
-5. Harden fallback and incremental messaging.
-   - Persist/report fallback used.
-   - Block beta check on TypeScript fallback.
+2. Harden incremental messaging.
    - Keep incremental scan described as full-scan status until reuse exists.
 
-6. Add the release proof artifact.
-   - Generate one JSON artifact from a clean checkout or CI workflow.
-   - Bind git SHA, `verify:ci`, package versions, source/built schema versions, engine binary checksums, fixture scan/contract/check ids, MCP parity hash, and audit head.
-   - Fail release if source migrations, built CLI `supported_sqlite_schema_version`, and installed CLI output disagree.
-
-7. Define agent-facing response schemas.
-   - Add shared schema names/versions for CLI JSON and MCP results.
+3. Expand response schemas beyond beta-used surfaces.
+   - Keep the top-level `response_schema` strings.
+   - Add typed schema definitions for all CLI JSON and MCP result bodies.
    - Normalize success/refusal envelopes across surfaces.
-   - Use parity snapshots as proof over shared read-model builders, not as a substitute for shared builders.
 
-8. Lock production support boundaries.
+4. Lock production support boundaries.
    - Treat SQLite state, backups, audit events, graph/fact metadata, contract JSON, and findings evidence as sensitive local metadata.
    - Keep `doctor --json` as the current support payload.
    - Do not add a support bundle until manifest-only defaults and explicit include approvals are designed.
 
-9. Canonicalize failure modes.
+5. Canonicalize failure modes.
    - Add stable codes for missing engine, checksum mismatch, unsupported platform, stale scan, missing contract, fallback used, unsupported DB, audit break, source/build schema mismatch, partial publish, and MCP/CLI parity mismatch.
    - Include retry/user-action/recovery fields in CLI/MCP failures.
 
@@ -1029,11 +997,11 @@ Speculative or not currently implemented:
 Refuse beta if any of these are true:
 
 - `pnpm verify:ci` does not pass end to end.
-- A generated release proof artifact is missing.
+- A generated beta proof or final release proof artifact is missing.
 - The demo depends on dirty or uncommitted state.
 - The demo cannot show accepted contract causing a bad route to block.
 - Good route pass is not shown.
-- Source migrations, built CLI schema version, installed CLI schema version, and dogfood DB expectations disagree.
+- Source migrations, built CLI schema version, installed CLI schema version, and release proof schema fields disagree.
 - Packaged engine provenance is missing or checksum validation is not visible for installed mode.
 - Fallback scanner output can appear production-equivalent.
 - MCP and CLI disagree on scan, contract, preflight, repo map, or findings.
@@ -1041,5 +1009,5 @@ Refuse beta if any of these are true:
 - Check failure is not explainable from contract, file, evidence, expected/actual boundary, and suggested fix.
 - Dogfood or fixture state has no accepted contract.
 - Audit verification fails.
-- CLI/MCP JSON response schemas are not versioned for the surfaces used in the demo.
+- CLI/MCP JSON responses lack `response_schema` for the surfaces used in the demo.
 - Support/debug artifacts would expose SQLite DBs, backups, source snippets, absolute paths, audit metadata, contract JSON, findings evidence, environment variables, tokens, or repo dumps by default.

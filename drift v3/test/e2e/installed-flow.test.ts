@@ -470,6 +470,27 @@ describe("installed Drift package flow", () => {
     expect(contractPayload.contract_fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(contractPayload.summary.convention_count).toBe(1);
 
+    const acceptedConventions = await runInstalledDrift(consumerDir, [
+      "--db", databasePath!,
+      "conventions", "accepted",
+      "--repo", repoId!,
+      "--kind", "api_route_no_direct_data_access",
+      "--capability", "deterministic_check",
+      "--limit", "1",
+      "--offset", "0",
+      "--json"
+    ]);
+    const acceptedConventionsPayload = JSON.parse(acceptedConventions.stdout);
+    expect(acceptedConventions.stderr).toBe("");
+    expect(acceptedConventionsPayload.summary).toMatchObject({
+      filtered_count: 1,
+      listed_count: 1
+    });
+    expect(acceptedConventionsPayload.conventions[0]).toMatchObject({
+      kind: "api_route_no_direct_data_access",
+      enforcement_capability: "deterministic_check"
+    });
+
     const baseline = await runInstalledDrift(consumerDir, [
       "--db", databasePath!,
       "baseline", "status",
@@ -1075,7 +1096,7 @@ describe("installed Drift package flow", () => {
       has_more: false,
       next_offset: null
     });
-    expect(mcpFindingsPayload.findings).toEqual([
+    expect(mcpFindingsPayload.review_items).toEqual([
       expect.objectContaining({
         first_evidence: expect.objectContaining({
           file_path: "apps/web/app/api/users/route.ts"

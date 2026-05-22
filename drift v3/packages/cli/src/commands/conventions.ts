@@ -1,4 +1,4 @@
-import { type AcceptedConvention,type ConventionCandidate,type ConventionException,type ConventionScope,ConventionScopeSchema,type ConventionStatus,type RepoContract } from "@drift/core";
+import { authorizeContextExport,type AcceptedConvention,type ConventionCandidate,type ConventionException,type ConventionScope,ConventionScopeSchema,type ConventionStatus,type RepoContract } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,statSync } from "node:fs";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
@@ -65,6 +65,42 @@ export function listConventionCandidates(storage: SqliteDriftStorage, parsed: Pa
     payload: parsed.flags.has("json")
       ? payload
       : formatConventionCandidatesText(payload)
+  };
+}
+
+export function listAcceptedConventions(storage: SqliteDriftStorage, parsed: ParsedArgs): CommandPayload {
+  const repoId = resolveRepoId(parsed);
+  requiredRepo(storage, repoId);
+  const contract = requiredRepoContract(storage, repoId);
+  const policy = authorizeContextExport(contract, "cli-preflight");
+  if (!policy.allowed) {
+    throw new Error(`Policy denied accepted convention output: ${policy.reason}`);
+  }
+  const kind = optionalConventionKindFlag(parsed, "kind");
+  const capability = optionalEnforcementCapabilityFlag(parsed, "capability");
+  const limit = optionalPositiveIntegerFlag(parsed, "limit");
+  const offset = optionalNonNegativeIntegerFlag(parsed, "offset") ?? 0;
+  const allConventions = storage.listAcceptedConventions(repoId);
+  const filteredConventions = orderAcceptedConventionsForReview(allConventions.filter((convention) =>
+    (!kind || convention.kind === kind) &&
+    (!capability || convention.enforcement_capability === capability)
+  ));
+  const conventions = paginateAcceptedConventions(filteredConventions, limit, offset);
+  const payload = {
+    response_schema: "drift.conventions.accepted.v1",
+    repo_id: repoId,
+    policy,
+    filters: {
+      kind: kind ?? null,
+      capability: capability ?? null
+    },
+    governance: preflightGovernance(),
+    summary: acceptedConventionSummary(allConventions, filteredConventions, conventions),
+    pagination: paginationSummary(filteredConventions.length, conventions.length, limit, offset),
+    conventions
+  };
+  return {
+    payload
   };
 }
 
@@ -272,6 +308,55 @@ export function readConventionScopeFile(scopeFile: string): ConventionScope {
     throw new Error("--scope-file does not match the Drift scope schema.");
   }
   return parsedScope.data;
+}
+
+function orderAcceptedConventionsForReview(conventions: AcceptedConvention[]): AcceptedConvention[] {
+  return [...conventions].sort((left, right) =>
+    left.accepted_at.localeCompare(right.accepted_at) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function paginateAcceptedConventions(
+  conventions: AcceptedConvention[],
+  limit: number | undefined,
+  offset: number
+): AcceptedConvention[] {
+  return limit === undefined
+    ? conventions.slice(offset)
+    : conventions.slice(offset, offset + limit);
+}
+
+function acceptedConventionSummary(
+  allConventions: AcceptedConvention[],
+  filteredConventions: AcceptedConvention[],
+  listedConventions: AcceptedConvention[]
+): {
+  total_count: number;
+  filtered_count: number;
+  listed_count: number;
+  deterministic_count: number;
+  heuristic_count: number;
+  briefing_only_count: number;
+  blocking_count: number;
+} {
+  return {
+    total_count: allConventions.length,
+    filtered_count: filteredConventions.length,
+    listed_count: listedConventions.length,
+    deterministic_count: allConventions.filter((convention) =>
+      convention.enforcement_capability === "deterministic_check"
+    ).length,
+    heuristic_count: allConventions.filter((convention) =>
+      convention.enforcement_capability === "heuristic_check"
+    ).length,
+    briefing_only_count: allConventions.filter((convention) =>
+      convention.enforcement_capability === "briefing_only"
+    ).length,
+    blocking_count: allConventions.filter((convention) =>
+      convention.enforcement_mode === "block"
+    ).length
+  };
 }
 
 export function addConventionException(

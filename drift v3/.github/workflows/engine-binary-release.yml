@@ -82,14 +82,19 @@ jobs:
       - name: Validate engine release matrix
         run: node scripts/validate-engine-release-matrix.mjs
 
-      - name: Generate release proof
-        run: node scripts/generate-release-proof.mjs --require-clean --require-built-cli --output release-proof.json
+      - name: Generate beta proof
+        run: DRIFT_VERIFY_CI_STATUS=passed node scripts/run-beta-proof.mjs --output beta-proof.json
 
-      - name: Upload release proof
+      - name: Generate release proof
+        run: DRIFT_VERIFY_CI_STATUS=passed node scripts/generate-release-proof.mjs --require-clean --require-built-cli --require-beta-proof --beta-proof-file beta-proof.json --output release-proof.json
+
+      - name: Upload beta preflight proof
         uses: actions/upload-artifact@v4
         with:
-          name: drift-release-proof
-          path: release-proof.json
+          name: drift-beta-preflight-proof
+          path: |
+            beta-proof.json
+            release-proof.json
           if-no-files-found: error
 
   build-engine:
@@ -366,12 +371,72 @@ jobs:
           ./node_modules/.bin/drift version --json
           ./node_modules/.bin/drift scan --repo-root "${GITHUB_WORKSPACE}/test/fixtures/next-api-direct-db" --state-root "${TMP}/state" --json
 
+  final-release-proof:
+    name: Final release proof
+    needs:
+      - preflight
+      - assemble-checksums
+      - pack-npm-packages
+      - registry-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download beta preflight proof
+        uses: actions/download-artifact@v4
+        with:
+          name: drift-beta-preflight-proof
+          path: .release/proof
+
+      - name: Download checksum manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: drift-engine-SHA256SUMS
+          path: .
+
+      - name: Download npm tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: drift-npm-tarballs
+          path: .release/npm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build JavaScript packages
+        run: pnpm build
+
+      - name: Generate complete release proof
+        run: DRIFT_VERIFY_CI_STATUS=passed node scripts/generate-release-proof.mjs --require-clean --require-built-cli --require-complete --require-beta-proof --beta-proof-file .release/proof/beta-proof.json --output .release/final-release-proof.json
+
+      - name: Upload complete release proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-final-release-proof
+          path: .release/final-release-proof.json
+          if-no-files-found: error
+
   publish:
     name: Publish npm packages
     needs:
       - preflight
       - pack-npm-packages
       - registry-smoke
+      - final-release-proof
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     if: ${{ inputs.dry_run == false || startsWith(github.ref, 'refs/tags/v') }}

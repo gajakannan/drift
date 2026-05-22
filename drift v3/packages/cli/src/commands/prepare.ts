@@ -88,6 +88,7 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     context_truncated: false
   };
   const payload = {
+    response_schema: "drift.task.preflight.v1",
     repo_id: repoId,
     task,
     target_path: targetPath ?? null,

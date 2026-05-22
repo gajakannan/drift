@@ -41,6 +41,7 @@ export function createDriftCapabilities(input: {
       "prepare",
       "repo map",
       "conventions list",
+      "conventions accepted",
       "conventions show",
       "check",
       "findings list",

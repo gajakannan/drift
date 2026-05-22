@@ -18,8 +18,9 @@
     "verify": "pnpm build && pnpm typecheck && pnpm test && pnpm test:e2e",
     "check:boundaries": "node packages/cli/scripts/check-boundaries.mjs",
     "validate:release-matrix": "node scripts/validate-engine-release-matrix.mjs",
+    "beta:proof": "node scripts/run-beta-proof.mjs",
     "release:proof": "node scripts/generate-release-proof.mjs",
-    "verify:ci": "pnpm verify && pnpm format:engine:check && pnpm lint:engine && pnpm check:boundaries && pnpm validate:release-matrix && git diff --check"
+    "verify:ci": "pnpm verify && pnpm format:engine:check && pnpm lint:engine && pnpm check:boundaries && pnpm validate:release-matrix && pnpm beta:proof && git diff --check"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

@@ -7,7 +7,7 @@ import { baselineStatus,clearBaseline,createBaseline } from "../commands/baselin
 import { runCheck } from "../commands/check.js";
 import { listChecks } from "../commands/checks.js";
 import { addContractWaiver,exportContract,importContractDryRun,listContractWaivers,removeContractWaiver,showContract,showContractWaiver,validateContract } from "../commands/contract.js";
-import { acceptCandidate,addConventionException,editCandidate,listConventionCandidates,rejectCandidate,showConventionCandidate } from "../commands/conventions.js";
+import { acceptCandidate,addConventionException,editCandidate,listAcceptedConventions,listConventionCandidates,rejectCandidate,showConventionCandidate } from "../commands/conventions.js";
 import { listFindings,markFindingFixed,resolveFindingWithReason,showFinding } from "../commands/findings.js";
 import { initRepo } from "../commands/init.js";
 import { checkPolicyContext,grantAgentPermission,revokeAgentPermission,setEgressPolicy,showPolicy } from "../commands/policy.js";
@@ -74,6 +74,10 @@ export async function runCommand(storage: SqliteDriftStorage, parsed: ParsedArgs
 
   if (group === "conventions" && command === "list") {
     return listConventionCandidates(storage, parsed);
+  }
+
+  if (group === "conventions" && command === "accepted") {
+    return listAcceptedConventions(storage, parsed);
   }
 
   if (group === "conventions" && command === "show") {

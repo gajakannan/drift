@@ -33,7 +33,7 @@ export function unknownCommandError(parsed: ParsedArgs): string | null {
     return command === "agent" && ["grant", "revoke"].includes(maybeId ?? "") ? null : message;
   }
   if (group === "conventions") {
-    if (["list", "show", "accept", "reject", "edit"].includes(command ?? "")) {
+    if (["list", "accepted", "show", "accept", "reject", "edit"].includes(command ?? "")) {
       return null;
     }
     return command === "exception" && maybeId === "add" ? null : message;
@@ -118,7 +118,7 @@ export function validateCommandShape(parsed: ParsedArgs): void {
       exact("conventions exception add", 4);
       return;
     }
-    exact(`conventions ${command}`, command === "list" ? 2 : 3);
+    exact(`conventions ${command}`, command === "list" || command === "accepted" ? 2 : 3);
     return;
   }
   if (group === "contract") {

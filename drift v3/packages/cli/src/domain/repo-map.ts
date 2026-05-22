@@ -102,6 +102,7 @@ export function repoMapPayload(
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
   return {
+    response_schema: "drift.repo.map.v1",
     repo_id: repoId,
     repo_root: repo.root_path,
     generated_at: new Date().toISOString(),

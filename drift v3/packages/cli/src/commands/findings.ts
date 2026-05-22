@@ -42,6 +42,7 @@ export function listFindings(storage: SqliteDriftStorage, parsed: ParsedArgs): C
   const findings = paginateFindings(orderedFindings, limit, offset);
 
   const payload = {
+    response_schema: "drift.findings.list.v1",
     repo_id: repoId,
     agent_envelope: agentEnvelopeForScan({
       surface: "cli-check",

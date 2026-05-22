@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 
 const args = new Set(process.argv.slice(2).filter((arg) => arg.startsWith("--")));
 const outputPath = valueFlag("--output");
+const betaProofPath = valueFlag("--beta-proof-file");
 const requireClean = args.has("--require-clean");
 const requireBuiltCli = args.has("--require-built-cli");
 const requireComplete = args.has("--require-complete");
@@ -18,7 +19,8 @@ const engineTargets = engineReleaseTargets();
 const sourceSchemaVersion = migrationIds().length;
 const builtVersion = builtCliVersion();
 const builtSchemaVersion = builtVersion?.runtime?.supported_sqlite_schema_version ?? null;
-const dirtyState = gitStatusPorcelain().length > 0;
+const dirtyEntries = gitStatusPorcelainEntries().filter((entry) => !isGeneratedReleaseArtifactEntry(entry));
+const dirtyState = dirtyEntries.length > 0;
 const sourceBuildSchemaMatch = builtSchemaVersion !== null && builtSchemaVersion === sourceSchemaVersion;
 const packageVersions = packageVersionMap([
   "packages/core",
@@ -45,10 +47,16 @@ const installedCliSmokeResults = {
 const installedMcpSmokeResults = {
   present: existsSync("packages/mcp/dist/index.js")
 };
+if (requireBetaProof && !betaProofPath) {
+  console.error("Release proof failed: --require-beta-proof requires --beta-proof-file from scripts/run-beta-proof.mjs.");
+  process.exit(1);
+}
+const betaProofInput = betaProofPath ? readBetaProofInput(betaProofPath, { strict: requireBetaProof }) : null;
 const betaProof = betaProofFields({
   dirtyState,
   sourceBuildSchemaMatch,
-  installedCliSmokeResults
+  installedCliSmokeResults,
+  betaProofInput
 });
 const betaMissing = missingBetaProofFields(betaProof);
 const betaReady = betaMissing.length === 0;
@@ -64,6 +72,7 @@ const proof = {
   git_sha: process.env.GITHUB_SHA ?? gitOutput(["rev-parse", "HEAD"]) ?? "unknown",
   workflow_run_id: process.env.GITHUB_RUN_ID ?? null,
   dirty_state: dirtyState,
+  dirty_entries: dirtyEntries,
   verify_ci_status: process.env.DRIFT_VERIFY_CI_STATUS ?? null,
   node_version: process.version,
   pnpm_version: packageManagerVersion(rootManifest.packageManager),
@@ -151,8 +160,18 @@ function builtCliVersion() {
   }
 }
 
-function gitStatusPorcelain() {
-  return gitOutput(["status", "--porcelain"]) ?? "";
+function gitStatusPorcelainEntries() {
+  return (gitOutput(["status", "--porcelain"]) ?? "")
+    .split(/\r?\n/)
+    .filter(Boolean);
+}
+
+function isGeneratedReleaseArtifactEntry(entry) {
+  const path = entry.slice(3);
+  return path === "SHA256SUMS" ||
+    path === "beta-proof.json" ||
+    path === "release-proof.json" ||
+    path.startsWith(".release/");
 }
 
 function gitOutput(args, command = "git") {
@@ -230,33 +249,113 @@ function sha256File(path) {
   return createHash("sha256").update(readFileSync(resolve(path))).digest("hex");
 }
 
-function betaProofFields({ dirtyState, sourceBuildSchemaMatch, installedCliSmokeResults }) {
-  const fallbackUsed = booleanEnv("DRIFT_RELEASE_FALLBACK_USED");
-  const goodRoutePassed = booleanEnv("DRIFT_RELEASE_GOOD_ROUTE_PASSED");
-  const badRouteBlocked = booleanEnv("DRIFT_RELEASE_BAD_ROUTE_BLOCKED");
-  const findingEvidenceComplete = booleanEnv("DRIFT_RELEASE_FINDING_EVIDENCE_COMPLETE");
-  const auditVerified = booleanEnv("DRIFT_RELEASE_AUDIT_VERIFIED");
+function readBetaProofInput(path, options = {}) {
+  const payload = readJson(path);
+  if (options.strict && payload?.schema_version !== "drift.beta.proof.v1") {
+    throw new Error("--beta-proof-file must be a drift.beta.proof.v1 artifact from scripts/run-beta-proof.mjs.");
+  }
+  if (payload && typeof payload === "object" && "beta_proof" in payload) {
+    return payload.beta_proof;
+  }
+  if (options.strict) {
+    throw new Error("--beta-proof-file must contain a beta_proof object.");
+  }
+  return payload;
+}
+
+function betaProofFields({ dirtyState, sourceBuildSchemaMatch, installedCliSmokeResults, betaProofInput }) {
+  const strictBetaInput = requireBetaProof && betaProofInput;
+  const fallbackUsed = booleanInput(
+    betaProofInput,
+    "fallback_used",
+    strictBetaInput ? null : "DRIFT_RELEASE_FALLBACK_USED"
+  );
+  const goodRoutePassed = booleanInput(
+    betaProofInput,
+    "good_route_passed",
+    strictBetaInput ? null : "DRIFT_RELEASE_GOOD_ROUTE_PASSED"
+  );
+  const badRouteBlocked = booleanInput(
+    betaProofInput,
+    "bad_route_blocked",
+    strictBetaInput ? null : "DRIFT_RELEASE_BAD_ROUTE_BLOCKED"
+  );
+  const freshScanVerified = booleanInput(
+    betaProofInput,
+    "fresh_scan_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_FRESH_SCAN_VERIFIED"
+  );
+  const responseSchemasVerified = booleanInput(
+    betaProofInput,
+    "response_schemas_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_RESPONSE_SCHEMAS_VERIFIED"
+  );
+  const findingEvidenceComplete = booleanInput(
+    betaProofInput,
+    "finding_evidence_complete",
+    strictBetaInput ? null : "DRIFT_RELEASE_FINDING_EVIDENCE_COMPLETE"
+  );
+  const auditVerified = booleanInput(
+    betaProofInput,
+    "audit_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_AUDIT_VERIFIED"
+  );
+  const verifyCiStatus = stringInput(betaProofInput, "verify_ci_status", "DRIFT_VERIFY_CI_STATUS");
+  const mcpCliParityHash = stringInput(
+    betaProofInput,
+    "mcp_cli_parity_hash",
+    strictBetaInput ? null : "DRIFT_RELEASE_MCP_CLI_PARITY_HASH"
+  );
   return {
     clean_git: !dirtyState,
-    verify_ci_status: process.env.DRIFT_VERIFY_CI_STATUS ?? null,
-    verify_ci_passed: process.env.DRIFT_VERIFY_CI_STATUS === "passed",
+    verify_ci_status: verifyCiStatus,
+    verify_ci_passed: verifyCiStatus === "passed",
     source_build_schema_match: sourceBuildSchemaMatch,
     rust_engine_required: true,
     installed_engine_source: installedCliSmokeResults.engine_source,
     fallback_used: fallbackUsed,
     fallback_absent: fallbackUsed === false,
-    dogfood_or_fixture_repo_id: process.env.DRIFT_RELEASE_REPO_ID ?? null,
-    scan_id: process.env.DRIFT_RELEASE_SCAN_ID ?? null,
-    repo_contract_id: process.env.DRIFT_RELEASE_REPO_CONTRACT_ID ?? null,
-    check_id: process.env.DRIFT_RELEASE_CHECK_ID ?? null,
+    fresh_scan_verified: freshScanVerified,
+    response_schemas_verified: responseSchemasVerified,
+    dogfood_or_fixture_repo_id: stringInput(
+      betaProofInput,
+      "dogfood_or_fixture_repo_id",
+      strictBetaInput ? null : "DRIFT_RELEASE_REPO_ID"
+    ),
+    scan_id: stringInput(betaProofInput, "scan_id", strictBetaInput ? null : "DRIFT_RELEASE_SCAN_ID"),
+    repo_contract_id: stringInput(
+      betaProofInput,
+      "repo_contract_id",
+      strictBetaInput ? null : "DRIFT_RELEASE_REPO_CONTRACT_ID"
+    ),
+    check_id: stringInput(betaProofInput, "check_id", strictBetaInput ? null : "DRIFT_RELEASE_CHECK_ID"),
     good_route_passed: goodRoutePassed,
     bad_route_blocked: badRouteBlocked,
     finding_evidence_complete: findingEvidenceComplete,
-    mcp_cli_parity_hash: process.env.DRIFT_RELEASE_MCP_CLI_PARITY_HASH ?? null,
-    mcp_cli_parity_verified: Boolean(process.env.DRIFT_RELEASE_MCP_CLI_PARITY_HASH),
-    audit_head_hash: process.env.DRIFT_RELEASE_AUDIT_HEAD_HASH ?? null,
+    mcp_cli_parity_hash: mcpCliParityHash,
+    mcp_cli_parity_verified: Boolean(mcpCliParityHash),
+    audit_head_hash: stringInput(
+      betaProofInput,
+      "audit_head_hash",
+      strictBetaInput ? null : "DRIFT_RELEASE_AUDIT_HEAD_HASH"
+    ),
     audit_verified: auditVerified
   };
+}
+
+function stringInput(input, field, envName) {
+  const value = input?.[field];
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+  return envName ? process.env[envName] ?? null : null;
+}
+
+function booleanInput(input, field, envName) {
+  if (typeof input?.[field] === "boolean") {
+    return input[field];
+  }
+  return envName ? booleanEnv(envName) : null;
 }
 
 function booleanEnv(name) {
@@ -287,11 +386,31 @@ function missingBetaProofFields(proof) {
   if (proof.installed_engine_source === "typescript" || proof.fallback_absent !== true) {
     missing.push("rust_engine_no_fallback");
   }
+  if (!/^repo_[a-f0-9]+$/.test(proof.dogfood_or_fixture_repo_id ?? "")) {
+    missing.push("dogfood_or_fixture_repo_id_format");
+  }
+  if (!/^scan_/.test(proof.scan_id ?? "")) {
+    missing.push("scan_id_format");
+  }
+  if (!/^contract_/.test(proof.repo_contract_id ?? "")) {
+    missing.push("repo_contract_id_format");
+  }
+  if (!/^check_/.test(proof.check_id ?? "")) {
+    missing.push("check_id_format");
+  }
+  if (!/^[a-f0-9]{64}$/.test(proof.mcp_cli_parity_hash ?? "")) {
+    missing.push("mcp_cli_parity_hash_format");
+  }
+  if (!/^[a-f0-9]{64}$/.test(proof.audit_head_hash ?? "")) {
+    missing.push("audit_head_hash_format");
+  }
   for (const [field, value] of Object.entries({
     dogfood_or_fixture_repo_id: proof.dogfood_or_fixture_repo_id,
     scan_id: proof.scan_id,
     repo_contract_id: proof.repo_contract_id,
     check_id: proof.check_id,
+    fresh_scan_verified: proof.fresh_scan_verified,
+    response_schemas_verified: proof.response_schemas_verified,
     good_route_passed: proof.good_route_passed,
     bad_route_blocked: proof.bad_route_blocked,
     finding_evidence_complete: proof.finding_evidence_complete,

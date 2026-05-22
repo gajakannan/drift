@@ -91,6 +91,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
       completed_at: now
     });
     const payload = {
+      response_schema: "drift.check.result.v1",
       check,
       policy,
       governance: preflightGovernance(),
@@ -294,6 +295,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     scope: scope as "changed-hunks" | "changed-files" | "full"
   });
   const payload = {
+    response_schema: "drift.check.result.v1",
     check,
     policy,
     governance: preflightGovernance(),
