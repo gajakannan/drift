@@ -273,6 +273,46 @@ async function seedStartedDoctorState(prefix = "drift-doctor-started-"): Promise
   };
 }
 
+async function seedScannedNoContractState(prefix = "drift-no-contract-"): Promise<{
+  databasePath: string;
+  repoId: string;
+  repoRoot: string;
+  stateRoot: string;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  const repoRoot = join(dir, "repo");
+  const stateRoot = join(dir, "state");
+  await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+  await writeFile(
+    join(repoRoot, "apps/web/app/api/users/route.ts"),
+    [
+      "import { prisma } from \"@/lib/prisma\";",
+      "export async function GET() {",
+      "  return Response.json(await prisma.user.findMany());",
+      "}",
+      ""
+    ].join("\n")
+  );
+
+  const scanned = await runCli([
+    "scan",
+    "--repo-root", repoRoot,
+    "--state-root", stateRoot,
+    "--now", "2026-05-10T00:00:30.000Z",
+    "--json"
+  ]);
+  expect(scanned.exitCode).toBe(0);
+  const payload = JSON.parse(scanned.stdout);
+  expect(payload.accepted).toBeUndefined();
+  return {
+    databasePath: payload.database_path,
+    repoId: payload.repo.id,
+    repoRoot,
+    stateRoot
+  };
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -294,7 +334,7 @@ describe("drift CLI convention review", () => {
     expect(payload.runtime).toMatchObject({
       cli_version: "0.1.0",
       core_version: "0.1.0",
-      supported_sqlite_schema_version: 5,
+      supported_sqlite_schema_version: 9,
       storage_driver: "sqlite"
     });
     expect(payload.v1_scope).toMatchObject({
@@ -689,6 +729,7 @@ describe("drift CLI convention review", () => {
     expect(payload.summary.engine_source).toBe("rust");
     expect(payload.summary.facts_count).toBeGreaterThan(0);
     expect(payload.candidates[0].kind).toBe("api_route_no_direct_data_access");
+    expect(payload.candidates[0].scoring.heuristic_id).toBe("engine-direct-data-access-v1");
     expect(payload.candidates[0].evidence_refs).toEqual([
       expect.objectContaining({
         kind: "supporting",
@@ -697,7 +738,7 @@ describe("drift CLI convention review", () => {
         end_line: 1,
         symbol: "prisma",
         import_source: "@/lib/prisma",
-        fact_ids: [expect.stringMatching(/^fact_/)],
+        fact_ids: [expect.stringMatching(/^fact[:_]/)],
         scan_id: payload.scan.id,
         file_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
         redaction_state: "none"
@@ -859,7 +900,7 @@ describe("drift CLI convention review", () => {
         start_line: 1,
         symbol: "listUsers",
         import_source: "@/services/users",
-        fact_ids: [expect.stringMatching(/^fact_/)]
+        fact_ids: [expect.stringMatching(/^fact[:_]/)]
       })
     ]);
     expect(payload.candidates[0].counterexample_refs).toEqual([]);
@@ -921,6 +962,83 @@ describe("drift CLI convention review", () => {
         forbidden_imports: ["@/lib/client"]
       },
       enforcement_capability: "deterministic_check"
+    });
+  });
+
+  it("does not accept default onboarding conventions from repo fixture routes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-start-fixture-routes-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "test/fixtures/next-api-direct-db/apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "test/fixtures/next-api-direct-db/apps/web/app/api/users/route.ts"),
+      [
+        "import { prisma } from \"@/lib/prisma\";",
+        "",
+        "export async function GET() {",
+        "  return Response.json(await prisma.user.findMany());",
+        "}",
+        ""
+      ].join("\n")
+    );
+
+    const result = await runCli([
+      "start",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--accept-defaults",
+      "--now", "2026-05-10T00:00:13.000Z",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.candidates).toEqual([]);
+    expect(payload.accepted).toBeUndefined();
+    expect(payload.onboarding).toMatchObject({
+      status: "needs_more_signal",
+      accepted_default: false,
+      candidate_count: 0
+    });
+
+    const mapped = await runCli([
+      "--db", payload.database_path,
+      "repo", "map",
+      "--repo", payload.repo.id,
+      "--json"
+    ]);
+    const audit = await runCli([
+      "--db", payload.database_path,
+      "audit", "verify",
+      "--repo", payload.repo.id,
+      "--json"
+    ]);
+    const backup = await runCli([
+      "--db", payload.database_path,
+      "backup", "create",
+      "--repo", payload.repo.id,
+      "--output", join(dir, "backups"),
+      "--now", "2026-05-10T00:00:14.000Z",
+      "--confirm",
+      "--json"
+    ]);
+
+    expect(mapped.exitCode).toBe(0);
+    expect(JSON.parse(mapped.stdout)).toMatchObject({
+      policy: { allowed: true, surface: "cli-preflight" },
+      summary: { indexed_file_count: 1 },
+      files: [{ convention_ids: [], risky_area_ids: [] }]
+    });
+    expect(audit.exitCode).toBe(0);
+    expect(JSON.parse(audit.stdout)).toMatchObject({
+      policy: { allowed: true, surface: "log" },
+      verification: { valid: true, event_count: 2 }
+    });
+    expect(backup.exitCode).toBe(0);
+    expect(JSON.parse(backup.stdout)).toMatchObject({
+      policy: { allowed: true, surface: "artifact" },
+      manifest: { repo_id: payload.repo.id }
     });
   });
 
@@ -1091,6 +1209,83 @@ describe("drift CLI convention review", () => {
     expect(JSON.parse(second.stdout).scan.previous_scan_id).toBe(firstPayload.scan.id);
   });
 
+  it("persists scan file changes across repeated scans", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-scan-file-changes-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await mkdir(join(repoRoot, "src/services"), { recursive: true });
+    const routePath = join(repoRoot, "apps/web/app/api/users/route.ts");
+    const servicePath = join(repoRoot, "src/services/users.ts");
+    await writeFile(routePath, "export async function GET() { return Response.json({ ok: true }); }\n");
+    await writeFile(servicePath, "export function listUsers() { return []; }\n");
+
+    const first = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:10.000Z",
+      "--json"
+    ]);
+    expect(first.exitCode).toBe(0);
+    const firstPayload = JSON.parse(first.stdout);
+    expect(firstPayload.summary.incremental_changes).toMatchObject({
+      added: 2,
+      modified: 0,
+      deleted: 0,
+      unchanged: 0,
+      total: 2
+    });
+
+    await writeFile(routePath, "export async function GET() { return Response.json({ changed: true }); }\n");
+    await rm(servicePath);
+    await writeFile(join(repoRoot, "src/services/admin.ts"), "export function listAdmins() { return []; }\n");
+
+    const second = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:20.000Z",
+      "--json"
+    ]);
+
+    expect(second.exitCode).toBe(0);
+    const secondPayload = JSON.parse(second.stdout);
+    expect(secondPayload.summary.incremental_changes).toMatchObject({
+      added: 1,
+      modified: 1,
+      deleted: 1,
+      unchanged: 0,
+      total: 3
+    });
+
+    const status = await runCli([
+      "--db", secondPayload.database_path,
+      "scan", "status",
+      "--repo", secondPayload.repo.id,
+      "--json"
+    ]);
+    expect(status.exitCode).toBe(0);
+    expect(JSON.parse(status.stdout).latest_scan_change_summary).toMatchObject({
+      added: 1,
+      modified: 1,
+      deleted: 1,
+      unchanged: 0,
+      total: 3
+    });
+
+    const storage = openDriftStorage({ databasePath: secondPayload.database_path });
+    storage.migrate();
+    expect(storage.listScanFileChanges(secondPayload.repo.id, secondPayload.scan.id)
+      .map((change) => [change.file_path, change.change_kind])).toEqual([
+      ["apps/web/app/api/users/route.ts", "modified"],
+      ["src/services/admin.ts", "added"],
+      ["src/services/users.ts", "deleted"]
+    ]);
+    storage.close();
+  });
+
   it("reports scan invalidation when scanner, adapter, or rule versions change", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-scan-invalid-"));
     tempDirs.push(dir);
@@ -1118,7 +1313,7 @@ describe("drift CLI convention review", () => {
       commit: "abc123",
       dirty: false,
       scanner_version: "0.0.1",
-      adapter_versions: { typescript: "0.0.1" },
+      adapter_versions: { typescript: "0.0.1", resolver: "0.0.1" },
       rule_engine_version: "0.0.1",
       status: "completed",
       file_count: 1,
@@ -1150,8 +1345,53 @@ describe("drift CLI convention review", () => {
     expect(payload.invalidation_reasons).toEqual([
       "scanner_version_changed",
       "adapter_version_changed:typescript",
+      "resolver_version_changed",
       "rule_engine_version_changed"
     ]);
+  });
+
+  it("marks scan status stale when resolver input files change without source changes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-resolver-inputs-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["src/*"] } } })
+    );
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      "export async function GET() { return Response.json({ ok: true }); }\n"
+    );
+
+    const scan = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:00.000Z",
+      "--json"
+    ]);
+
+    expect(scan.exitCode).toBe(0);
+    const scanPayload = JSON.parse(scan.stdout);
+    await writeFile(
+      join(repoRoot, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["app/*"] } } })
+    );
+
+    const status = await runCli([
+      "--db", scanPayload.database_path,
+      "scan", "status",
+      "--repo", scanPayload.repo.id,
+      "--json"
+    ]);
+
+    expect(status.exitCode).toBe(0);
+    const payload = JSON.parse(status.stdout);
+    expect(payload.source_change_count).toBe(0);
+    expect(payload.stale).toBe(true);
+    expect(payload.invalidation_reasons).toContain("resolver_inputs_changed");
   });
 
   it("marks scan status stale when the current branch differs from the scanned branch", async () => {
@@ -1719,7 +1959,7 @@ describe("drift CLI convention review", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("Drift doctor");
-    expect(result.stdout).toContain("Runtime: Drift CLI 0.1.0, SQLite schema 5");
+    expect(result.stdout).toContain("Runtime: Drift CLI 0.1.0, SQLite schema 9");
     expect(result.stdout).toContain("V1 scope: local-first CLI, TypeScript API route layering");
     expect(result.stdout).toContain("TS/JS files: 1 indexable file");
     expect(result.stdout).toContain("API routes: 1 API route file");
@@ -1800,7 +2040,7 @@ describe("drift CLI convention review", () => {
       typescript_adapter_version: "0.1.0",
       rule_engine_version: "0.1.0",
       contract_schema_version: 1,
-      supported_sqlite_schema_version: 5,
+      supported_sqlite_schema_version: 9,
       storage_driver: "sqlite"
     });
     expect(payload.v1_scope).toMatchObject({
@@ -1812,7 +2052,7 @@ describe("drift CLI convention review", () => {
       deferred: ["desktop_ui", "cloud_sync", "python_adapter", "duplicate_helper_detection"]
     });
     expect(payload.state_summary).toMatchObject({
-      supported_schema_version: 5
+      supported_schema_version: 9
     });
     expect(payload.state_summary).toMatchObject({
       exists: true,
@@ -2041,6 +2281,40 @@ describe("drift CLI convention review", () => {
     }));
   });
 
+  it("honors gitignore wildcard and output-directory patterns during doctor", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-doctor-gitignore-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "app/api/users"), { recursive: true });
+    await mkdir(join(repoRoot, "output/dogfood"), { recursive: true });
+    await writeFile(join(repoRoot, ".gitignore"), "main-*.js\noutput/\n");
+    await writeFile(
+      join(repoRoot, "app/api/users/route.ts"),
+      "export async function GET() { return Response.json({ ok: true }); }\n"
+    );
+    await writeFile(join(repoRoot, "main-DlFGMsC6.js"), "export const bundled = true;\n");
+    await writeFile(join(repoRoot, "output/dogfood/state.js"), "export const state = true;\n");
+
+    const result = await runCli([
+      "doctor",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.checks).toContainEqual(expect.objectContaining({
+      id: "typescript_files",
+      detail: "1 indexable file"
+    }));
+    expect(payload.checks).toContainEqual(expect.objectContaining({
+      id: "api_routes",
+      detail: "1 API route file"
+    }));
+  });
+
   it("emits doctor results as JSON for setup automation", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-doctor-json-"));
     tempDirs.push(dir);
@@ -2116,7 +2390,7 @@ describe("drift CLI convention review", () => {
       typescript_adapter_version: "0.1.0",
       rule_engine_version: "0.1.0",
       contract_schema_version: 1,
-      supported_sqlite_schema_version: 5,
+      supported_sqlite_schema_version: 9,
       storage_driver: "sqlite"
     });
     expect(payload.v1_scope).toMatchObject({
@@ -3123,6 +3397,53 @@ describe("drift CLI convention review", () => {
     expect(JSON.parse(result.stdout).summary).toMatchObject({
       findings_count: 0,
       waived_findings_count: 1
+    });
+  });
+
+  it("does not turn waived graph-resolved data access imports into findings", async () => {
+    const { databasePath, repoRoot } = await seedAcceptedDatabase();
+    await writeFile(
+      join(repoRoot, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["src/*"] } } })
+    );
+    await mkdir(join(repoRoot, "src/lib"), { recursive: true });
+    await writeFile(join(repoRoot, "src/lib/prisma.ts"), "export const prisma = {};\n");
+
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const contract = storage.getRepoContract("repo_abc")!;
+    storage.upsertRepoContract({
+      ...contract,
+      conventions: [{
+        ...contract.conventions[0]!,
+        matcher: {
+          ...contract.conventions[0]!.matcher,
+          forbidden_imports: ["src/lib/prisma.ts"]
+        }
+      }],
+      waivers: [{
+        id: "waiver_prisma_alias",
+        reason: "Temporarily allow this aliased import while migrating legacy routes.",
+        imports: ["@/lib/prisma"],
+        created_by: "geoff",
+        created_at: "2026-05-10T00:00:20.000Z"
+      }]
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "check",
+      "--repo", "repo_abc",
+      "--scope", "full",
+      "--now", "2026-05-10T00:00:30.000Z",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).summary).toMatchObject({
+      findings_count: 0,
+      blocking_count: 0
     });
   });
 
@@ -5626,7 +5947,7 @@ describe("drift CLI convention review", () => {
     expect(payload.summary).toMatchObject({
       write_intent: true,
       artifact_exists: true,
-      schema_version: 5
+      schema_version: 9
     });
     expect(payload.review_item).toMatchObject({
       id: payload.manifest.id,
@@ -5636,7 +5957,7 @@ describe("drift CLI convention review", () => {
     });
     expect(payload.manifest).toMatchObject({
       repo_id: "repo_abc",
-      schema_version: 5,
+      schema_version: 9,
       created_at: "2026-05-10T00:00:04.000Z"
     });
     expect(payload.manifest.backup_path).toContain(backupDir);
@@ -5861,7 +6182,7 @@ describe("drift CLI convention review", () => {
         id: backup[0],
         repo_id: "repo_abc",
         repo_fingerprint: "repo-fp",
-        schema_version: 5,
+        schema_version: 9,
         source_database_path: databasePath,
         backup_path: `/tmp/${backup[0]}.sqlite`,
         checksum_sha256: "a".repeat(64),
@@ -5913,7 +6234,7 @@ describe("drift CLI convention review", () => {
       id: "backup_valid",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 5,
+      schema_version: 9,
       source_database_path: databasePath,
       backup_path: validPath,
       checksum_sha256: validChecksum,
@@ -5924,7 +6245,7 @@ describe("drift CLI convention review", () => {
       id: "backup_missing",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 5,
+      schema_version: 9,
       source_database_path: databasePath,
       backup_path: join(dir, "missing.sqlite"),
       checksum_sha256: "b".repeat(64),
@@ -5935,7 +6256,7 @@ describe("drift CLI convention review", () => {
       id: "backup_mismatch",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 5,
+      schema_version: 9,
       source_database_path: databasePath,
       backup_path: mismatchPath,
       checksum_sha256: mismatchChecksum,
@@ -6196,7 +6517,7 @@ describe("drift CLI convention review", () => {
         surface: "artifact"
       },
       checksum_matches: true,
-      schema_version: 5
+      schema_version: 9
     });
     expect(JSON.parse(verified.stdout).summary).toMatchObject({
       valid: true,
@@ -6346,7 +6667,7 @@ describe("drift CLI convention review", () => {
       valid: false,
       repo_id: "repo_abc",
       schema_supported: false,
-      schema_version: 6
+      schema_version: 10
     });
   });
 
@@ -6377,7 +6698,7 @@ describe("drift CLI convention review", () => {
       valid: false,
       repo_id: "repo_abc",
       schema_supported: false,
-      schema_version: 5,
+      schema_version: 9,
       unsupported_migrations: ["004_unknown_future_schema"]
     });
   });
@@ -6408,7 +6729,7 @@ describe("drift CLI convention review", () => {
     expect(JSON.parse(verified.stdout)).toMatchObject({
       valid: false,
       schema_supported: false,
-      schema_version: 4,
+      schema_version: 8,
       missing_migrations: ["003_repo_contracts_and_conventions"]
     });
   });
@@ -6606,7 +6927,7 @@ describe("drift CLI convention review", () => {
       repo_id: "repo_abc",
       backup_path: backupPath,
       restored_database_path: targetDatabasePath,
-      schema_version: 5
+      schema_version: 9
     });
     expect(payload.governance).toMatchObject({
       read_only: false,
@@ -6647,7 +6968,7 @@ describe("drift CLI convention review", () => {
         backup_path: backupPath,
         checksum_sha256: payload.restore.checksum_sha256,
         checksum_matches: true,
-        schema_version: 5,
+        schema_version: 9,
         graph_stale: payload.restore.graph_stale,
         requires_rescan: payload.restore.requires_rescan,
         staleness_reason: payload.restore.staleness_reason
@@ -7072,7 +7393,7 @@ describe("drift CLI convention review", () => {
     ]);
 
     expect(restored.exitCode).toBe(1);
-    expect(restored.stderr).toContain("Backup schema version 6 is not supported");
+    expect(restored.stderr).toContain("Backup schema version 10 is not supported");
     await expect(stat(targetDatabasePath)).rejects.toThrow();
   });
 
@@ -7672,6 +7993,177 @@ describe("drift CLI convention review", () => {
     ]);
     expect(payload.next_commands[0]).toBe(
       "drift prepare \"what applies here?\" --repo repo_abc --path apps/web/app/api/users/route.ts --json"
+    );
+  });
+
+  it("prepares a first-run packet before a contract exists without inventing conventions", async () => {
+    const { databasePath, repoId } = await seedScannedNoContractState("drift-prepare-no-contract-");
+
+    const result = await runCli([
+      "--db", databasePath,
+      "prepare",
+      "add users api route",
+      "--repo", repoId,
+      "--path", "apps/web/app/api/users/route.ts",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.contract).toMatchObject({
+      ready: false,
+      id: null,
+      source: "default_local_policy"
+    });
+    expect(payload.summary).toMatchObject({
+      contract_ready: false,
+      candidate_count: 2,
+      convention_count: 0,
+      relevant_file_count: 1
+    });
+    expect(payload.conventions).toEqual([]);
+    expect(payload.relevant_files).toEqual([
+      expect.objectContaining({
+        path: "apps/web/app/api/users/route.ts",
+        reasons: expect.arrayContaining(["requested path"])
+      })
+    ]);
+    expect(payload.next_commands).toEqual([
+      `drift conventions list --repo ${repoId} --status candidate --json`,
+      `drift repo map --repo ${repoId} --json`,
+      `drift scan status --repo ${repoId} --json`
+    ]);
+  });
+
+  it("includes graph-backed route flow and reachable data access in prepare", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-prepare-graph-context-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "src/app/api/users"), { recursive: true });
+    await mkdir(join(repoRoot, "src/services"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+          paths: {
+            "@/*": ["src/*"]
+          }
+        }
+      })
+    );
+    await writeFile(
+      join(repoRoot, "src/db.ts"),
+      [
+        "export const db = {",
+        "  user: { findMany: async () => [] }",
+        "};",
+        ""
+      ].join("\n")
+    );
+    await writeFile(
+      join(repoRoot, "src/services/users.ts"),
+      [
+        "import { db } from \"@/db\";",
+        "export async function listUsers() {",
+        "  return db.user.findMany();",
+        "}",
+        ""
+      ].join("\n")
+    );
+    await writeFile(
+      join(repoRoot, "src/app/api/users/route.ts"),
+      [
+        "import { listUsers } from \"@/services/users\";",
+        "export async function GET() {",
+        "  return Response.json(await listUsers());",
+        "}",
+        ""
+      ].join("\n")
+    );
+
+    const scanned = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:40.000Z",
+      "--json"
+    ]);
+    expect(scanned.exitCode).toBe(0);
+    const scanPayload = JSON.parse(scanned.stdout);
+
+    const prepared = await runCli([
+      "--db", scanPayload.database_path,
+      "prepare",
+      "change users api route",
+      "--repo", scanPayload.repo.id,
+      "--path", "src/app/api/users/route.ts",
+      "--json"
+    ]);
+
+    expect(prepared.exitCode).toBe(0);
+    const payload = JSON.parse(prepared.stdout);
+    expect(payload.graph_context).toMatchObject({
+      available: true,
+      scan_id: scanPayload.scan.id,
+      completeness: {
+        complete: true,
+        reasons: []
+      },
+      route_flows: [{
+        path: "src/app/api/users/route.ts",
+        route_module_id: "module:src/app/api/users/route.ts",
+        service_module_ids: ["module:src/services/users.ts"],
+        data_access_module_ids: ["module:src/db.ts"]
+      }],
+      reachable_data_access: [{
+        path: "src/app/api/users/route.ts",
+        data_access_module_ids: ["module:src/db.ts"],
+        data_operations: [expect.objectContaining({
+          file_path: "src/services/users.ts",
+          operation_kind: "read",
+          operation_name: "findMany",
+          store_name: "user",
+          receiver_name: "db.user"
+        })]
+      }]
+    });
+    expect(payload.graph_context.affected_files[0]).toMatchObject({
+      path: "src/app/api/users/route.ts",
+      files: ["src/app/api/users/route.ts"]
+    });
+  });
+
+  it("answers first-run questions before a contract exists without treating candidates as accepted", async () => {
+    const { databasePath, repoId } = await seedScannedNoContractState("drift-ask-no-contract-");
+
+    const result = await runCli([
+      "--db", databasePath,
+      "ask",
+      "what applies to users api routes?",
+      "--repo", repoId,
+      "--path", "apps/web/app/api/users/route.ts",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.contract).toMatchObject({
+      ready: false,
+      id: null,
+      source: "default_local_policy"
+    });
+    expect(payload.summary).toMatchObject({
+      contract_ready: false,
+      candidate_count: 2,
+      matched_convention_count: 0,
+      relevant_file_count: 1
+    });
+    expect(payload.conventions).toEqual([]);
+    expect(payload.answer.summary).toContain("0 accepted conventions");
+    expect(payload.next_commands[0]).toBe(
+      `drift conventions list --repo ${repoId} --status candidate --json`
     );
   });
 
@@ -9022,7 +9514,7 @@ describe("drift CLI convention review", () => {
     }
   });
 
-  it("refuses prepare until a repo contract exists", async () => {
+  it("uses default local policy for prepare before a repo contract exists", async () => {
     const databasePath = await seedDatabase();
 
     const result = await runCli([
@@ -9033,8 +9525,19 @@ describe("drift CLI convention review", () => {
       "--json"
     ]);
 
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("No repo contract exists for repo_abc");
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      contract: {
+        ready: false,
+        id: null,
+        source: "default_local_policy"
+      },
+      summary: {
+        contract_ready: false,
+        candidate_count: 1,
+        convention_count: 0
+      }
+    });
   });
 
   it("lists and shows convention candidates as JSON", async () => {

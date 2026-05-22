@@ -38,7 +38,7 @@ describe("golden fixture CLI lifecycle", () => {
           "api_route_requires_service_delegation",
         ],
         "engine_source": "rust",
-        "facts_count": 7,
+        "facts_count": 8,
         "files_indexed": 1,
       }
     `);
@@ -147,7 +147,7 @@ describe("golden fixture CLI lifecycle", () => {
         "governance_read_only": false,
         "next_command_count": 3,
         "repo_matches": true,
-        "schema_version": 5,
+        "schema_version": 9,
       }
     `);
 
@@ -166,7 +166,7 @@ describe("golden fixture CLI lifecycle", () => {
         "governance_read_only": false,
         "next_command_count": 2,
         "repo_matches": true,
-        "schema_version": 5,
+        "schema_version": 9,
         "write_intent": true,
       }
     `);
