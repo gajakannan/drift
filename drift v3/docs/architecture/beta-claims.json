@@ -18,5 +18,36 @@
     "mutation_capable_mcp",
     "general_ai_code_review",
     "broad_language_support"
-  ]
+  ],
+  "promotion_rules": {
+    "source_of_truth": "packages/core/src/capabilities.ts:createDriftCapabilities",
+    "requires_contract_parity_complete": true,
+    "requires_cli_mcp_parity_for_agent_surfaces": true,
+    "requires_release_proof_coverage_for_beta_surfaces": true,
+    "deferred_capabilities_must_remain_blocked": true,
+    "fixture_required_before_supported_claim": true
+  },
+  "claim_support": {
+    "accepted_contract_blocks_direct_data_access": {
+      "required_contracts": [
+        "RepoContract",
+        "RuleContract",
+        "FindingContract",
+        "CheckProofContract",
+        "ReleaseProofContract"
+      ],
+      "fixture": "scripts/run-beta-proof.mjs"
+    },
+    "typescript_api_route_layering": {
+      "required_contracts": [
+        "ParsedFactContract",
+        "GraphContract",
+        "RoleOntologyContract",
+        "LayerArchitectureContract",
+        "AdapterContract",
+        "EntrypointContract"
+      ],
+      "fixture": "scripts/run-beta-proof.mjs"
+    }
+  }
 }

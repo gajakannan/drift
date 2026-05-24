@@ -1,10 +1,20 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const repoRoot = process.cwd();
 const claimsPath = join(repoRoot, "docs", "architecture", "beta-claims.json");
 const claims = JSON.parse(readFileSync(claimsPath, "utf8"));
+const {
+  createDriftCapabilities,
+  createProductionClaimsManifest
+} = await import(pathToFileURL(join(repoRoot, "packages", "core", "dist", "index.js")).href).catch((error) => {
+  console.error(`Product claims validation failed:\n- runtime capabilities could not be loaded from packages/core/dist/index.js; run pnpm --filter @drift/core build first\n- ${error.message}`);
+  process.exit(1);
+});
+const runtimeCapabilities = createDriftCapabilities();
+const runtimeClaims = createProductionClaimsManifest();
 
 const requiredAllowed = [
   "local_first_cli",
@@ -32,6 +42,12 @@ if (claims.schema_version !== "drift.production.claims.v1") {
 if (claims.source_of_truth !== "createDriftCapabilities") {
   failures.push("source_of_truth must be createDriftCapabilities");
 }
+if (JSON.stringify(claims.allowed_claims ?? []) !== JSON.stringify(runtimeClaims.allowed_claims)) {
+  failures.push("allowed_claims must match createProductionClaimsManifest()");
+}
+if (JSON.stringify(claims.blocked_claims ?? []) !== JSON.stringify(runtimeClaims.blocked_claims)) {
+  failures.push("blocked_claims must match createProductionClaimsManifest()");
+}
 for (const claim of requiredAllowed) {
   if (!claims.allowed_claims?.includes(claim)) {
     failures.push(`allowed_claims missing ${claim}`);
@@ -45,6 +61,54 @@ for (const claim of requiredBlocked) {
 for (const claim of claims.blocked_claims ?? []) {
   if (claims.allowed_claims?.includes(claim)) {
     failures.push(`claim cannot be both allowed and blocked: ${claim}`);
+  }
+}
+for (const deferred of runtimeCapabilities.deferred ?? []) {
+  const blockedClaim = deferredCapabilityClaim(deferred);
+  if (blockedClaim && !claims.blocked_claims?.includes(blockedClaim)) {
+    failures.push(`deferred capability ${deferred} must remain blocked as ${blockedClaim}`);
+  }
+  if (blockedClaim && claims.allowed_claims?.includes(blockedClaim)) {
+    failures.push(`deferred capability ${deferred} cannot be promoted while runtime still defers it`);
+  }
+}
+if (runtimeCapabilities.mcp_mutation_tools.length > 0 && claims.allowed_claims?.includes("read_only_mcp")) {
+  failures.push("read_only_mcp cannot be claimed while runtime exposes MCP mutation tools");
+}
+if (!claims.blocked_claims?.includes("mutation_capable_mcp") && runtimeCapabilities.mcp_mutation_tools.length === 0) {
+  failures.push("mutation_capable_mcp must remain blocked while runtime MCP is read-only");
+}
+if (
+  claims.allowed_claims?.includes("typescript_api_route_layering") &&
+  (
+    !runtimeCapabilities.supported_wedge.languages.includes("typescript") ||
+    !runtimeCapabilities.supported_wedge.convention_kinds.includes("api_route_no_direct_data_access")
+  )
+) {
+  failures.push("typescript_api_route_layering requires runtime TypeScript support and api_route_no_direct_data_access");
+}
+if (claims.allowed_claims?.includes("accepted_contract_blocks_direct_data_access")) {
+  requireCompleteContract("RepoContract", "accepted_contract_blocks_direct_data_access");
+  requireCompleteContract("RuleContract", "accepted_contract_blocks_direct_data_access");
+  requireCompleteContract("FindingContract", "accepted_contract_blocks_direct_data_access");
+  requireCompleteContract("CheckProofContract", "accepted_contract_blocks_direct_data_access");
+  requireCompleteContract("ReleaseProofContract", "accepted_contract_blocks_direct_data_access");
+}
+if (claims.promotion_rules?.requires_contract_parity_complete) {
+  const summary = runtimeCapabilities.contract_parity?.summary;
+  if (!summary || summary.missing_count !== 0 || summary.partial_beta_required_count !== 0) {
+    failures.push("promotion requires complete beta contract parity");
+  }
+}
+for (const [claim, support] of Object.entries(claims.claim_support ?? {})) {
+  if (!claims.allowed_claims?.includes(claim)) {
+    failures.push(`claim_support includes non-allowed claim ${claim}`);
+  }
+  for (const contractName of support.required_contracts ?? []) {
+    requireCompleteContract(contractName, claim);
+  }
+  if (!support.fixture) {
+    failures.push(`claim_support.${claim} must name a fixture`);
   }
 }
 
@@ -72,4 +136,27 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log(`Validated Drift production claims manifest at ${claimsPath}.`);
+console.log(`Validated Drift production claims manifest against runtime capabilities at ${claimsPath}.`);
+
+function deferredCapabilityClaim(capability) {
+  return new Map([
+    ["desktop_ui", "desktop_ui"],
+    ["cloud_sync", "cloud_sync"],
+    ["python_adapter", "python_adapter"],
+    ["duplicate_helper_detection", "duplicate_helper_detection"]
+  ]).get(capability);
+}
+
+function requireCompleteContract(contractName, claim) {
+  const contract = runtimeCapabilities.contract_parity?.contracts?.find((row) => row.name === contractName);
+  if (!contract) {
+    failures.push(`${claim} requires missing contract parity row ${contractName}`);
+    return;
+  }
+  if (contract.confidence !== "complete") {
+    failures.push(`${claim} requires complete ${contractName}`);
+  }
+  if (contract.schema === "missing" || contract.storage === "missing" || contract.cli === "missing" || contract.mcp === "missing" || contract.release_proof === "missing") {
+    failures.push(`${claim} requires non-missing ${contractName} surfaces`);
+  }
+}

@@ -357,10 +357,27 @@ describe("release hygiene", () => {
     const claims = JSON.parse(await readFile(join("docs", "architecture", "beta-claims.json"), "utf8"));
 
     expect(output).toContain("Validated Drift production claims manifest");
+    expect(output).toContain("runtime capabilities");
     expect(claims.schema_version).toBe("drift.production.claims.v1");
     expect(claims.allowed_claims).toContain("typescript_api_route_layering");
     expect(claims.blocked_claims).toContain("incremental_reuse");
     expect(claims.blocked_claims).toContain("mutation_capable_mcp");
+  });
+
+  it("does not promote duplicate helper detection until contract parity and claims allow it", async () => {
+    const capabilities = createDriftCapabilities();
+
+    expect(capabilities.deferred).toContain("duplicate_helper_detection");
+    expect(capabilities.supported_wedge.convention_kinds).not.toContain("duplicate_helper_detection");
+    expect(capabilities.contract_parity.contracts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "ReleaseProofContract",
+          confidence: "complete",
+          release_proof: "covered"
+        })
+      ])
+    );
   });
 
   it("documents the V1 support matrix and deferred surfaces without overpromising", async () => {
