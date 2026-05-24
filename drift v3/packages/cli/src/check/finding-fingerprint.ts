@@ -47,3 +47,42 @@ export function findingFingerprint(
     .update(importSource)
     .digest("hex");
 }
+
+export function canonicalHelperReuseFindingFingerprint(
+  agentContractId: string,
+  helperId: string,
+  filePath: string,
+  symbolName: string
+): string {
+  return createHash("sha256")
+    .update("canonical-helper-reuse-v1\0")
+    .update(agentContractId)
+    .update("\0")
+    .update(helperId)
+    .update("\0")
+    .update(filePath.replaceAll("\\", "/"))
+    .update("\0")
+    .update(symbolName)
+    .digest("hex");
+}
+
+export function agentContractFindingFingerprint(
+  kind: string,
+  agentContractId: string,
+  filePath: string,
+  symbolName: string,
+  target: string
+): string {
+  return createHash("sha256")
+    .update("agent-contract-v1\0")
+    .update(kind)
+    .update("\0")
+    .update(agentContractId)
+    .update("\0")
+    .update(filePath.replaceAll("\\", "/"))
+    .update("\0")
+    .update(symbolName)
+    .update("\0")
+    .update(target)
+    .digest("hex");
+}

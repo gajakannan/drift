@@ -51,7 +51,8 @@ export function validateContract(storage: SqliteDriftStorage, parsed: ParsedArgs
     contract_fingerprint: contractFingerprint(contract),
     schema_version: contract.contract_schema_version,
     supported_schema_version: DRIFT_CONTRACT_SCHEMA_VERSION,
-    convention_count: contract.conventions.length
+    convention_count: contract.conventions.length,
+    agent_contract_count: contract.agent_contracts?.length ?? 0
   };
   return {
     payload: parsed.flags.has("json") ? payload : formatContractValidationText(payload)
@@ -172,6 +173,7 @@ export function importContractDryRun(
   const conventionContractIdsMatch = contract.conventions.every((convention) =>
     convention.contract_id === contract.id
   );
+  const agentContractIdsUnique = hasUniqueIds((contract.agent_contracts ?? []).map((entry) => entry.id));
   const agentPermissionsUnique = hasUniqueAgentPermissions(contract.agent_permissions);
   const exceptionIdsUnique = hasUniqueConventionExceptionIds(contract);
   const waiverIdsUnique = hasUniqueIds(contract.waivers.map((waiver) => waiver.id));
@@ -193,6 +195,7 @@ export function importContractDryRun(
       : undefined,
     !schemaSupported ? "contract_schema_unsupported" : undefined,
     !conventionContractIdsMatch ? "convention_contract_ids_mismatch" : undefined,
+    !agentContractIdsUnique ? "duplicate_agent_contract_ids" : undefined,
     !agentPermissionsUnique ? "duplicate_agent_permissions" : undefined,
     !exceptionIdsUnique ? "duplicate_exception_ids" : undefined,
     !waiverIdsUnique ? "duplicate_waiver_ids" : undefined,
@@ -213,6 +216,7 @@ export function importContractDryRun(
     schema_supported: schemaSupported,
     supported_schema_version: DRIFT_CONTRACT_SCHEMA_VERSION,
     convention_contract_ids_match: conventionContractIdsMatch,
+    agent_contract_ids_unique: agentContractIdsUnique,
     agent_permissions_unique: agentPermissionsUnique,
     exception_ids_unique: exceptionIdsUnique,
     waiver_ids_unique: waiverIdsUnique,
@@ -249,6 +253,7 @@ export function importContractDryRun(
     write_intent: !dryRun,
     confirm_command: dryRun ? confirmCommand : null,
     convention_count: contract.conventions.length,
+    agent_contract_count: contract.agent_contracts?.length ?? 0,
     would_update: wouldUpdate,
     added_convention_count: conventionImportSummary.added_count,
     changed_convention_count: conventionImportSummary.changed_count,
@@ -289,6 +294,7 @@ export function importContractDryRun(
       metadata: {
         contract_path: contractPath,
         convention_count: contract.conventions.length,
+        agent_contract_count: contract.agent_contracts?.length ?? 0,
         added_convention_count: conventionImportSummary.added_count,
         changed_convention_count: conventionImportSummary.changed_count,
         removed_convention_count: conventionImportSummary.removed_count,

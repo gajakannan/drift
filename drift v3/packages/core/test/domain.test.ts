@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   AcceptedConventionSchema,
+  AgentContractSchema,
+  AgentContractSelectionSchema,
+  AgentPreflightPacketSchema,
+  ContractFindingV2Schema,
   DRIFT_CONTRACT_SCHEMA_VERSION,
   DRIFT_RESOLVER_VERSION,
   DRIFT_RULE_ENGINE_VERSION,
@@ -12,6 +16,7 @@ import {
   authorizeContextExport,
   canonicalRepoContractJson,
   canonicalScanStateJson,
+  createAgentPreflightPacket,
   createAgentEnvelopeV2,
   createPolicyProof,
   makeDriftId
@@ -125,6 +130,283 @@ describe("core domain", () => {
     expect(convention.kind).toBe("api_route_no_direct_data_access");
   });
 
+  it("validates agent contract intelligence definitions", () => {
+    const placement = AgentContractSchema.parse({
+      kind: "module_placement",
+      id: "agent_contract_placement_api_routes",
+      version: 1,
+      statement: "API route files are entrypoints and must not contain data access modules.",
+      target_role: "api_route",
+      allowed_paths: ["app/api/**/route.ts", "pages/api/**/*.ts"],
+      forbidden_contained_roles: ["data_access_module"],
+      enforcement: "blocking"
+    });
+    expect(placement.kind).toBe("module_placement");
+
+    const helperReuse = AgentContractSchema.parse({
+      kind: "canonical_helper_reuse",
+      id: "agent_contract_auth_helper",
+      version: 1,
+      canonical_helpers: [{
+        helper_id: "helper_require_user",
+        symbol: "requireUser",
+        module: "@/server/auth/require-user",
+        applies_to_roles: ["api_route"],
+        purpose_tags: ["auth", "current-user"],
+        avoid_new_symbols_matching: ["getCurrentUser", "authUser"],
+        suggested_import: "import { requireUser } from \"@/server/auth/require-user\";"
+      }],
+      enforcement: "advisory"
+    });
+    expect(helperReuse.kind).toBe("canonical_helper_reuse");
+
+    const flow = AgentContractSchema.parse({
+      kind: "entrypoint_flow",
+      id: "agent_contract_route_flow",
+      version: 1,
+      entry_roles: ["api_route"],
+      required_steps: [
+        { kind: "auth_helper", calls: ["requireUser"] },
+        { kind: "service_delegation", target_roles: ["service_module"] }
+      ],
+      forbidden_steps: [{ kind: "direct_data_access" }],
+      enforcement: "blocking"
+    });
+    expect(flow.required_steps).toHaveLength(2);
+
+    const checks = AgentContractSchema.parse({
+      kind: "required_change_checks",
+      id: "agent_contract_route_checks",
+      version: 1,
+      rules: [{
+        applies_to: { file_roles: ["api_route"], path_globs: ["app/api/**/route.ts"] },
+        required_checks: [{
+          command: "drift check --scope changed-files --json",
+          reason: "API route changes must be checked against accepted route contracts.",
+          required_for_release: true
+        }]
+      }]
+    });
+    expect(checks.kind).toBe("required_change_checks");
+  });
+
+  it("rejects unsafe agent contract selectors", () => {
+    expect(() => AgentContractSchema.parse({
+      kind: "module_placement",
+      id: "agent_contract_bad",
+      version: 1,
+      statement: "bad",
+      target_role: "service_module",
+      allowed_paths: ["../outside"],
+      enforcement: "blocking"
+    })).toThrow();
+
+    expect(() => AgentContractSchema.parse({
+      kind: "canonical_helper_reuse",
+      id: "agent_contract_bad_helper",
+      version: 1,
+      canonical_helpers: [{
+        helper_id: "helper_bad",
+        symbol: "requireUser",
+        module: "@/server/auth/require-user",
+        purpose_tags: [],
+        suggested_import: "import { requireUser } from \"@/server/auth/require-user\";"
+      }],
+      enforcement: "advisory"
+    })).toThrow();
+  });
+
+  it("validates agent contract selection and preflight packet contracts", () => {
+    const selection = AgentContractSelectionSchema.parse({
+      schema_version: "drift.agent.contract_selection.v1",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      selected_contract_ids: ["agent_contract_auth_helper"],
+      selected_convention_ids: ["convention_direct_db"],
+      selected_helper_ids: ["helper_require_user"],
+      selected_required_checks: ["drift check --scope changed-files --json"],
+      selection_inputs: {
+        task_text: "add auth to the users route",
+        explicit_paths: ["app/api/users/route.ts"],
+        changed_paths: [],
+        file_roles: ["api_route"],
+        graph_node_ids: ["file:app/api/users/route.ts"]
+      },
+      reasons: [{
+        target_id: "agent_contract_auth_helper",
+        reason: "task_text_match",
+        evidence_refs: ["evidence_task_auth"]
+      }]
+    });
+    expect(selection.reasons[0]?.reason).toBe("task_text_match");
+
+    const packet = AgentPreflightPacketSchema.parse({
+      schema_version: "drift.agent.preflight.v3",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      stale: false,
+      task: "add auth to the users route",
+      selected_contracts: [],
+      selected_conventions: [],
+      selected_helpers: [{
+        symbol: "requireUser",
+        module: "@/server/auth/require-user",
+        suggested_import: "import { requireUser } from \"@/server/auth/require-user\";",
+        purpose_tags: ["auth"]
+      }],
+      placement_guidance: [{
+        role: "api_route",
+        allowed_paths: ["app/api/**/route.ts"],
+        forbidden_paths: ["app/api/**/helpers.ts"]
+      }],
+      import_boundaries: [],
+      required_flows: [],
+      required_checks: [{
+        command: "drift check --scope changed-files --json",
+        reason: "API route changes must be checked."
+      }],
+      active_exceptions: [],
+      active_waivers: [],
+      agent_instructions: ["Use requireUser from @/server/auth/require-user."],
+      diagnostics: []
+    });
+    expect(packet.selected_helpers[0]?.symbol).toBe("requireUser");
+  });
+
+  it("validates evidence-complete contract findings", () => {
+    const finding = ContractFindingV2Schema.parse({
+      schema_version: "drift.finding.v2",
+      finding_id: "finding_duplicate_helper",
+      contract_id: "agent_contract_auth_helper",
+      kind: "canonical_helper_reuse",
+      severity: "warning",
+      status: "advisory",
+      file_path: "app/api/users/auth.ts",
+      range: { start_line: 1, end_line: 12 },
+      expected: "Use requireUser from @/server/auth/require-user.",
+      actual: "New helper getCurrentUser was introduced inside the API route tree.",
+      evidence_refs: ["evidence_export_getCurrentUser", "evidence_helper_requireUser"],
+      graph_path: ["file:app/api/users/auth.ts", "symbol:getCurrentUser"],
+      suggested_fix: "Import requireUser instead of creating getCurrentUser.",
+      diagnostics: []
+    });
+    expect(finding.status).toBe("advisory");
+  });
+
+  it("builds deterministic agent preflight packets from repo contracts", () => {
+    const contract = RepoContractSchema.parse({
+      id: "contract_abc",
+      repo_id: "repo_abc",
+      contract_schema_version: 1,
+      repo_fingerprint: "repo-fingerprint",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z",
+      conventions: [{
+        id: "convention_no_direct_db",
+        contract_id: "contract_abc",
+        kind: "api_route_no_direct_data_access",
+        statement: "API routes must not import direct data-access clients.",
+        scope: { path_globs: ["app/api/**/route.ts"], file_roles: ["api_route"] },
+        matcher: {
+          kind: "api_route_no_direct_data_access",
+          forbidden_target_roles: ["data_access_module"],
+          allowed_delegate_imports: ["@/server/services"]
+        },
+        severity: "error",
+        enforcement_mode: "block",
+        enforcement_capability: "deterministic_check",
+        exceptions: [],
+        evidence_refs: [],
+        counterexample_refs: [],
+        accepted_by: "local-user",
+        accepted_at: "2026-05-10T00:00:00.000Z",
+        updated_at: "2026-05-10T00:00:00.000Z"
+      }],
+      rejected_inferences: [],
+      waivers: [],
+      risky_areas: [],
+      agent_contracts: [
+        {
+          kind: "canonical_helper_reuse",
+          id: "agent_contract_auth_helper",
+          version: 1,
+          canonical_helpers: [{
+            helper_id: "helper_require_user",
+            symbol: "requireUser",
+            module: "@/server/auth/require-user",
+            applies_to_roles: ["api_route"],
+            purpose_tags: ["auth", "current-user"],
+            suggested_import: "import { requireUser } from \"@/server/auth/require-user\";"
+          }],
+          enforcement: "advisory"
+        },
+        {
+          kind: "entrypoint_flow",
+          id: "agent_contract_route_flow",
+          version: 1,
+          entry_roles: ["api_route"],
+          required_steps: [
+            { kind: "auth_helper", calls: ["requireUser"] },
+            { kind: "service_delegation", target_roles: ["service_module"] }
+          ],
+          forbidden_steps: [{ kind: "direct_data_access" }],
+          enforcement: "blocking"
+        },
+        {
+          kind: "required_change_checks",
+          id: "agent_contract_route_checks",
+          version: 1,
+          rules: [{
+            applies_to: { file_roles: ["api_route"], path_globs: ["app/api/**/route.ts"] },
+            required_checks: [{
+              command: "drift check --scope changed-files --json",
+              reason: "API route changes must be checked against accepted route contracts.",
+              required_for_release: true
+            }]
+          }]
+        }
+      ],
+      safe_commands: [],
+      required_checks: [],
+      context_egress: {
+        default_mode: "local_only",
+        denied_globs: [".env*", "**/*.pem"],
+        max_snippet_chars: 1200,
+        allow_full_file_content: false
+      },
+      agent_permissions: []
+    });
+
+    const packet = createAgentPreflightPacket({
+      repoContract: contract,
+      task: "add auth to the users route",
+      scan_id: "scan_abc",
+      stale: false,
+      explicit_paths: ["app/api/users/route.ts"],
+      changed_paths: [],
+      file_roles: ["api_route"],
+      graph_node_ids: ["file:app/api/users/route.ts"]
+    });
+
+    expect(packet.selected_contracts.map((entry) => entry.id)).toEqual([
+      "agent_contract_auth_helper",
+      "agent_contract_route_checks",
+      "agent_contract_route_flow"
+    ]);
+    expect(packet.selected_conventions.map((entry) => entry.id)).toEqual(["convention_no_direct_db"]);
+    expect(packet.selected_helpers).toEqual([{
+      symbol: "requireUser",
+      module: "@/server/auth/require-user",
+      suggested_import: "import { requireUser } from \"@/server/auth/require-user\";",
+      purpose_tags: ["auth", "current-user"]
+    }]);
+    expect(packet.required_checks).toEqual([{
+      command: "drift check --scope changed-files --json",
+      reason: "API route changes must be checked against accepted route contracts."
+    }]);
+    expect(packet.agent_instructions).toContain("Use requireUser from @/server/auth/require-user.");
+  });
+
   it("validates repo contracts and findings", () => {
     expect(() => RepoContractSchema.parse({
       id: "contract_abc",
@@ -185,6 +467,31 @@ describe("core domain", () => {
         { id: "risk_b", path_globs: ["b/**"], risk_kind: "billing", reason: "b" },
         { id: "risk_a", path_globs: ["a/**"], risk_kind: "auth", reason: "a" }
       ],
+      agent_contracts: [
+        {
+          kind: "module_placement",
+          id: "agent_contract_b",
+          version: 1,
+          statement: "Service modules live under server services.",
+          target_role: "service_module",
+          allowed_paths: ["server/services/**"],
+          enforcement: "blocking"
+        },
+        {
+          kind: "canonical_helper_reuse",
+          id: "agent_contract_a",
+          version: 1,
+          canonical_helpers: [{
+            helper_id: "helper_require_user",
+            symbol: "requireUser",
+            module: "@/server/auth/require-user",
+            applies_to_roles: ["api_route"],
+            purpose_tags: ["auth"],
+            suggested_import: "import { requireUser } from \"@/server/auth/require-user\";"
+          }],
+          enforcement: "advisory"
+        }
+      ],
       safe_commands: [
         { command: "pnpm test:b", reason: "b", requires_explicit_run: true },
         { command: "pnpm test:a", reason: "a", requires_explicit_run: true }
@@ -209,6 +516,7 @@ describe("core domain", () => {
       rejected_inferences: [...baseContract.rejected_inferences].reverse(),
       waivers: [...baseContract.waivers].reverse(),
       risky_areas: [...baseContract.risky_areas].reverse(),
+      agent_contracts: [...(baseContract.agent_contracts ?? [])].reverse(),
       safe_commands: [...baseContract.safe_commands].reverse(),
       required_checks: [...baseContract.required_checks].reverse(),
       context_egress: {

@@ -1,4 +1,4 @@
-import { authorizeContextExport } from "@drift/core";
+import { FileRoleSchema,authorizeContextExport,createAgentPreflightPacket,type FileRole } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { optionalRepoRelativeFlag,requiredValue,stringFlag } from "../args/flag-readers.js";
@@ -78,6 +78,16 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
       safeCommands: contract.safe_commands
     })
   ];
+  const agentContractPacket = createAgentPreflightPacket({
+    repoContract: { ...contract, conventions: activeConventions },
+    task,
+    scan_id: scanStatus.latest_scan?.id ?? null,
+    stale: scanStatus.stale,
+    explicit_paths: targetPath ? [targetPath] : [],
+    changed_paths: relevantFiles.map((file) => file.path),
+    file_roles: uniqueFileRoles(relevantFiles),
+    graph_node_ids: graphNodeIdsForPreflight(graphContext, relevantFiles)
+  });
   const auditIntegrity = scanStatus.audit_integrity;
   const redactions = {
     denied_globs: contract.context_egress.denied_globs,
@@ -128,6 +138,7 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     scan_status: scanStatus,
     freshness_requirement: freshnessRequirement(requireFresh, scanStatus),
     graph_context: graphContext,
+    agent_contract_packet: agentContractPacket,
     baseline,
     findings,
     relevant_files: relevantFiles,
@@ -152,4 +163,38 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
   return {
     payload: parsed.flags.has("json") ? payload : formatPrepareText(payload)
   };
+}
+
+function uniqueFileRoles(relevantFiles: Array<{ roles: string[] }>): FileRole[] {
+  return [...new Set(relevantFiles.flatMap((file) => file.roles))]
+    .sort()
+    .filter(isFileRole);
+}
+
+function isFileRole(value: string): value is FileRole {
+  return FileRoleSchema.safeParse(value).success;
+}
+
+function graphNodeIdsForPreflight(
+  graphContext: ReturnType<typeof graphPreflightContext>,
+  relevantFiles: Array<{ path: string }>
+): string[] {
+  return [...new Set([
+    ...relevantFiles.map((file) => `file:${file.path}`),
+    ...graphContext.route_flows.flatMap((flow) => [
+      flow.route_module_id,
+      ...flow.route_handler_symbol_ids,
+      ...flow.service_module_ids,
+      ...flow.data_access_module_ids,
+      ...flow.module_path
+    ]),
+    ...graphContext.reachable_data_access.flatMap((access) => [
+      ...access.data_access_module_ids,
+      ...access.module_path,
+      ...access.data_operations.flatMap((operation) => [
+        operation.operation_node_id,
+        operation.data_store_node_id
+      ])
+    ])
+  ].filter((id): id is string => Boolean(id)))].sort();
 }

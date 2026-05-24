@@ -112,6 +112,7 @@ export function summarizeImportedConventions(
 
 export function contractSummary(contract: RepoContract): {
   convention_count: number;
+  agent_contract_count: number;
   risky_area_count: number;
   required_check_count: number;
   safe_command_count: number;
@@ -120,6 +121,7 @@ export function contractSummary(contract: RepoContract): {
 } {
   return {
     convention_count: contract.conventions.length,
+    agent_contract_count: contract.agent_contracts?.length ?? 0,
     risky_area_count: contract.risky_areas.length,
     required_check_count: contract.required_checks.length,
     safe_command_count: contract.safe_commands.length,
@@ -268,7 +270,8 @@ export function materializeRepoContract(
       max_snippet_chars: 1200,
       allow_full_file_content: false
     },
-    agent_permissions: existing?.agent_permissions ?? []
+    agent_permissions: existing?.agent_permissions ?? [],
+    agent_contracts: existing?.agent_contracts ?? []
   };
 }
 

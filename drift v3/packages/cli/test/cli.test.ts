@@ -2830,6 +2830,413 @@ describe("drift CLI convention review", () => {
     storage.close();
   });
 
+  it("blocks new helper exports that duplicate an accepted canonical helper", async () => {
+    const { databasePath, repoRoot } = await seedAcceptedDatabase();
+    await mkdir(join(repoRoot, "apps/web/server/auth"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/server/auth/current-user.ts"),
+      [
+        "export function getCurrentUser() {",
+        "  return null;",
+        "}",
+        ""
+      ].join("\n")
+    );
+    const diffFile = join(repoRoot, "..", "helper.diff.patch");
+    await writeFile(diffFile, [
+      "diff --git a/apps/web/server/auth/current-user.ts b/apps/web/server/auth/current-user.ts",
+      "--- /dev/null",
+      "+++ b/apps/web/server/auth/current-user.ts",
+      "@@ -0,0 +1,3 @@",
+      "+export function getCurrentUser() {",
+      "+  return null;",
+      "+}",
+      ""
+    ].join("\n"));
+
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertRepoContract({
+      ...storage.getRepoContract("repo_abc")!,
+      agent_contracts: [{
+        kind: "canonical_helper_reuse",
+        id: "agent_contract_auth_helper",
+        version: 1,
+        canonical_helpers: [{
+          helper_id: "helper_require_user",
+          symbol: "requireUser",
+          module: "@/server/auth/require-user",
+          applies_to_roles: ["api_route"],
+          purpose_tags: ["auth"],
+          avoid_new_symbols_matching: ["getCurrentUser"],
+          suggested_import: "import { requireUser } from \"@/server/auth/require-user\";"
+        }],
+        enforcement: "blocking"
+      }]
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "check",
+      "--repo", "repo_abc",
+      "--diff-file", diffFile,
+      "--scope", "changed-hunks",
+      "--now", "2026-05-10T00:00:30.000Z",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.summary).toMatchObject({
+      findings_count: 1,
+      blocking_count: 1,
+      outcome: {
+        diff_status_counts: { new_in_diff: 1 },
+        enforcement_counts: { block: 1 }
+      }
+    });
+    expect(payload.findings[0]).toMatchObject({
+      convention_id: "agent_contract_auth_helper",
+      repo_contract_id: "contract_abc",
+      title: "Duplicate canonical helper introduced",
+      status: "new",
+      diff_status: "new_in_diff",
+      enforcement_result: "block",
+      expected_layer: "canonical_helper",
+      actual_layer: "duplicate_helper",
+      suggested_fix: "Import requireUser from @/server/auth/require-user instead of creating getCurrentUser."
+    });
+    expect(payload.findings[0].graph_path).toEqual([
+      "apps/web/server/auth/current-user.ts",
+      "@/server/auth/require-user"
+    ]);
+    expect(payload.findings[0].evidence_refs[0]).toMatchObject({
+      kind: "violation",
+      file_path: "apps/web/server/auth/current-user.ts",
+      start_line: 1,
+      end_line: 3,
+      symbol: "getCurrentUser",
+      fact_ids: [expect.stringMatching(/^fact_/)],
+      scan_id: expect.stringMatching(/^scan_check_/),
+      redaction_state: "none"
+    });
+
+    const checked = openDriftStorage({ databasePath });
+    checked.migrate();
+    expect(checked.listFindings("repo_abc")[0]).toMatchObject({
+      convention_id: "agent_contract_auth_helper",
+      title: "Duplicate canonical helper introduced",
+      expected_layer: "canonical_helper",
+      actual_layer: "duplicate_helper"
+    });
+    checked.close();
+  });
+
+  it("blocks changed modules placed outside their accepted role paths", async () => {
+    const { databasePath, repoRoot } = await seedAcceptedDatabase();
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/user.service.ts"),
+      [
+        "export function listUsers() {",
+        "  return [];",
+        "}",
+        ""
+      ].join("\n")
+    );
+    const diffFile = join(repoRoot, "..", "module-placement.diff.patch");
+    await writeFile(diffFile, [
+      "diff --git a/apps/web/app/api/users/user.service.ts b/apps/web/app/api/users/user.service.ts",
+      "--- /dev/null",
+      "+++ b/apps/web/app/api/users/user.service.ts",
+      "@@ -0,0 +1,3 @@",
+      "+export function listUsers() {",
+      "+  return [];",
+      "+}",
+      ""
+    ].join("\n"));
+
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertRepoContract({
+      ...storage.getRepoContract("repo_abc")!,
+      conventions: [],
+      agent_contracts: [{
+        kind: "module_placement",
+        id: "agent_contract_service_placement",
+        version: 1,
+        statement: "Service modules live outside API route folders.",
+        target_role: "service_module",
+        allowed_paths: ["apps/web/server/services/**"],
+        forbidden_paths: ["apps/web/app/api/**"],
+        enforcement: "blocking"
+      }]
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "check",
+      "--repo", "repo_abc",
+      "--diff-file", diffFile,
+      "--scope", "changed-hunks",
+      "--now", "2026-05-10T00:00:30.000Z",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.summary.blocking_count).toBe(1);
+    expect(payload.findings[0]).toMatchObject({
+      convention_id: "agent_contract_service_placement",
+      title: "Module placement contract violated",
+      diff_status: "new_in_diff",
+      enforcement_result: "block",
+      expected_layer: "service_module",
+      actual_layer: "misplaced_module",
+      suggested_fix: "Move apps/web/app/api/users/user.service.ts under apps/web/server/services/**."
+    });
+    expect(payload.findings[0].evidence_refs[0]).toMatchObject({
+      file_path: "apps/web/app/api/users/user.service.ts",
+      start_line: 1,
+      symbol: "service_module",
+      fact_ids: [expect.stringMatching(/^fact_/)]
+    });
+  });
+
+  it("blocks imports that violate an accepted agent import boundary", async () => {
+    const { databasePath, repoRoot } = await seedAcceptedDatabase();
+    await mkdir(join(repoRoot, "apps/web/app/api/reports"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/reports/route.ts"),
+      [
+        "import { prisma } from \"@/lib/prisma\";",
+        "",
+        "export async function GET() {",
+        "  return Response.json(await prisma.report.findMany());",
+        "}",
+        ""
+      ].join("\n")
+    );
+    const diffFile = join(repoRoot, "..", "import-boundary.diff.patch");
+    await writeFile(diffFile, [
+      "diff --git a/apps/web/app/api/reports/route.ts b/apps/web/app/api/reports/route.ts",
+      "--- /dev/null",
+      "+++ b/apps/web/app/api/reports/route.ts",
+      "@@ -0,0 +1,5 @@",
+      "+import { prisma } from \"@/lib/prisma\";",
+      "+",
+      "+export async function GET() {",
+      "+  return Response.json(await prisma.report.findMany());",
+      "+}",
+      ""
+    ].join("\n"));
+
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertRepoContract({
+      ...storage.getRepoContract("repo_abc")!,
+      conventions: [],
+      agent_contracts: [{
+        kind: "import_boundary",
+        id: "agent_contract_api_import_boundary",
+        version: 1,
+        source_roles: ["api_route"],
+        forbidden_imports: ["@/lib/prisma"],
+        allowed_delegate_imports: ["@/server/services/**"],
+        enforcement: "blocking"
+      }]
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "check",
+      "--repo", "repo_abc",
+      "--diff-file", diffFile,
+      "--scope", "changed-hunks",
+      "--now", "2026-05-10T00:00:30.000Z",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.summary.blocking_count).toBe(1);
+    expect(payload.findings[0]).toMatchObject({
+      convention_id: "agent_contract_api_import_boundary",
+      title: "Import boundary contract violated",
+      diff_status: "new_in_diff",
+      enforcement_result: "block",
+      expected_layer: "allowed_import_boundary",
+      actual_layer: "forbidden_import",
+      suggested_fix: "Import through an accepted delegate instead of importing @/lib/prisma directly."
+    });
+    expect(payload.findings[0].evidence_refs[0]).toMatchObject({
+      file_path: "apps/web/app/api/reports/route.ts",
+      start_line: 1,
+      symbol: "prisma",
+      import_source: "@/lib/prisma",
+      fact_ids: [expect.stringMatching(/^fact_/)]
+    });
+  });
+
+  it("blocks file-role contracts when a changed file imports a forbidden dependency", async () => {
+    const { databasePath, repoRoot } = await seedAcceptedDatabase();
+    await mkdir(join(repoRoot, "apps/web/app/api/files"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/files/route.ts"),
+      [
+        "import { prisma } from \"@/lib/prisma\";",
+        "",
+        "export async function GET() {",
+        "  return Response.json(await prisma.file.findMany());",
+        "}",
+        ""
+      ].join("\n")
+    );
+    const diffFile = join(repoRoot, "..", "file-role.diff.patch");
+    await writeFile(diffFile, [
+      "diff --git a/apps/web/app/api/files/route.ts b/apps/web/app/api/files/route.ts",
+      "--- /dev/null",
+      "+++ b/apps/web/app/api/files/route.ts",
+      "@@ -0,0 +1,5 @@",
+      "+import { prisma } from \"@/lib/prisma\";",
+      "+",
+      "+export async function GET() {",
+      "+  return Response.json(await prisma.file.findMany());",
+      "+}",
+      ""
+    ].join("\n"));
+
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertRepoContract({
+      ...storage.getRepoContract("repo_abc")!,
+      conventions: [],
+      agent_contracts: [{
+        kind: "file_role",
+        id: "agent_contract_api_route_role",
+        version: 1,
+        roles: [{
+          role: "api_route",
+          path_globs: ["apps/web/app/api/**/route.ts"],
+          forbidden_imports: ["@/lib/prisma"],
+          confidence: "deterministic"
+        }]
+      }]
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "check",
+      "--repo", "repo_abc",
+      "--diff-file", diffFile,
+      "--scope", "changed-hunks",
+      "--now", "2026-05-10T00:00:30.000Z",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.summary.blocking_count).toBe(1);
+    expect(payload.findings[0]).toMatchObject({
+      convention_id: "agent_contract_api_route_role",
+      title: "File role contract violated",
+      diff_status: "new_in_diff",
+      enforcement_result: "block",
+      expected_layer: "api_route",
+      actual_layer: "forbidden_import",
+      suggested_fix: "Remove forbidden import @/lib/prisma from api_route files."
+    });
+  });
+
+  it("blocks entrypoint flow contracts when a required auth helper call is missing", async () => {
+    const { databasePath, repoRoot } = await seedAcceptedDatabase();
+    await mkdir(join(repoRoot, "apps/web/server/services"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/server/services/users.ts"),
+      [
+        "export async function listUsers() {",
+        "  return [];",
+        "}",
+        ""
+      ].join("\n")
+    );
+    await mkdir(join(repoRoot, "apps/web/app/api/session"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/session/route.ts"),
+      [
+        "import { listUsers } from \"@/server/services/users\";",
+        "",
+        "export async function GET() {",
+        "  return Response.json(await listUsers());",
+        "}",
+        ""
+      ].join("\n")
+    );
+    const diffFile = join(repoRoot, "..", "entrypoint-flow.diff.patch");
+    await writeFile(diffFile, [
+      "diff --git a/apps/web/app/api/session/route.ts b/apps/web/app/api/session/route.ts",
+      "--- /dev/null",
+      "+++ b/apps/web/app/api/session/route.ts",
+      "@@ -0,0 +1,5 @@",
+      "+import { listUsers } from \"@/server/services/users\";",
+      "+",
+      "+export async function GET() {",
+      "+  return Response.json(await listUsers());",
+      "+}",
+      ""
+    ].join("\n"));
+
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertRepoContract({
+      ...storage.getRepoContract("repo_abc")!,
+      conventions: [],
+      agent_contracts: [{
+        kind: "entrypoint_flow",
+        id: "agent_contract_api_auth_flow",
+        version: 1,
+        entry_roles: ["api_route"],
+        required_steps: [{
+          kind: "auth_helper",
+          calls: ["requireUser"]
+        }],
+        enforcement: "blocking"
+      }]
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "check",
+      "--repo", "repo_abc",
+      "--diff-file", diffFile,
+      "--scope", "changed-hunks",
+      "--now", "2026-05-10T00:00:30.000Z",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.summary.blocking_count).toBe(1);
+    expect(payload.findings[0]).toMatchObject({
+      convention_id: "agent_contract_api_auth_flow",
+      title: "Entrypoint flow contract violated",
+      diff_status: "new_in_diff",
+      enforcement_result: "block",
+      expected_layer: "auth_helper",
+      actual_layer: "missing_required_call",
+      suggested_fix: "Call requireUser before completing this entrypoint."
+    });
+    expect(payload.findings[0].evidence_refs[0]).toMatchObject({
+      file_path: "apps/web/app/api/session/route.ts",
+      start_line: 1,
+      symbol: "requireUser"
+    });
+  });
+
   it("blocks check enforcement when the explicit TypeScript fallback scanner is used", async () => {
     const { databasePath, repoRoot } = await seedAcceptedDatabase();
     const diffFile = join(repoRoot, "..", "diff.patch");
@@ -8114,6 +8521,14 @@ describe("drift CLI convention review", () => {
       enforcement_mode: "block",
       enforcement_capability: "deterministic_check"
     });
+    expect(payload.agent_contract_packet).toMatchObject({
+      schema_version: "drift.agent.preflight.v3",
+      repo_id: repoId,
+      stale: true,
+      selected_contracts: [],
+      selected_conventions: [{ kind: "api_route_no_direct_data_access" }],
+      required_checks: []
+    });
     expect(payload.scan_status.stale).toBe(true);
     expect(payload.scan_status.scan_fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(payload.audit_integrity.valid).toBe(true);
@@ -9903,6 +10318,55 @@ describe("drift CLI convention review", () => {
     });
   });
 
+  it("lists required checks contributed by required_change_checks agent contracts", async () => {
+    const { databasePath } = await seedAcceptedDatabase();
+    const storage = openDriftStorage({ databasePath });
+    const contract = storage.getRepoContract("repo_abc")!;
+    storage.upsertRepoContract({
+      ...contract,
+      required_checks: [],
+      safe_commands: [],
+      agent_contracts: [{
+        kind: "required_change_checks",
+        id: "agent_contract_api_required_checks",
+        version: 1,
+        rules: [{
+          applies_to: {
+            path_globs: ["apps/web/app/api/**/route.ts"],
+            file_roles: ["api_route"]
+          },
+          required_checks: [{
+            command: "pnpm test -- api",
+            reason: "Validate API route changes."
+          }]
+        }]
+      }]
+    });
+    storage.close();
+
+    const listed = await runCli([
+      "--db", databasePath,
+      "checks", "list",
+      "--repo", "repo_abc",
+      "--path", "apps/web/app/api/users/route.ts",
+      "--json"
+    ]);
+
+    expect(listed.exitCode).toBe(0);
+    expect(JSON.parse(listed.stdout)).toMatchObject({
+      summary: {
+        required_count: 1,
+        safe_count: 0,
+        total_count: 1
+      },
+      required_checks: [{
+        command: "pnpm test -- api",
+        reason: "Validate API route changes.",
+        matched_files: ["apps/web/app/api/users/route.ts"]
+      }]
+    });
+  });
+
   it("filters contract checks by kind", async () => {
     const { databasePath } = await seedAcceptedDatabase();
     const storage = openDriftStorage({ databasePath });
@@ -10921,12 +11385,63 @@ describe("drift CLI convention review", () => {
     });
     expect(JSON.parse(result.stdout).summary).toMatchObject({
       convention_count: 1,
+      agent_contract_count: 0,
       risky_area_count: 1,
       required_check_count: 1,
       safe_command_count: 0
     });
     expect(JSON.parse(result.stdout).contract_fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.parse(result.stdout).contract.conventions[0].id).toBe("convention_no_direct_db");
+  });
+
+  it("shows agent contract counts in contract show and validate output", async () => {
+    const { databasePath } = await seedAcceptedDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const contract = storage.getRepoContract("repo_abc")!;
+    storage.upsertRepoContract({
+      ...contract,
+      agent_contracts: [{
+        kind: "canonical_helper_reuse",
+        id: "agent_contract_auth_helper",
+        version: 1,
+        canonical_helpers: [{
+          helper_id: "helper_require_user",
+          symbol: "requireUser",
+          module: "@/server/auth/require-user",
+          applies_to_roles: ["api_route"],
+          purpose_tags: ["auth"],
+          suggested_import: "import { requireUser } from \"@/server/auth/require-user\";"
+        }],
+        enforcement: "advisory"
+      }]
+    });
+    storage.close();
+
+    const shown = await runCli([
+      "--db", databasePath,
+      "contract", "show",
+      "--repo", "repo_abc",
+      "--json"
+    ]);
+    const validated = await runCli([
+      "--db", databasePath,
+      "contract", "validate",
+      "--repo", "repo_abc",
+      "--json"
+    ]);
+
+    expect(shown.exitCode).toBe(0);
+    expect(JSON.parse(shown.stdout).summary).toMatchObject({
+      convention_count: 1,
+      agent_contract_count: 1
+    });
+    expect(validated.exitCode).toBe(0);
+    expect(JSON.parse(validated.stdout)).toMatchObject({
+      valid: true,
+      convention_count: 1,
+      agent_contract_count: 1
+    });
   });
 
   it("denies contract show when repo policy requires approval", async () => {
@@ -11684,6 +12199,50 @@ describe("drift CLI convention review", () => {
         compatible: false,
         agent_permissions_unique: false,
         reasons: ["duplicate_agent_permissions"]
+      },
+      confirm_command: null
+    });
+  });
+
+  it("returns a nonzero dry-run import result for duplicate agent contract ids", async () => {
+    const { databasePath } = await seedAcceptedDatabase();
+    const dir = await mkdtemp(join(tmpdir(), "drift-contract-duplicate-agent-contracts-"));
+    tempDirs.push(dir);
+    const contractPath = join(dir, "contract.json");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const contract = storage.getRepoContract("repo_abc")!;
+    const agentContract = {
+      kind: "module_placement",
+      id: "agent_contract_route_placement",
+      version: 1,
+      statement: "API routes live under app/api route files.",
+      target_role: "api_route",
+      allowed_paths: ["apps/web/app/api/**/route.ts"],
+      enforcement: "blocking"
+    };
+    await writeFile(contractPath, JSON.stringify({
+      ...contract,
+      agent_contracts: [agentContract, agentContract]
+    }, null, 2));
+    storage.close();
+
+    const imported = await runCli([
+      "--db", databasePath,
+      "contract", "import",
+      contractPath,
+      "--repo", "repo_abc",
+      "--dry-run",
+      "--json"
+    ]);
+
+    expect(imported.exitCode).toBe(1);
+    expect(JSON.parse(imported.stdout)).toMatchObject({
+      agent_contract_count: 2,
+      compatibility: {
+        compatible: false,
+        agent_contract_ids_unique: false,
+        reasons: ["duplicate_agent_contract_ids"]
       },
       confirm_command: null
     });
@@ -12551,6 +13110,27 @@ describe("drift CLI convention review", () => {
       "--now", "2026-05-10T00:00:10.000Z",
       "--json"
     ]);
+    const seeded = openDriftStorage({ databasePath });
+    seeded.migrate();
+    seeded.upsertRepoContract({
+      ...seeded.getRepoContract("repo_abc")!,
+      agent_contracts: [{
+        kind: "canonical_helper_reuse",
+        id: "agent_contract_auth_helper",
+        version: 1,
+        canonical_helpers: [{
+          helper_id: "helper_require_user",
+          symbol: "requireUser",
+          module: "@/server/auth/require-user",
+          applies_to_roles: ["api_route"],
+          purpose_tags: ["auth"],
+          avoid_new_symbols_matching: ["getCurrentUser"],
+          suggested_import: "import { requireUser } from \"@/server/auth/require-user\";"
+        }],
+        enforcement: "blocking"
+      }]
+    });
+    seeded.close();
 
     const result = await runCli([
       "--db", databasePath,
@@ -12592,6 +13172,9 @@ describe("drift CLI convention review", () => {
     expect(storage.getRepoContract("repo_abc")?.conventions[0]?.exceptions[0]?.reason).toBe(
       "health endpoints are intentionally dependency-light"
     );
+    expect(storage.getRepoContract("repo_abc")?.agent_contracts?.map((contract) => contract.id)).toEqual([
+      "agent_contract_auth_helper"
+    ]);
     expect(storage.listAuditEvents("repo_abc").at(-1)?.action).toBe("policy_changed");
     storage.close();
   });

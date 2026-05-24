@@ -675,6 +675,7 @@ describe("read-only MCP handlers", () => {
       contract: { id: "contract_abc" },
       summary: {
         convention_count: 1,
+        agent_contract_count: 0,
         risky_area_count: 1,
         required_check_count: 1,
         safe_command_count: 1,
@@ -812,6 +813,14 @@ describe("read-only MCP handlers", () => {
         severity: "error",
         agent_instruction: "When editing API route files, do not import data-access clients directly. Forbidden imports: @/lib/prisma. Delegate through the repo's accepted service/data-access layer and run drift check before finishing."
       }],
+      agent_contract_packet: {
+        schema_version: "drift.agent.preflight.v3",
+        repo_id: "repo_abc",
+        stale: true,
+        selected_contracts: [],
+        selected_conventions: [{ id: "convention_no_direct_db" }],
+        required_checks: []
+      },
       scan_status: {
         current_branch: "unknown",
         scan_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),

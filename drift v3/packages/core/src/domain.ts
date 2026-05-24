@@ -3,7 +3,8 @@ export type ConventionKind =
   | "api_route_requires_service_delegation"
   | "api_route_requires_auth_helper"
   | "test_expected_for_changed_module"
-  | "custom_briefing";
+  | "custom_briefing"
+  | AgentContractKind;
 
 export type FileRole =
   | "api_route"
@@ -11,6 +12,9 @@ export type FileRole =
   | "service_module"
   | "data_access_module"
   | "component"
+  | "ui_component"
+  | "hook_module"
+  | "schema_module"
   | "test"
   | "config"
   | "cli_command_module"
@@ -22,7 +26,16 @@ export type FileRole =
   | "engine_bridge_module"
   | "mcp_module"
   | "docs"
-  | "package_manifest";
+  | "package_manifest"
+  | "custom";
+
+export type AgentContractKind =
+  | "file_role"
+  | "module_placement"
+  | "import_boundary"
+  | "entrypoint_flow"
+  | "canonical_helper_reuse"
+  | "required_change_checks";
 
 export interface ConventionScope {
   path_globs: string[];
@@ -35,6 +48,8 @@ export interface ConventionScope {
 export interface ConventionMatcher {
   kind: ConventionKind;
   forbidden_imports?: string[];
+  forbidden_target_roles?: FileRole[];
+  allowed_imports?: string[];
   required_calls?: string[];
   allowed_delegate_imports?: string[];
   applies_to_file_roles?: FileRole[];
@@ -69,6 +84,8 @@ export interface ConventionException {
   resolved_symbols?: string[];
   data_stores?: string[];
   operation_kinds?: Array<"read" | "write" | "delete" | "unknown">;
+  file_roles?: FileRole[];
+  contract_kinds?: AgentContractKind[];
   expires_at?: string;
   created_by: string;
   created_at: string;
@@ -430,6 +447,194 @@ export interface RequiredCheck {
   risk_kinds?: string[];
 }
 
+export type AgentContractEnforcement = "blocking" | "advisory";
+
+export interface FileRoleAgentContract {
+  kind: "file_role";
+  id: string;
+  version: 1;
+  roles: Array<{
+    role: FileRole;
+    path_globs: string[];
+    required_exports?: string[];
+    forbidden_imports?: string[];
+    confidence: "deterministic" | "heuristic";
+  }>;
+}
+
+export interface ModulePlacementAgentContract {
+  kind: "module_placement";
+  id: string;
+  version: 1;
+  statement: string;
+  target_role: FileRole;
+  allowed_paths: string[];
+  forbidden_paths?: string[];
+  required_parent_roles?: FileRole[];
+  forbidden_contained_roles?: FileRole[];
+  examples?: {
+    good: string[];
+    bad: string[];
+  };
+  enforcement: AgentContractEnforcement;
+}
+
+export interface ImportBoundaryAgentContract {
+  kind: "import_boundary";
+  id: string;
+  version: 1;
+  source_roles: FileRole[];
+  forbidden_imports?: string[];
+  forbidden_target_roles?: FileRole[];
+  allowed_imports?: string[];
+  allowed_delegate_imports?: string[];
+  enforcement: AgentContractEnforcement;
+}
+
+export type EntrypointFlowRequiredStep =
+  | { kind: "auth_helper"; imports?: string[]; calls?: string[] }
+  | { kind: "validation_helper"; imports?: string[]; calls?: string[] }
+  | { kind: "service_delegation"; target_roles?: FileRole[]; imports?: string[] }
+  | { kind: "response_boundary"; calls?: string[] };
+
+export type EntrypointFlowForbiddenStep =
+  | { kind: "direct_data_access" }
+  | { kind: "inline_business_logic" };
+
+export interface EntrypointFlowAgentContract {
+  kind: "entrypoint_flow";
+  id: string;
+  version: 1;
+  entry_roles: FileRole[];
+  required_steps: EntrypointFlowRequiredStep[];
+  forbidden_steps?: EntrypointFlowForbiddenStep[];
+  enforcement: AgentContractEnforcement;
+}
+
+export interface CanonicalHelperReuseAgentContract {
+  kind: "canonical_helper_reuse";
+  id: string;
+  version: 1;
+  canonical_helpers: Array<{
+    helper_id: string;
+    symbol: string;
+    module: string;
+    roles?: FileRole[];
+    applies_to_roles?: FileRole[];
+    purpose_tags: string[];
+    avoid_new_symbols_matching?: string[];
+    avoid_new_files_matching?: string[];
+    suggested_import: string;
+  }>;
+  enforcement: AgentContractEnforcement;
+}
+
+export interface RequiredChangeChecksAgentContract {
+  kind: "required_change_checks";
+  id: string;
+  version: 1;
+  rules: Array<{
+    applies_to: {
+      path_globs?: string[];
+      file_roles?: FileRole[];
+      convention_kinds?: string[];
+    };
+    required_checks: Array<{
+      command: string;
+      reason: string;
+      required_for_release?: boolean;
+    }>;
+  }>;
+}
+
+export type AgentContract =
+  | FileRoleAgentContract
+  | ModulePlacementAgentContract
+  | ImportBoundaryAgentContract
+  | EntrypointFlowAgentContract
+  | CanonicalHelperReuseAgentContract
+  | RequiredChangeChecksAgentContract;
+
+export interface AgentContractSelection {
+  schema_version: "drift.agent.contract_selection.v1";
+  repo_id: string;
+  scan_id: string;
+  selected_contract_ids: string[];
+  selected_convention_ids: string[];
+  selected_helper_ids: string[];
+  selected_required_checks: string[];
+  selection_inputs: {
+    task_text?: string;
+    explicit_paths: string[];
+    changed_paths: string[];
+    file_roles: FileRole[];
+    graph_node_ids: string[];
+  };
+  reasons: Array<{
+    target_id: string;
+    reason:
+      | "path_match"
+      | "role_match"
+      | "task_text_match"
+      | "graph_reachable"
+      | "contract_dependency"
+      | "active_waiver";
+    evidence_refs: string[];
+  }>;
+}
+
+export interface AgentPreflightPacket {
+  schema_version: "drift.agent.preflight.v3";
+  repo_id: string;
+  scan_id: string | null;
+  stale: boolean;
+  task: string;
+  selected_contracts: unknown[];
+  selected_conventions: unknown[];
+  selected_helpers: Array<{
+    symbol: string;
+    module: string;
+    suggested_import: string;
+    purpose_tags: string[];
+  }>;
+  placement_guidance: Array<{
+    role: FileRole;
+    allowed_paths: string[];
+    forbidden_paths: string[];
+  }>;
+  import_boundaries: unknown[];
+  required_flows: unknown[];
+  required_checks: Array<{
+    command: string;
+    reason: string;
+  }>;
+  active_exceptions: unknown[];
+  active_waivers: unknown[];
+  agent_instructions: string[];
+  diagnostics: string[];
+}
+
+export interface ContractFindingV2 {
+  schema_version: "drift.finding.v2";
+  finding_id: string;
+  contract_id: string;
+  convention_id?: string;
+  kind: string;
+  severity: Severity;
+  status: "blocking" | "advisory" | "waived" | "blocked_by_missing_evidence";
+  file_path: string;
+  range?: {
+    start_line: number;
+    end_line: number;
+  };
+  expected: string;
+  actual: string;
+  evidence_refs: string[];
+  graph_path?: string[];
+  suggested_fix: string;
+  diagnostics: string[];
+}
+
 export interface ContextEgressPolicy {
   default_mode: "local_only" | "redacted" | "approval_required";
   denied_globs: string[];
@@ -453,6 +658,7 @@ export interface RepoContract {
   rejected_inferences: RejectedInference[];
   waivers: ConventionException[];
   risky_areas: RiskArea[];
+  agent_contracts?: AgentContract[];
   safe_commands: SafeCommand[];
   required_checks: RequiredCheck[];
   context_egress: ContextEgressPolicy;

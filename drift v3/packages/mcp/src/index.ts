@@ -16,10 +16,12 @@ import type {
   Severity
 } from "@drift/core";
 import {
+  FileRoleSchema,
   authorizeContextExport,
   canonicalRepoContractJson,
   canonicalScanStateJson,
   createAgentEnvelopeV2,
+  createAgentPreflightPacket,
   createDriftCapabilities,
   matchesPolicyGlob
 } from "@drift/core";
@@ -178,6 +180,16 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         })
       ];
       const waivers = waiversForFiles(contract, relevantFiles, generatedAt);
+      const agentContractPacket = createAgentPreflightPacket({
+        repoContract: { ...contract, conventions: activeConventions },
+        task: requestedTask,
+        scan_id: scanStatus.latest_scan?.id ?? null,
+        stale: scanStatus.stale,
+        explicit_paths: requestedPath ? [requestedPath] : [],
+        changed_paths: relevantFiles.map((file) => file.path),
+        file_roles: uniqueFileRoles(relevantFiles),
+        graph_node_ids: graphNodeIdsForPreflight(graphContext, relevantFiles)
+      });
       return {
         response_schema: "drift.task.preflight.v1",
         repo_id: requestedRepoId,
@@ -219,6 +231,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         scan_status: scanStatus,
         freshness_requirement: freshnessRequirement(Boolean(require_fresh), scanStatus),
         graph_context: graphContext,
+        agent_contract_packet: agentContractPacket,
         baseline,
         findings,
         relevant_files: relevantFiles,
@@ -1310,6 +1323,38 @@ function uniqueSorted(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))].sort();
 }
 
+function uniqueFileRoles(relevantFiles: Array<{ roles: string[] }>): FileRole[] {
+  return uniqueSorted(relevantFiles.flatMap((file) => file.roles)).filter(isFileRole);
+}
+
+function isFileRole(value: string): value is FileRole {
+  return FileRoleSchema.safeParse(value).success;
+}
+
+function graphNodeIdsForPreflight(
+  graphContext: ReturnType<typeof graphPreflightContext>,
+  relevantFiles: Array<{ path: string }>
+): string[] {
+  return uniqueSorted([
+    ...relevantFiles.map((file) => `file:${file.path}`),
+    ...graphContext.route_flows.flatMap((flow) => [
+      flow.route_module_id,
+      ...flow.route_handler_symbol_ids,
+      ...flow.service_module_ids,
+      ...flow.data_access_module_ids,
+      ...flow.module_path
+    ]),
+    ...graphContext.reachable_data_access.flatMap((access) => [
+      ...access.data_access_module_ids,
+      ...access.module_path,
+      ...access.data_operations.flatMap((operation) => [
+        operation.operation_node_id,
+        operation.data_store_node_id
+      ])
+    ])
+  ].filter((id): id is string => Boolean(id)));
+}
+
 function latestIndexedScan(scans: ScanManifest[]): ScanManifest | undefined {
   return scans.find((scan) =>
     scan.status === "completed" &&
@@ -1883,6 +1928,7 @@ function scopeMatchesFile(
 
 function contractSummary(contract: RepoContract): {
   convention_count: number;
+  agent_contract_count: number;
   risky_area_count: number;
   required_check_count: number;
   safe_command_count: number;
@@ -1891,6 +1937,7 @@ function contractSummary(contract: RepoContract): {
 } {
   return {
     convention_count: contract.conventions.length,
+    agent_contract_count: contract.agent_contracts?.length ?? 0,
     risky_area_count: contract.risky_areas.length,
     required_check_count: contract.required_checks.length,
     safe_command_count: contract.safe_commands.length,

@@ -7,12 +7,27 @@ const RepoRelativePatternSchema = z.string().min(1).refine(
   "pattern must be repo-relative"
 );
 
+export const AgentContractKindSchema = z.enum([
+  "file_role",
+  "module_placement",
+  "import_boundary",
+  "entrypoint_flow",
+  "canonical_helper_reuse",
+  "required_change_checks"
+]);
+
 export const ConventionKindSchema = z.enum([
   "api_route_no_direct_data_access",
   "api_route_requires_service_delegation",
   "api_route_requires_auth_helper",
   "test_expected_for_changed_module",
-  "custom_briefing"
+  "custom_briefing",
+  "file_role",
+  "module_placement",
+  "import_boundary",
+  "entrypoint_flow",
+  "canonical_helper_reuse",
+  "required_change_checks"
 ]);
 
 export const FileRoleSchema = z.enum([
@@ -21,6 +36,9 @@ export const FileRoleSchema = z.enum([
   "service_module",
   "data_access_module",
   "component",
+  "ui_component",
+  "hook_module",
+  "schema_module",
   "test",
   "config",
   "cli_command_module",
@@ -32,7 +50,8 @@ export const FileRoleSchema = z.enum([
   "engine_bridge_module",
   "mcp_module",
   "docs",
-  "package_manifest"
+  "package_manifest",
+  "custom"
 ]);
 
 export const ConventionScopeSchema = z.object({
@@ -46,6 +65,8 @@ export const ConventionScopeSchema = z.object({
 export const ConventionMatcherSchema = z.object({
   kind: ConventionKindSchema,
   forbidden_imports: z.array(z.string().min(1)).optional(),
+  forbidden_target_roles: z.array(FileRoleSchema).optional(),
+  allowed_imports: z.array(z.string().min(1)).optional(),
   required_calls: z.array(z.string().min(1)).optional(),
   allowed_delegate_imports: z.array(z.string().min(1)).optional(),
   applies_to_file_roles: z.array(FileRoleSchema).optional()
@@ -81,6 +102,8 @@ export const ConventionExceptionSchema = z.object({
   resolved_symbols: z.array(z.string().min(1)).optional(),
   data_stores: z.array(z.string().min(1)).optional(),
   operation_kinds: z.array(z.enum(["read", "write", "delete", "unknown"])).optional(),
+  file_roles: z.array(FileRoleSchema).optional(),
+  contract_kinds: z.array(AgentContractKindSchema).optional(),
   expires_at: z.string().datetime().optional(),
   created_by: z.string().min(1),
   created_at: z.string().datetime()
@@ -419,6 +442,248 @@ export const FindingSchema = z.object({
   created_at: z.string().datetime()
 });
 
+export const AgentContractEnforcementSchema = z.enum(["blocking", "advisory"]);
+
+const FileRoleDefinitionSchema = z.object({
+  role: FileRoleSchema,
+  path_globs: z.array(RepoRelativePatternSchema).min(1),
+  required_exports: z.array(z.string().min(1)).optional(),
+  forbidden_imports: z.array(z.string().min(1)).optional(),
+  confidence: z.enum(["deterministic", "heuristic"])
+});
+
+export const FileRoleAgentContractSchema = z.object({
+  kind: z.literal("file_role"),
+  id: z.string().min(1),
+  version: z.literal(1),
+  roles: z.array(FileRoleDefinitionSchema).min(1)
+});
+
+export const ModulePlacementAgentContractSchema = z.object({
+  kind: z.literal("module_placement"),
+  id: z.string().min(1),
+  version: z.literal(1),
+  statement: z.string().min(1),
+  target_role: FileRoleSchema,
+  allowed_paths: z.array(RepoRelativePatternSchema).min(1),
+  forbidden_paths: z.array(RepoRelativePatternSchema).optional(),
+  required_parent_roles: z.array(FileRoleSchema).optional(),
+  forbidden_contained_roles: z.array(FileRoleSchema).optional(),
+  examples: z.object({
+    good: z.array(RepoRelativePatternSchema),
+    bad: z.array(RepoRelativePatternSchema)
+  }).optional(),
+  enforcement: AgentContractEnforcementSchema
+});
+
+export const ImportBoundaryAgentContractSchema = z.object({
+  kind: z.literal("import_boundary"),
+  id: z.string().min(1),
+  version: z.literal(1),
+  source_roles: z.array(FileRoleSchema).min(1),
+  forbidden_imports: z.array(z.string().min(1)).optional(),
+  forbidden_target_roles: z.array(FileRoleSchema).optional(),
+  allowed_imports: z.array(z.string().min(1)).optional(),
+  allowed_delegate_imports: z.array(z.string().min(1)).optional(),
+  enforcement: AgentContractEnforcementSchema
+}).superRefine((value, ctx) => {
+  if (!value.forbidden_imports?.length && !value.forbidden_target_roles?.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "import boundary requires forbidden imports or forbidden target roles"
+    });
+  }
+});
+
+export const EntrypointFlowRequiredStepSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("auth_helper"),
+    imports: z.array(z.string().min(1)).optional(),
+    calls: z.array(z.string().min(1)).optional()
+  }),
+  z.object({
+    kind: z.literal("validation_helper"),
+    imports: z.array(z.string().min(1)).optional(),
+    calls: z.array(z.string().min(1)).optional()
+  }),
+  z.object({
+    kind: z.literal("service_delegation"),
+    target_roles: z.array(FileRoleSchema).optional(),
+    imports: z.array(z.string().min(1)).optional()
+  }),
+  z.object({
+    kind: z.literal("response_boundary"),
+    calls: z.array(z.string().min(1)).optional()
+  })
+]);
+
+export const EntrypointFlowForbiddenStepSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("direct_data_access") }),
+  z.object({ kind: z.literal("inline_business_logic") })
+]);
+
+export const EntrypointFlowAgentContractSchema = z.object({
+  kind: z.literal("entrypoint_flow"),
+  id: z.string().min(1),
+  version: z.literal(1),
+  entry_roles: z.array(FileRoleSchema).min(1),
+  required_steps: z.array(EntrypointFlowRequiredStepSchema).min(1),
+  forbidden_steps: z.array(EntrypointFlowForbiddenStepSchema).optional(),
+  enforcement: AgentContractEnforcementSchema
+});
+
+const CanonicalHelperSchema = z.object({
+  helper_id: z.string().min(1),
+  symbol: z.string().min(1),
+  module: z.string().min(1),
+  roles: z.array(FileRoleSchema).optional(),
+  applies_to_roles: z.array(FileRoleSchema).optional(),
+  purpose_tags: z.array(z.string().min(1)).min(1),
+  avoid_new_symbols_matching: z.array(z.string().min(1)).optional(),
+  avoid_new_files_matching: z.array(RepoRelativePatternSchema).optional(),
+  suggested_import: z.string().min(1)
+});
+
+export const CanonicalHelperReuseAgentContractSchema = z.object({
+  kind: z.literal("canonical_helper_reuse"),
+  id: z.string().min(1),
+  version: z.literal(1),
+  canonical_helpers: z.array(CanonicalHelperSchema).min(1),
+  enforcement: AgentContractEnforcementSchema
+});
+
+const RequiredChangeCheckAppliesToSchema = z.object({
+  path_globs: z.array(RepoRelativePatternSchema).optional(),
+  file_roles: z.array(FileRoleSchema).optional(),
+  convention_kinds: z.array(ConventionKindSchema).optional()
+}).superRefine((value, ctx) => {
+  if (!value.path_globs?.length && !value.file_roles?.length && !value.convention_kinds?.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "required change check requires at least one applies_to selector"
+    });
+  }
+});
+
+export const RequiredChangeChecksAgentContractSchema = z.object({
+  kind: z.literal("required_change_checks"),
+  id: z.string().min(1),
+  version: z.literal(1),
+  rules: z.array(z.object({
+    applies_to: RequiredChangeCheckAppliesToSchema,
+    required_checks: z.array(z.object({
+      command: z.string().min(1),
+      reason: z.string().min(1),
+      required_for_release: z.boolean().optional()
+    })).min(1)
+  })).min(1)
+});
+
+export const AgentContractSchema = z.union([
+  FileRoleAgentContractSchema,
+  ModulePlacementAgentContractSchema,
+  ImportBoundaryAgentContractSchema,
+  EntrypointFlowAgentContractSchema,
+  CanonicalHelperReuseAgentContractSchema,
+  RequiredChangeChecksAgentContractSchema
+]);
+
+export const AgentContractSelectionSchema = z.object({
+  schema_version: z.literal("drift.agent.contract_selection.v1"),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  selected_contract_ids: z.array(z.string().min(1)),
+  selected_convention_ids: z.array(z.string().min(1)),
+  selected_helper_ids: z.array(z.string().min(1)),
+  selected_required_checks: z.array(z.string().min(1)),
+  selection_inputs: z.object({
+    task_text: z.string().min(1).optional(),
+    explicit_paths: z.array(RepoRelativePatternSchema),
+    changed_paths: z.array(RepoRelativePatternSchema),
+    file_roles: z.array(FileRoleSchema),
+    graph_node_ids: z.array(z.string().min(1))
+  }),
+  reasons: z.array(z.object({
+    target_id: z.string().min(1),
+    reason: z.enum([
+      "path_match",
+      "role_match",
+      "task_text_match",
+      "graph_reachable",
+      "contract_dependency",
+      "active_waiver"
+    ]),
+    evidence_refs: z.array(z.string().min(1))
+  }))
+});
+
+export const AgentPreflightPacketSchema = z.object({
+  schema_version: z.literal("drift.agent.preflight.v3"),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1).nullable(),
+  stale: z.boolean(),
+  task: z.string().min(1),
+  selected_contracts: z.array(z.unknown()),
+  selected_conventions: z.array(z.unknown()),
+  selected_helpers: z.array(z.object({
+    symbol: z.string().min(1),
+    module: z.string().min(1),
+    suggested_import: z.string().min(1),
+    purpose_tags: z.array(z.string().min(1)).min(1)
+  })),
+  placement_guidance: z.array(z.object({
+    role: FileRoleSchema,
+    allowed_paths: z.array(RepoRelativePatternSchema),
+    forbidden_paths: z.array(RepoRelativePatternSchema)
+  })),
+  import_boundaries: z.array(z.unknown()),
+  required_flows: z.array(z.unknown()),
+  required_checks: z.array(z.object({
+    command: z.string().min(1),
+    reason: z.string().min(1)
+  })),
+  active_exceptions: z.array(z.unknown()),
+  active_waivers: z.array(z.unknown()),
+  agent_instructions: z.array(z.string().min(1)),
+  diagnostics: z.array(z.string().min(1))
+});
+
+export const ContractFindingV2Schema = z.object({
+  schema_version: z.literal("drift.finding.v2"),
+  finding_id: z.string().min(1),
+  contract_id: z.string().min(1),
+  convention_id: z.string().min(1).optional(),
+  kind: ConventionKindSchema,
+  severity: SeveritySchema,
+  status: z.enum(["blocking", "advisory", "waived", "blocked_by_missing_evidence"]),
+  file_path: RepoRelativePatternSchema,
+  range: z.object({
+    start_line: z.number().int().positive(),
+    end_line: z.number().int().positive()
+  }).optional(),
+  expected: z.string().min(1),
+  actual: z.string().min(1),
+  evidence_refs: z.array(z.string().min(1)),
+  graph_path: z.array(z.string().min(1)).optional(),
+  suggested_fix: z.string().min(1),
+  diagnostics: z.array(z.string().min(1))
+}).superRefine((value, ctx) => {
+  if (value.range && value.range.end_line < value.range.start_line) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["range", "end_line"],
+      message: "end_line must be greater than or equal to start_line"
+    });
+  }
+  if (value.status !== "blocked_by_missing_evidence" && value.evidence_refs.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["evidence_refs"],
+      message: "non-blocked findings require evidence references"
+    });
+  }
+});
+
 export const RiskAreaSchema = z.object({
   id: z.string().min(1),
   path_globs: z.array(RepoRelativePatternSchema),
@@ -476,6 +741,7 @@ export const RepoContractSchema = z.object({
   rejected_inferences: z.array(RejectedInferenceSchema),
   waivers: z.array(ConventionExceptionSchema),
   risky_areas: z.array(RiskAreaSchema),
+  agent_contracts: z.array(AgentContractSchema).optional(),
   safe_commands: z.array(SafeCommandSchema),
   required_checks: z.array(RequiredCheckSchema),
   context_egress: ContextEgressPolicySchema,

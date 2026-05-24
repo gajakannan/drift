@@ -1,4 +1,12 @@
-import { authorizeContextExport,type CheckRun,type Finding,type RepoContract } from "@drift/core";
+import {
+  authorizeContextExport,
+  type CanonicalHelperReuseAgentContract,
+  type CheckRun,
+  type FactRecord,
+  type FileRole,
+  type Finding,
+  type RepoContract
+} from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,7 +17,7 @@ import { isClosedFindingStatus,preservedGovernanceStatus,reviewFinding } from ".
 import { auditEvent,preflightGovernance } from "../domain/governance.js";
 import { contractFingerprint,hashStable } from "../domain/identifiers.js";
 import { WaivedFinding } from "../domain/preflight.js";
-import { isApiRoutePath } from "../domain/repo-paths.js";
+import { isApiRoutePath,matchesGlob } from "../domain/repo-paths.js";
 import { collectScanData,type ScanData } from "../engine/collect-scan-data.js";
 import { runEngineCheck } from "../engine/engine-check.js";
 import { extractImports,importFactsForFile } from "../engine/fact-extraction.js";
@@ -17,7 +25,11 @@ import { walkIndexableFiles } from "../engine/ts-fallback-scanner.js";
 import { formatCheckText } from "../formatters/checks.js";
 import { fileContentHash } from "../io/file-hash.js";
 import { diffStatusFor,filesForConvention,fullRepoDiff,loadDiff,parseUnifiedDiff } from "./diff.js";
-import { findingFingerprint } from "./finding-fingerprint.js";
+import {
+  agentContractFindingFingerprint,
+  canonicalHelperReuseFindingFingerprint,
+  findingFingerprint
+} from "./finding-fingerprint.js";
 import { enforcementResultFor,isActiveConvention,isForbiddenImport } from "./rule-evaluation.js";
 import { findContractWaiverForImport,isExceptedImport,isExceptedPath } from "./waivers.js";
 
@@ -252,6 +264,92 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
   }
   }
 
+  const helperReuseFindings = runCanonicalHelperReuseCheck({
+    repoId,
+    contract,
+    now,
+    scope: scope as "changed-hunks" | "changed-files" | "full",
+    parsedDiff,
+    baseline,
+    existingFindings,
+    checkData,
+    snapshotsByPath,
+    checkId,
+    checkScanId
+  });
+  findings.push(...helperReuseFindings);
+  for (const finding of helperReuseFindings) {
+    storage.upsertFinding(finding);
+  }
+  const modulePlacementFindings = runModulePlacementCheck({
+    repoId,
+    contract,
+    now,
+    scope: scope as "changed-hunks" | "changed-files" | "full",
+    parsedDiff,
+    baseline,
+    existingFindings,
+    checkData,
+    snapshotsByPath,
+    checkId,
+    checkScanId
+  });
+  findings.push(...modulePlacementFindings);
+  for (const finding of modulePlacementFindings) {
+    storage.upsertFinding(finding);
+  }
+  const importBoundaryFindings = runImportBoundaryCheck({
+    repoId,
+    contract,
+    now,
+    scope: scope as "changed-hunks" | "changed-files" | "full",
+    parsedDiff,
+    baseline,
+    existingFindings,
+    checkData,
+    snapshotsByPath,
+    checkId,
+    checkScanId
+  });
+  findings.push(...importBoundaryFindings);
+  for (const finding of importBoundaryFindings) {
+    storage.upsertFinding(finding);
+  }
+  const fileRoleFindings = runFileRoleCheck({
+    repoId,
+    contract,
+    now,
+    scope: scope as "changed-hunks" | "changed-files" | "full",
+    parsedDiff,
+    baseline,
+    existingFindings,
+    checkData,
+    snapshotsByPath,
+    checkId,
+    checkScanId
+  });
+  findings.push(...fileRoleFindings);
+  for (const finding of fileRoleFindings) {
+    storage.upsertFinding(finding);
+  }
+  const entrypointFlowFindings = runEntrypointFlowCheck({
+    repoId,
+    contract,
+    now,
+    scope: scope as "changed-hunks" | "changed-files" | "full",
+    parsedDiff,
+    baseline,
+    existingFindings,
+    checkData,
+    snapshotsByPath,
+    checkId,
+    checkScanId
+  });
+  findings.push(...entrypointFlowFindings);
+  for (const finding of entrypointFlowFindings) {
+    storage.upsertFinding(finding);
+  }
+
   const blockingCount = findings.filter((finding) =>
     finding.status === "new" &&
     finding.diff_status === "new_in_diff" &&
@@ -392,6 +490,622 @@ function checkEnvelope(input: {
 
 function directDataAccessSuggestedFix(): string {
   return "Move data access behind a service layer before returning from the route.";
+}
+
+function runCanonicalHelperReuseCheck(input: {
+  repoId: string;
+  contract: RepoContract;
+  now: string;
+  scope: "changed-hunks" | "changed-files" | "full";
+  parsedDiff: ReturnType<typeof parseUnifiedDiff>;
+  baseline: ReturnType<SqliteDriftStorage["listBaselineViolations"]>;
+  existingFindings: Map<string, Finding>;
+  checkData: ScanData;
+  snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
+  checkId: string;
+  checkScanId: string;
+}): Finding[] {
+  const findings: Finding[] = [];
+  const changedFiles = new Set(input.parsedDiff.files.map((file) => file.path));
+  const exportedFacts = input.checkData.facts.filter((fact) =>
+    fact.kind === "exported_symbol" && changedFiles.has(fact.file_path)
+  );
+
+  for (const contract of input.contract.agent_contracts ?? []) {
+    if (contract.kind !== "canonical_helper_reuse") {
+      continue;
+    }
+
+    for (const helper of contract.canonical_helpers) {
+      const forbiddenSymbols = new Set(helper.avoid_new_symbols_matching ?? []);
+      if (forbiddenSymbols.size === 0) {
+        continue;
+      }
+
+      for (const exported of exportedFacts) {
+        if (!forbiddenSymbols.has(exported.name) || isCanonicalHelperModule(exported.file_path, helper.module)) {
+          continue;
+        }
+
+        const diffStatus = diffStatusFor(exported.file_path, exported.start_line, input.parsedDiff, input.scope);
+        const fingerprint = canonicalHelperReuseFindingFingerprint(
+          contract.id,
+          helper.helper_id,
+          exported.file_path,
+          exported.name
+        );
+        const snapshot = input.snapshotsByPath.get(exported.file_path);
+        const status = input.baseline.some((entry) =>
+          entry.status === "active" &&
+          entry.convention_id === contract.id &&
+          entry.finding_fingerprint === fingerprint
+        ) ? "pre_existing" : preservedGovernanceStatus(input.existingFindings.get(fingerprint)) ?? "new";
+        findings.push({
+          id: `finding_${fingerprint.slice(0, 16)}`,
+          repo_id: input.repoId,
+          convention_id: contract.id,
+          check_id: input.checkId,
+          repo_contract_id: input.contract.id,
+          fingerprint,
+          title: "Duplicate canonical helper introduced",
+          message: `${exported.file_path} exports ${exported.name}; reuse ${helper.symbol} from ${helper.module} instead of creating a parallel helper.`,
+          severity: contract.enforcement === "blocking" ? "error" : "warning",
+          enforcement_result: contract.enforcement === "blocking" ? "block" : "warn",
+          status,
+          diff_status: diffStatus,
+          evidence_refs: [{
+            id: `evidence_${fingerprint.slice(0, 16)}`,
+            kind: "violation",
+            file_path: exported.file_path,
+            start_line: exported.start_line,
+            end_line: exported.end_line,
+            symbol: exported.name,
+            fact_ids: [exported.id],
+            scan_id: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
+            file_hash: snapshot?.content_hash ?? "",
+            redaction_state: "none"
+          }],
+          expected_layer: "canonical_helper",
+          actual_layer: "duplicate_helper",
+          graph_path: [exported.file_path, helper.module],
+          suggested_fix: canonicalHelperSuggestedFix(helper, exported.name),
+          related_node_ids: [],
+          created_at: input.now
+        });
+      }
+    }
+  }
+
+  return findings;
+}
+
+function canonicalHelperSuggestedFix(
+  helper: CanonicalHelperReuseAgentContract["canonical_helpers"][number],
+  duplicateSymbol: string
+): string {
+  return `Import ${helper.symbol} from ${helper.module} instead of creating ${duplicateSymbol}.`;
+}
+
+function isCanonicalHelperModule(filePath: string, moduleSpecifier: string): boolean {
+  const normalizedFile = filePath.replaceAll("\\", "/").replace(/\.[cm]?[jt]sx?$/, "");
+  const normalizedModule = moduleSpecifier
+    .replace(/^@\//, "")
+    .replaceAll("\\", "/")
+    .replace(/\.[cm]?[jt]sx?$/, "");
+  return normalizedFile.endsWith(normalizedModule);
+}
+
+function runModulePlacementCheck(input: {
+  repoId: string;
+  contract: RepoContract;
+  now: string;
+  scope: "changed-hunks" | "changed-files" | "full";
+  parsedDiff: ReturnType<typeof parseUnifiedDiff>;
+  baseline: ReturnType<SqliteDriftStorage["listBaselineViolations"]>;
+  existingFindings: Map<string, Finding>;
+  checkData: ScanData;
+  snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
+  checkId: string;
+  checkScanId: string;
+}): Finding[] {
+  const findings: Finding[] = [];
+  const changedFiles = new Set(input.parsedDiff.files.map((file) => file.path));
+
+  for (const contract of input.contract.agent_contracts ?? []) {
+    if (contract.kind !== "module_placement") {
+      continue;
+    }
+
+    const roleFacts = input.checkData.facts.filter((fact) =>
+      fact.kind === "file_role_detected" &&
+      fact.name === contract.target_role &&
+      changedFiles.has(fact.file_path)
+    );
+    for (const roleFact of roleFacts) {
+      if (modulePlacementAllowed(roleFact.file_path, contract.allowed_paths, contract.forbidden_paths ?? [])) {
+        continue;
+      }
+
+      const diffStatus = diffStatusFor(roleFact.file_path, roleFact.start_line, input.parsedDiff, input.scope);
+      const fingerprint = agentContractFindingFingerprint(
+        "module-placement",
+        contract.id,
+        roleFact.file_path,
+        roleFact.name,
+        contract.allowed_paths.join("|")
+      );
+      const snapshot = input.snapshotsByPath.get(roleFact.file_path);
+      const status = findingStatusForAgentContract(
+        input.baseline,
+        input.existingFindings,
+        contract.id,
+        fingerprint
+      );
+      findings.push({
+        id: `finding_${fingerprint.slice(0, 16)}`,
+        repo_id: input.repoId,
+        convention_id: contract.id,
+        check_id: input.checkId,
+        repo_contract_id: input.contract.id,
+        fingerprint,
+        title: "Module placement contract violated",
+        message: `${roleFact.file_path} is classified as ${contract.target_role}, but that role is not allowed in this path by ${contract.id}.`,
+        severity: contract.enforcement === "blocking" ? "error" : "warning",
+        enforcement_result: contract.enforcement === "blocking" ? "block" : "warn",
+        status,
+        diff_status: diffStatus,
+        evidence_refs: [{
+          id: `evidence_${fingerprint.slice(0, 16)}`,
+          kind: "violation",
+          file_path: roleFact.file_path,
+          start_line: roleFact.start_line,
+          end_line: roleFact.end_line,
+          symbol: roleFact.name,
+          fact_ids: [roleFact.id],
+          scan_id: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
+          file_hash: snapshot?.content_hash ?? "",
+          redaction_state: "none"
+        }],
+        expected_layer: contract.target_role,
+        actual_layer: "misplaced_module",
+        graph_path: [roleFact.file_path, ...contract.allowed_paths],
+        suggested_fix: modulePlacementSuggestedFix(roleFact.file_path, contract.allowed_paths),
+        related_node_ids: [],
+        created_at: input.now
+      });
+    }
+  }
+
+  return findings;
+}
+
+function runImportBoundaryCheck(input: {
+  repoId: string;
+  contract: RepoContract;
+  now: string;
+  scope: "changed-hunks" | "changed-files" | "full";
+  parsedDiff: ReturnType<typeof parseUnifiedDiff>;
+  baseline: ReturnType<SqliteDriftStorage["listBaselineViolations"]>;
+  existingFindings: Map<string, Finding>;
+  checkData: ScanData;
+  snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
+  checkId: string;
+  checkScanId: string;
+}): Finding[] {
+  const findings: Finding[] = [];
+  const changedFiles = new Set(input.parsedDiff.files.map((file) => file.path));
+
+  for (const contract of input.contract.agent_contracts ?? []) {
+    if (contract.kind !== "import_boundary") {
+      continue;
+    }
+
+    const sourceFiles = filesWithRoles(input.checkData.facts, changedFiles, contract.source_roles);
+    for (const importUsed of input.checkData.facts.filter((fact) =>
+      fact.kind === "import_used" &&
+      fact.value &&
+      sourceFiles.has(fact.file_path)
+    )) {
+      const importSource = importUsed.value as string;
+      if (!isForbiddenImport(importSource, contract.forbidden_imports ?? [])) {
+        continue;
+      }
+      if (isForbiddenImport(importSource, contract.allowed_imports ?? [])) {
+        continue;
+      }
+
+      const diffStatus = diffStatusFor(importUsed.file_path, importUsed.start_line, input.parsedDiff, input.scope);
+      const fingerprint = agentContractFindingFingerprint(
+        "import-boundary",
+        contract.id,
+        importUsed.file_path,
+        importUsed.name,
+        importSource
+      );
+      const snapshot = input.snapshotsByPath.get(importUsed.file_path);
+      const status = findingStatusForAgentContract(
+        input.baseline,
+        input.existingFindings,
+        contract.id,
+        fingerprint
+      );
+      findings.push({
+        id: `finding_${fingerprint.slice(0, 16)}`,
+        repo_id: input.repoId,
+        convention_id: contract.id,
+        check_id: input.checkId,
+        repo_contract_id: input.contract.id,
+        fingerprint,
+        title: "Import boundary contract violated",
+        message: `${importUsed.file_path} imports ${importUsed.name} from ${importSource}, which is forbidden for ${contract.source_roles.join(", ")}.`,
+        severity: contract.enforcement === "blocking" ? "error" : "warning",
+        enforcement_result: contract.enforcement === "blocking" ? "block" : "warn",
+        status,
+        diff_status: diffStatus,
+        evidence_refs: [{
+          id: `evidence_${fingerprint.slice(0, 16)}`,
+          kind: "violation",
+          file_path: importUsed.file_path,
+          start_line: importUsed.start_line,
+          end_line: importUsed.end_line,
+          symbol: importUsed.name,
+          import_source: importSource,
+          fact_ids: [importUsed.id],
+          scan_id: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
+          file_hash: snapshot?.content_hash ?? "",
+          redaction_state: "none"
+        }],
+        expected_layer: "allowed_import_boundary",
+        actual_layer: "forbidden_import",
+        graph_path: [importUsed.file_path, importSource],
+        suggested_fix: importBoundarySuggestedFix(importSource),
+        related_node_ids: [],
+        created_at: input.now
+      });
+    }
+  }
+
+  return findings;
+}
+
+function runFileRoleCheck(input: {
+  repoId: string;
+  contract: RepoContract;
+  now: string;
+  scope: "changed-hunks" | "changed-files" | "full";
+  parsedDiff: ReturnType<typeof parseUnifiedDiff>;
+  baseline: ReturnType<SqliteDriftStorage["listBaselineViolations"]>;
+  existingFindings: Map<string, Finding>;
+  checkData: ScanData;
+  snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
+  checkId: string;
+  checkScanId: string;
+}): Finding[] {
+  const findings: Finding[] = [];
+  const changedFiles = new Set(input.parsedDiff.files.map((file) => file.path));
+
+  for (const contract of input.contract.agent_contracts ?? []) {
+    if (contract.kind !== "file_role") {
+      continue;
+    }
+
+    for (const role of contract.roles) {
+      const files = [...changedFiles].filter((filePath) =>
+        role.path_globs.some((glob) => matchesGlob(filePath, glob))
+      );
+      for (const filePath of files) {
+        const imports = input.checkData.facts.filter((fact) =>
+          fact.kind === "import_used" &&
+          fact.file_path === filePath &&
+          fact.value &&
+          isForbiddenImport(fact.value, role.forbidden_imports ?? [])
+        );
+        for (const importUsed of imports) {
+          const importSource = importUsed.value as string;
+          findings.push(agentContractFinding({
+            repoId: input.repoId,
+            repoContractId: input.contract.id,
+            agentContractId: contract.id,
+            checkId: input.checkId,
+            checkScanId: input.checkScanId,
+            checkData: input.checkData,
+            snapshotsByPath: input.snapshotsByPath,
+            baseline: input.baseline,
+            existingFindings: input.existingFindings,
+            parsedDiff: input.parsedDiff,
+            scope: input.scope,
+            now: input.now,
+            fingerprintKind: "file-role-forbidden-import",
+            title: "File role contract violated",
+            message: `${filePath} is in the ${role.role} role and imports forbidden dependency ${importSource}.`,
+            severity: role.confidence === "deterministic" ? "error" : "warning",
+            enforcementResult: role.confidence === "deterministic" ? "block" : "warn",
+            filePath,
+            startLine: importUsed.start_line,
+            endLine: importUsed.end_line,
+            symbol: importUsed.name,
+            importSource,
+            factIds: [importUsed.id],
+            expectedLayer: role.role,
+            actualLayer: "forbidden_import",
+            graphPath: [filePath, importSource],
+            suggestedFix: `Remove forbidden import ${importSource} from ${role.role} files.`
+          }));
+        }
+
+        const exportedSymbols = new Set(input.checkData.facts
+          .filter((fact) => fact.kind === "exported_symbol" && fact.file_path === filePath)
+          .map((fact) => fact.name));
+        for (const requiredExport of role.required_exports ?? []) {
+          if (exportedSymbols.has(requiredExport)) {
+            continue;
+          }
+          const fileFact = fileDetectedFact(input.checkData.facts, filePath);
+          findings.push(agentContractFinding({
+            repoId: input.repoId,
+            repoContractId: input.contract.id,
+            agentContractId: contract.id,
+            checkId: input.checkId,
+            checkScanId: input.checkScanId,
+            checkData: input.checkData,
+            snapshotsByPath: input.snapshotsByPath,
+            baseline: input.baseline,
+            existingFindings: input.existingFindings,
+            parsedDiff: input.parsedDiff,
+            scope: input.scope,
+            now: input.now,
+            fingerprintKind: "file-role-required-export",
+            title: "File role contract violated",
+            message: `${filePath} is in the ${role.role} role but does not export required symbol ${requiredExport}.`,
+            severity: role.confidence === "deterministic" ? "error" : "warning",
+            enforcementResult: role.confidence === "deterministic" ? "block" : "warn",
+            filePath,
+            startLine: 1,
+            endLine: fileFact?.end_line ?? 1,
+            symbol: requiredExport,
+            factIds: fileFact ? [fileFact.id] : [],
+            expectedLayer: role.role,
+            actualLayer: "missing_required_export",
+            graphPath: [filePath, requiredExport],
+            suggestedFix: `Export ${requiredExport} from ${role.role} files.`
+          }));
+        }
+      }
+    }
+  }
+
+  return findings;
+}
+
+function runEntrypointFlowCheck(input: {
+  repoId: string;
+  contract: RepoContract;
+  now: string;
+  scope: "changed-hunks" | "changed-files" | "full";
+  parsedDiff: ReturnType<typeof parseUnifiedDiff>;
+  baseline: ReturnType<SqliteDriftStorage["listBaselineViolations"]>;
+  existingFindings: Map<string, Finding>;
+  checkData: ScanData;
+  snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
+  checkId: string;
+  checkScanId: string;
+}): Finding[] {
+  const findings: Finding[] = [];
+  const changedFiles = new Set(input.parsedDiff.files.map((file) => file.path));
+
+  for (const contract of input.contract.agent_contracts ?? []) {
+    if (contract.kind !== "entrypoint_flow") {
+      continue;
+    }
+
+    const entryFiles = filesWithRoles(input.checkData.facts, changedFiles, contract.entry_roles);
+    for (const filePath of entryFiles) {
+      const callNames = new Set(input.checkData.facts
+        .filter((fact) => fact.kind === "symbol_called" && fact.file_path === filePath)
+        .map((fact) => fact.name));
+      const importSources = new Set(input.checkData.facts
+        .filter((fact) => fact.kind === "import_used" && fact.file_path === filePath && fact.value)
+        .map((fact) => fact.value as string));
+
+      for (const step of contract.required_steps) {
+        const stepCalls = "calls" in step ? step.calls ?? [] : [];
+        const stepImports = "imports" in step ? step.imports ?? [] : [];
+        for (const callName of stepCalls) {
+          if (callNames.has(callName)) {
+            continue;
+          }
+          const fileFact = fileDetectedFact(input.checkData.facts, filePath);
+          findings.push(agentContractFinding({
+            repoId: input.repoId,
+            repoContractId: input.contract.id,
+            agentContractId: contract.id,
+            checkId: input.checkId,
+            checkScanId: input.checkScanId,
+            checkData: input.checkData,
+            snapshotsByPath: input.snapshotsByPath,
+            baseline: input.baseline,
+            existingFindings: input.existingFindings,
+            parsedDiff: input.parsedDiff,
+            scope: input.scope,
+            now: input.now,
+            fingerprintKind: `entrypoint-flow-missing-call-${step.kind}`,
+            title: "Entrypoint flow contract violated",
+            message: `${filePath} is missing required ${step.kind} call ${callName}.`,
+            severity: contract.enforcement === "blocking" ? "error" : "warning",
+            enforcementResult: contract.enforcement === "blocking" ? "block" : "warn",
+            filePath,
+            startLine: 1,
+            endLine: fileFact?.end_line ?? 1,
+            symbol: callName,
+            factIds: fileFact ? [fileFact.id] : [],
+            expectedLayer: step.kind,
+            actualLayer: "missing_required_call",
+            graphPath: [filePath, callName],
+            suggestedFix: `Call ${callName} before completing this entrypoint.`
+          }));
+        }
+
+        for (const importSource of stepImports) {
+          if (importSources.has(importSource)) {
+            continue;
+          }
+          const fileFact = fileDetectedFact(input.checkData.facts, filePath);
+          findings.push(agentContractFinding({
+            repoId: input.repoId,
+            repoContractId: input.contract.id,
+            agentContractId: contract.id,
+            checkId: input.checkId,
+            checkScanId: input.checkScanId,
+            checkData: input.checkData,
+            snapshotsByPath: input.snapshotsByPath,
+            baseline: input.baseline,
+            existingFindings: input.existingFindings,
+            parsedDiff: input.parsedDiff,
+            scope: input.scope,
+            now: input.now,
+            fingerprintKind: `entrypoint-flow-missing-import-${step.kind}`,
+            title: "Entrypoint flow contract violated",
+            message: `${filePath} is missing required ${step.kind} import ${importSource}.`,
+            severity: contract.enforcement === "blocking" ? "error" : "warning",
+            enforcementResult: contract.enforcement === "blocking" ? "block" : "warn",
+            filePath,
+            startLine: 1,
+            endLine: fileFact?.end_line ?? 1,
+            symbol: importSource,
+            importSource,
+            factIds: fileFact ? [fileFact.id] : [],
+            expectedLayer: step.kind,
+            actualLayer: "missing_required_import",
+            graphPath: [filePath, importSource],
+            suggestedFix: `Import ${importSource} before completing this entrypoint.`
+          }));
+        }
+      }
+    }
+  }
+
+  return findings;
+}
+
+function modulePlacementAllowed(filePath: string, allowedPaths: string[], forbiddenPaths: string[]): boolean {
+  if (forbiddenPaths.some((glob) => matchesGlob(filePath, glob))) {
+    return false;
+  }
+  return allowedPaths.length === 0 || allowedPaths.some((glob) => matchesGlob(filePath, glob));
+}
+
+function modulePlacementSuggestedFix(filePath: string, allowedPaths: string[]): string {
+  const target = allowedPaths[0] ?? "an accepted module path";
+  return `Move ${filePath} under ${target}.`;
+}
+
+function importBoundarySuggestedFix(importSource: string): string {
+  return `Import through an accepted delegate instead of importing ${importSource} directly.`;
+}
+
+function filesWithRoles(facts: FactRecord[], files: Set<string>, roles: FileRole[]): Set<string> {
+  return new Set(facts
+    .filter((fact) =>
+      fact.kind === "file_role_detected" &&
+      files.has(fact.file_path) &&
+      roles.includes(fact.name as FileRole)
+    )
+    .map((fact) => fact.file_path));
+}
+
+function fileDetectedFact(facts: FactRecord[], filePath: string): FactRecord | undefined {
+  return facts.find((fact) => fact.kind === "file_detected" && fact.file_path === filePath);
+}
+
+function agentContractFinding(input: {
+  repoId: string;
+  repoContractId: string;
+  agentContractId: string;
+  checkId: string;
+  checkScanId: string;
+  checkData: ScanData;
+  snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
+  baseline: ReturnType<SqliteDriftStorage["listBaselineViolations"]>;
+  existingFindings: Map<string, Finding>;
+  parsedDiff: ReturnType<typeof parseUnifiedDiff>;
+  scope: "changed-hunks" | "changed-files" | "full";
+  now: string;
+  fingerprintKind: string;
+  title: string;
+  message: string;
+  severity: Finding["severity"];
+  enforcementResult: Finding["enforcement_result"];
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  symbol: string;
+  importSource?: string;
+  factIds: string[];
+  expectedLayer: string;
+  actualLayer: string;
+  graphPath: string[];
+  suggestedFix: string;
+}): Finding {
+  const fingerprint = agentContractFindingFingerprint(
+    input.fingerprintKind,
+    input.agentContractId,
+    input.filePath,
+    input.symbol,
+    input.importSource ?? input.actualLayer
+  );
+  const snapshot = input.snapshotsByPath.get(input.filePath);
+  const status = findingStatusForAgentContract(
+    input.baseline,
+    input.existingFindings,
+    input.agentContractId,
+    fingerprint
+  );
+  return {
+    id: `finding_${fingerprint.slice(0, 16)}`,
+    repo_id: input.repoId,
+    convention_id: input.agentContractId,
+    check_id: input.checkId,
+    repo_contract_id: input.repoContractId,
+    fingerprint,
+    title: input.title,
+    message: input.message,
+    severity: input.severity,
+    enforcement_result: input.enforcementResult,
+    status,
+    diff_status: diffStatusFor(input.filePath, input.startLine, input.parsedDiff, input.scope),
+    evidence_refs: [{
+      id: `evidence_${fingerprint.slice(0, 16)}`,
+      kind: "violation",
+      file_path: input.filePath,
+      start_line: input.startLine,
+      end_line: input.endLine,
+      symbol: input.symbol,
+      import_source: input.importSource,
+      fact_ids: input.factIds,
+      scan_id: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
+      file_hash: snapshot?.content_hash ?? "",
+      redaction_state: "none"
+    }],
+    expected_layer: input.expectedLayer,
+    actual_layer: input.actualLayer,
+    graph_path: input.graphPath,
+    suggested_fix: input.suggestedFix,
+    related_node_ids: [],
+    created_at: input.now
+  };
+}
+
+function findingStatusForAgentContract(
+  baseline: ReturnType<SqliteDriftStorage["listBaselineViolations"]>,
+  existingFindings: Map<string, Finding>,
+  contractId: string,
+  fingerprint: string
+): Finding["status"] {
+  return baseline.some((entry) =>
+    entry.status === "active" &&
+    entry.convention_id === contractId &&
+    entry.finding_fingerprint === fingerprint
+  ) ? "pre_existing" : preservedGovernanceStatus(existingFindings.get(fingerprint)) ?? "new";
 }
 
 function graphPathForFinding(
