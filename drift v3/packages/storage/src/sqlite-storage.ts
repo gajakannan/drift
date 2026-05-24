@@ -20,6 +20,7 @@ import type {
   ResolverDependency,
   ScanFileChange,
   ScanManifest,
+  SymbolIdentity,
   SymbolOccurrence
 } from "@drift/core";
 import {
@@ -40,6 +41,7 @@ import {
   ResolverDependencySchema,
   ScanFileChangeSchema,
   ScanManifestSchema,
+  SymbolIdentitySchema,
   SymbolOccurrenceSchema,
   auditEventHash
 } from "@drift/core";
@@ -485,6 +487,62 @@ export class SqliteDriftStorage {
           .all(repoId);
 
     return rows.map(parserGapFromRow);
+  }
+
+  upsertSymbolIdentities(identities: SymbolIdentity[]): void {
+    const parsedIdentities = identities.map((identity) => SymbolIdentitySchema.parse(identity));
+    const insert = this.db.prepare(`
+      INSERT INTO symbol_identities (
+        symbol_id, schema_version, repo_id, scan_id, symbol_name, kind, declared_in,
+        exported_from_json, imported_as_json, re_export_chain_json, canonical_definition,
+        call_sites_json, references_json, visibility
+      )
+      VALUES (
+        @symbol_id, @schema_version, @repo_id, @scan_id, @symbol_name, @kind, @declared_in,
+        @exported_from_json, @imported_as_json, @re_export_chain_json, @canonical_definition,
+        @call_sites_json, @references_json, @visibility
+      )
+      ON CONFLICT(symbol_id) DO UPDATE SET
+        schema_version = excluded.schema_version,
+        repo_id = excluded.repo_id,
+        scan_id = excluded.scan_id,
+        symbol_name = excluded.symbol_name,
+        kind = excluded.kind,
+        declared_in = excluded.declared_in,
+        exported_from_json = excluded.exported_from_json,
+        imported_as_json = excluded.imported_as_json,
+        re_export_chain_json = excluded.re_export_chain_json,
+        canonical_definition = excluded.canonical_definition,
+        call_sites_json = excluded.call_sites_json,
+        references_json = excluded.references_json,
+        visibility = excluded.visibility
+    `);
+
+    const transaction = this.db.transaction(() => {
+      for (const identity of parsedIdentities) {
+        insert.run({
+          ...identity,
+          exported_from_json: JSON.stringify(identity.exported_from),
+          imported_as_json: JSON.stringify(identity.imported_as),
+          re_export_chain_json: JSON.stringify(identity.re_export_chain),
+          call_sites_json: JSON.stringify(identity.call_sites),
+          references_json: JSON.stringify(identity.references)
+        });
+      }
+    });
+    transaction();
+  }
+
+  listSymbolIdentities(repoId: string, scanId?: string): SymbolIdentity[] {
+    const rows = scanId
+      ? this.db
+          .prepare("SELECT * FROM symbol_identities WHERE repo_id = ? AND scan_id = ? ORDER BY declared_in, symbol_name, symbol_id")
+          .all(repoId, scanId)
+      : this.db
+          .prepare("SELECT * FROM symbol_identities WHERE repo_id = ? ORDER BY scan_id, declared_in, symbol_name, symbol_id")
+          .all(repoId);
+
+    return rows.map(symbolIdentityFromRow);
   }
 
   upsertFactGraphArtifact(artifact: FactGraphArtifact): void {
@@ -1379,6 +1437,18 @@ function parserGapFromRow(row: unknown): ParserGap {
     evidence_refs: typeof record.evidence_refs_json === "string"
       ? JSON.parse(record.evidence_refs_json) as unknown
       : []
+  });
+}
+
+function symbolIdentityFromRow(row: unknown): SymbolIdentity {
+  const record = row as Record<string, unknown>;
+  return SymbolIdentitySchema.parse({
+    ...record,
+    exported_from: parseJsonArray(record.exported_from_json),
+    imported_as: parseJsonArray(record.imported_as_json),
+    re_export_chain: parseJsonArray(record.re_export_chain_json),
+    call_sites: parseJsonArray(record.call_sites_json),
+    references: parseJsonArray(record.references_json)
   });
 }
 

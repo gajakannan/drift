@@ -394,6 +394,65 @@ export const DataOperationRiskSchema = z.object({
   confidence_label: ConfidenceLabelSchema
 });
 
+const FileLineRangeSchema = z.object({
+  file_path: z.string().min(1),
+  start_line: z.number().int().positive(),
+  end_line: z.number().int().positive()
+});
+
+export const SymbolIdentitySchema = z.object({
+  schema_version: z.literal("drift.symbol_identity.v1"),
+  symbol_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  symbol_name: z.string().min(1),
+  kind: z.enum(["function", "class", "const", "type", "unknown"]),
+  declared_in: z.string().min(1),
+  exported_from: z.array(z.string().min(1)),
+  imported_as: z.array(z.object({
+    file_path: z.string().min(1),
+    local_name: z.string().min(1)
+  })),
+  re_export_chain: z.array(z.string().min(1)),
+  canonical_definition: z.string().min(1),
+  call_sites: z.array(FileLineRangeSchema),
+  references: z.array(FileLineRangeSchema),
+  visibility: z.enum(["private", "module", "exported", "public"])
+});
+
+export const ChangeImpactSchema = z.object({
+  schema_version: z.literal("drift.change_impact.v1"),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  changed_files: z.array(z.string().min(1)),
+  changed_symbols: z.array(z.string().min(1)),
+  changed_routes: z.array(z.string().min(1)),
+  changed_tests: z.array(z.string().min(1)),
+  changed_contract_surfaces: z.array(z.string().min(1)),
+  affected_routes: z.array(z.string().min(1)),
+  affected_services: z.array(z.string().min(1)),
+  affected_data_ops: z.array(z.string().min(1)),
+  affected_tests: z.array(z.string().min(1)),
+  affected_callers: z.array(z.string().min(1)),
+  affected_importers: z.array(z.string().min(1)),
+  missing_test_candidates: z.array(z.string().min(1))
+});
+
+export const TestIntelligenceSchema = z.object({
+  schema_version: z.literal("drift.test_intelligence.v1"),
+  test_subject: z.string().min(1),
+  test_type: z.enum(["unit", "integration", "e2e", "unknown"]),
+  test_framework: z.enum(["vitest", "jest", "playwright", "unknown"]),
+  test_file_for: z.array(z.string().min(1)),
+  covered_symbols: z.array(z.string().min(1)),
+  covered_routes: z.array(z.string().min(1)),
+  mocked_dependencies: z.array(z.string().min(1)),
+  fixture_usage: z.array(z.string().min(1)),
+  snapshot_usage: z.boolean(),
+  missing_test_candidate: z.boolean(),
+  stale_test_candidate: z.boolean()
+});
+
 export const GraphNodeRecordSchema = z.object({
   id: z.string().min(1),
   kind: z.enum(["file", "module", "symbol", "import", "route", "role", "data_store", "data_operation", "endpoint", "re_export"]),

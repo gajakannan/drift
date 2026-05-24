@@ -365,6 +365,56 @@ export interface DataOperationRisk {
   confidence_label: ConfidenceLabel;
 }
 
+export interface SymbolIdentity {
+  schema_version: "drift.symbol_identity.v1";
+  symbol_id: string;
+  repo_id: string;
+  scan_id: string;
+  symbol_name: string;
+  kind: "function" | "class" | "const" | "type" | "unknown";
+  declared_in: string;
+  exported_from: string[];
+  imported_as: Array<{ file_path: string; local_name: string }>;
+  re_export_chain: string[];
+  canonical_definition: string;
+  call_sites: Array<{ file_path: string; start_line: number; end_line: number }>;
+  references: Array<{ file_path: string; start_line: number; end_line: number }>;
+  visibility: "private" | "module" | "exported" | "public";
+}
+
+export interface ChangeImpact {
+  schema_version: "drift.change_impact.v1";
+  repo_id: string;
+  scan_id: string;
+  changed_files: string[];
+  changed_symbols: string[];
+  changed_routes: string[];
+  changed_tests: string[];
+  changed_contract_surfaces: string[];
+  affected_routes: string[];
+  affected_services: string[];
+  affected_data_ops: string[];
+  affected_tests: string[];
+  affected_callers: string[];
+  affected_importers: string[];
+  missing_test_candidates: string[];
+}
+
+export interface TestIntelligence {
+  schema_version: "drift.test_intelligence.v1";
+  test_subject: string;
+  test_type: "unit" | "integration" | "e2e" | "unknown";
+  test_framework: "vitest" | "jest" | "playwright" | "unknown";
+  test_file_for: string[];
+  covered_symbols: string[];
+  covered_routes: string[];
+  mocked_dependencies: string[];
+  fixture_usage: string[];
+  snapshot_usage: boolean;
+  missing_test_candidate: boolean;
+  stale_test_candidate: boolean;
+}
+
 export interface GraphNodeRecord {
   id: string;
   kind: "file" | "module" | "symbol" | "import" | "route" | "role" | "data_store" | "data_operation" | "endpoint" | "re_export";

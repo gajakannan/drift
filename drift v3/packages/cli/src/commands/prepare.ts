@@ -1,4 +1,5 @@
 import { FileRoleSchema,authorizeContextExport,createAgentPreflightPacket,type FileRole } from "@drift/core";
+import { buildChangeImpact,selectRelevantTests,type ChangeImpactRouteFlow } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { optionalRepoRelativeFlag,requiredValue,stringFlag } from "../args/flag-readers.js";
@@ -78,6 +79,24 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
       safeCommands: contract.safe_commands
     })
   ];
+  const changeImpactRouteFlows = routeFlowsForChangeImpact(graphContext);
+  const testFiles = scanStatus.latest_scan
+    ? storage.listFileSnapshots(repoId, scanStatus.latest_scan.id)
+        .filter((snapshot) => /(\.test|\.spec)\.[tj]sx?$/.test(snapshot.file_path))
+        .map((snapshot) => snapshot.file_path)
+    : [];
+  const changeImpact = buildChangeImpact({
+    repo_id: repoId,
+    scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
+    changed_files: relevantFiles.map((file) => file.path),
+    route_flows: changeImpactRouteFlows,
+    test_files: testFiles
+  });
+  const testSelection = selectRelevantTests({
+    changed_file: relevantFiles[0]?.path ?? targetPath ?? "",
+    route_flow: changeImpactRouteFlows[0],
+    test_files: testFiles
+  });
   const agentContractPacket = createAgentPreflightPacket({
     repoContract: { ...contract, conventions: activeConventions },
     task,
@@ -138,6 +157,8 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     scan_status: scanStatus,
     freshness_requirement: freshnessRequirement(requireFresh, scanStatus),
     graph_context: graphContext,
+    change_impact: changeImpact,
+    test_intelligence: testSelection.test_intelligence,
     agent_contract_packet: agentContractPacket,
     baseline,
     findings,
@@ -163,6 +184,23 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
   return {
     payload: parsed.flags.has("json") ? payload : formatPrepareText(payload)
   };
+}
+
+function routeFlowsForChangeImpact(
+  graphContext: ReturnType<typeof graphPreflightContext>
+): ChangeImpactRouteFlow[] {
+  return graphContext.route_flows.map((flow) => {
+    const route = [flow.method, flow.route_pattern].filter(Boolean).join(" ");
+    return {
+      route: route || flow.path || "unknown route",
+      service_file: flow.module_path.find((path) => path.includes("service")),
+      data_access_file: flow.module_path.find((path) => path.includes("repositories") || path.includes("data") || path.includes("db")),
+      data_operation: graphContext.reachable_data_access
+        .flatMap((access) => access.data_operations)
+        .map((operation) => [operation.receiver_name, operation.operation_name].filter(Boolean).join("."))
+        .find(Boolean)
+    };
+  });
 }
 
 function uniqueFileRoles(relevantFiles: Array<{ roles: string[] }>): FileRole[] {

@@ -16,11 +16,15 @@ import type {
 } from "@drift/factgraph";
 import type { SqliteDriftStorage } from "@drift/storage";
 export { buildEntrypointFlowProof } from "./flow-proof.js";
+export { buildChangeImpact } from "./change-impact.js";
 export { classifyDataOperationRisk } from "./data-operation-risk.js";
 export { buildLayerArchitectureProof } from "./layer-architecture.js";
+export { buildSymbolIdentity } from "./symbol-identity.js";
+export { selectRelevantTests } from "./test-intelligence.js";
 export { evaluateRoleEdge } from "./role-ontology.js";
 export { scoreHelperSimilarity } from "./helper-similarity.js";
 export type { BuildEntrypointFlowProofInput } from "./flow-proof.js";
+export type { BuildChangeImpactInput, ChangeImpactRouteFlow } from "./change-impact.js";
 export type { ClassifyDataOperationRiskInput } from "./data-operation-risk.js";
 export type {
   BuildLayerArchitectureProofInput,
@@ -29,6 +33,8 @@ export type {
 } from "./layer-architecture.js";
 export type { HelperFeatureProfile, ScoreHelperSimilarityInput } from "./helper-similarity.js";
 export type { RoleEdgeDecision, RoleEdgeInput, RoleEdgeKind } from "./role-ontology.js";
+export type { BuildSymbolIdentityInput } from "./symbol-identity.js";
+export type { RelevantTestsSelection, SelectRelevantTestsInput } from "./test-intelligence.js";
 
 export interface GraphRepoMapFile {
   path: string;

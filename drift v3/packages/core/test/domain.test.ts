@@ -20,6 +20,9 @@ import {
   ParserGapSchema,
   RepoContractSchema,
   RequiredCheckExecutionSchema,
+  SymbolIdentitySchema,
+  ChangeImpactSchema,
+  TestIntelligenceSchema,
   authorizeContextExport,
   canonicalRepoContractJson,
   canonicalScanStateJson,
@@ -142,6 +145,58 @@ describe("core domain", () => {
       confidence_label: "certain",
       evidence_refs: ["fact_route_users_get"]
     })).toMatchObject({ kind: "api_route" });
+  });
+
+  it("validates symbol identity, change impact, and test intelligence contracts", () => {
+    expect(SymbolIdentitySchema.parse({
+      schema_version: "drift.symbol_identity.v1",
+      symbol_id: "symbol_users_get",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      symbol_name: "getUserById",
+      kind: "function",
+      declared_in: "server/services/users.ts",
+      exported_from: ["server/services/users.ts", "server/services/index.ts"],
+      imported_as: [{ file_path: "app/api/users/route.ts", local_name: "loadUser" }],
+      re_export_chain: ["server/services/index.ts"],
+      canonical_definition: "server/services/users.ts#getUserById",
+      call_sites: [{ file_path: "app/api/users/route.ts", start_line: 4, end_line: 4 }],
+      references: [{ file_path: "app/api/users/route.ts", start_line: 1, end_line: 1 }],
+      visibility: "exported"
+    })).toMatchObject({ canonical_definition: "server/services/users.ts#getUserById" });
+
+    expect(ChangeImpactSchema.parse({
+      schema_version: "drift.change_impact.v1",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      changed_files: ["server/repositories/users.ts"],
+      changed_symbols: ["findMany"],
+      changed_routes: [],
+      changed_tests: [],
+      changed_contract_surfaces: ["data_access"],
+      affected_routes: ["GET /api/users"],
+      affected_services: ["server/services/users.ts"],
+      affected_data_ops: ["prisma.user.findMany"],
+      affected_tests: ["server/services/users.test.ts"],
+      affected_callers: ["server/services/users.ts"],
+      affected_importers: ["server/services/users.ts"],
+      missing_test_candidates: []
+    })).toMatchObject({ affected_routes: ["GET /api/users"] });
+
+    expect(TestIntelligenceSchema.parse({
+      schema_version: "drift.test_intelligence.v1",
+      test_subject: "server/services/users.ts",
+      test_type: "unit",
+      test_framework: "vitest",
+      test_file_for: ["server/services/users.ts"],
+      covered_symbols: ["listUsers"],
+      covered_routes: ["GET /api/users"],
+      mocked_dependencies: ["server/repositories/users.ts"],
+      fixture_usage: [],
+      snapshot_usage: false,
+      missing_test_candidate: false,
+      stale_test_candidate: false
+    })).toMatchObject({ test_framework: "vitest" });
   });
 
   it("creates deterministic agent envelope actions", () => {

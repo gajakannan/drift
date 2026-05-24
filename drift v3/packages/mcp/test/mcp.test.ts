@@ -885,6 +885,11 @@ describe("read-only MCP handlers", () => {
         ],
         next_command: expect.stringContaining("drift scan --repo-root")
       },
+      change_impact: {
+        schema_version: "drift.change_impact.v1",
+        repo_id: "repo_abc"
+      },
+      test_intelligence: [],
       baseline: { active_count: 1 },
       findings: [{ id: "finding_abc" }],
       risky_areas: [{
@@ -2256,7 +2261,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 15,
+        supported_sqlite_schema_version: 16,
         storage_driver: "sqlite"
       },
       v1_scope: {

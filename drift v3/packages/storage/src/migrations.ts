@@ -563,5 +563,34 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_parser_gaps_repo_kind
         ON parser_gaps(repo_id, kind);
     `
+  },
+  {
+    id: "016_symbol_identities",
+    sql: `
+      CREATE TABLE IF NOT EXISTS symbol_identities (
+        symbol_id TEXT PRIMARY KEY,
+        schema_version TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        symbol_name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        declared_in TEXT NOT NULL,
+        exported_from_json TEXT NOT NULL,
+        imported_as_json TEXT NOT NULL,
+        re_export_chain_json TEXT NOT NULL,
+        canonical_definition TEXT NOT NULL,
+        call_sites_json TEXT NOT NULL,
+        references_json TEXT NOT NULL,
+        visibility TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_symbol_identities_repo_scan
+        ON symbol_identities(repo_id, scan_id);
+
+      CREATE INDEX IF NOT EXISTS idx_symbol_identities_repo_name
+        ON symbol_identities(repo_id, symbol_name);
+    `
   }
 ];

@@ -55,7 +55,8 @@ describe("SQLite Drift storage", () => {
       "012_repo_identity",
       "013_required_check_executions",
       "014_fact_quality",
-      "015_parser_gaps"
+      "015_parser_gaps",
+      "016_symbol_identities"
     ]);
     storage.close();
   });
@@ -116,7 +117,8 @@ describe("SQLite Drift storage", () => {
       "012_repo_identity",
       "013_required_check_executions",
       "014_fact_quality",
-      "015_parser_gaps"
+      "015_parser_gaps",
+      "016_symbol_identities"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -621,6 +623,60 @@ describe("SQLite Drift storage", () => {
       created_at: "2026-05-10T00:00:02.000Z"
     }]);
     expect(storage.listParserGaps("repo_abc")).toHaveLength(1);
+    storage.close();
+  });
+
+  it("persists symbol identities for alias and re-export analysis", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_abc",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    storage.upsertSymbolIdentities([{
+      schema_version: "drift.symbol_identity.v1",
+      symbol_id: "symbol_get_user",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      symbol_name: "getUserById",
+      kind: "function",
+      declared_in: "server/services/users.ts",
+      exported_from: ["server/services/users.ts", "server/services/index.ts"],
+      imported_as: [{ file_path: "app/api/users/route.ts", local_name: "loadUser" }],
+      re_export_chain: ["server/services/index.ts"],
+      canonical_definition: "server/services/users.ts#getUserById",
+      call_sites: [{ file_path: "app/api/users/route.ts", start_line: 4, end_line: 4 }],
+      references: [{ file_path: "app/api/users/route.ts", start_line: 1, end_line: 1 }],
+      visibility: "exported"
+    }]);
+
+    expect(storage.listSymbolIdentities("repo_abc", "scan_abc")[0]).toMatchObject({
+      symbol_id: "symbol_get_user",
+      canonical_definition: "server/services/users.ts#getUserById",
+      imported_as: [{ file_path: "app/api/users/route.ts", local_name: "loadUser" }]
+    });
+    expect(storage.listSymbolIdentities("repo_abc")).toHaveLength(1);
     storage.close();
   });
 

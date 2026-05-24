@@ -37,12 +37,15 @@ import {
   DRIFT_TYPESCRIPT_ADAPTER_VERSION
 } from "@drift/core";
 import {
+  buildChangeImpact,
   buildRepoMapReadModel,
   createGraphQueryService,
   fallbackFactRepoMapFiles,
   repoMapConventionIds,
   repoMapOpenFindingIds,
-  repoMapRiskyAreaIds
+  repoMapRiskyAreaIds,
+  selectRelevantTests,
+  type ChangeImpactRouteFlow
 } from "@drift/query";
 import { MIGRATIONS, openDriftStorage } from "@drift/storage";
 import { execFileSync } from "node:child_process";
@@ -182,6 +185,24 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
           safeCommands: contract.safe_commands
         })
       ];
+      const changeImpactRouteFlows = routeFlowsForChangeImpact(graphContext);
+      const testFiles = scanStatus.latest_scan
+        ? storage.listFileSnapshots(requestedRepoId, scanStatus.latest_scan.id)
+            .filter((snapshot) => /(\.test|\.spec)\.[tj]sx?$/.test(snapshot.file_path))
+            .map((snapshot) => snapshot.file_path)
+        : [];
+      const changeImpact = buildChangeImpact({
+        repo_id: requestedRepoId,
+        scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
+        changed_files: relevantFiles.map((file) => file.path),
+        route_flows: changeImpactRouteFlows,
+        test_files: testFiles
+      });
+      const testSelection = selectRelevantTests({
+        changed_file: relevantFiles[0]?.path ?? requestedPath ?? "",
+        route_flow: changeImpactRouteFlows[0],
+        test_files: testFiles
+      });
       const waivers = waiversForFiles(contract, relevantFiles, generatedAt);
       const agentContractPacket = createAgentPreflightPacket({
         repoContract: { ...contract, conventions: activeConventions },
@@ -234,6 +255,8 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         scan_status: scanStatus,
         freshness_requirement: freshnessRequirement(Boolean(require_fresh), scanStatus),
         graph_context: graphContext,
+        change_impact: changeImpact,
+        test_intelligence: testSelection.test_intelligence,
         agent_contract_packet: agentContractPacket,
         baseline,
         findings,
@@ -1415,6 +1438,23 @@ function graphNodeIdsForPreflight(
       ])
     ])
   ].filter((id): id is string => Boolean(id)));
+}
+
+function routeFlowsForChangeImpact(
+  graphContext: ReturnType<typeof graphPreflightContext>
+): ChangeImpactRouteFlow[] {
+  return graphContext.route_flows.map((flow) => {
+    const route = [flow.method, flow.route_pattern].filter(Boolean).join(" ");
+    return {
+      route: route || flow.path || "unknown route",
+      service_file: flow.module_path.find((path) => path.includes("service")),
+      data_access_file: flow.module_path.find((path) => path.includes("repositories") || path.includes("data") || path.includes("db")),
+      data_operation: graphContext.reachable_data_access
+        .flatMap((access) => access.data_operations)
+        .map((operation) => [operation.receiver_name, operation.operation_name].filter(Boolean).join("."))
+        .find(Boolean)
+    };
+  });
 }
 
 function latestIndexedScan(scans: ScanManifest[]): ScanManifest | undefined {

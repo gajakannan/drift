@@ -8,11 +8,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildLayerArchitectureProof,
   buildEntrypointFlowProof,
+  buildChangeImpact,
   buildRepoMapReadModel,
+  buildSymbolIdentity,
   classifyDataOperationRisk,
   createGraphQueryService,
   evaluateRoleEdge,
   fallbackFactRepoMapFiles,
+  selectRelevantTests,
   scoreHelperSimilarity
 } from "../src/index.js";
 
@@ -94,6 +97,63 @@ describe("GraphQueryService", () => {
     })).toMatchObject({
       operation_family: "env_secret_read",
       effect: "secret_access"
+    });
+  });
+
+  it("tracks canonical symbol identity across import aliases and re-exports", () => {
+    const identity = buildSymbolIdentity({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      symbol_name: "getUserById",
+      declared_in: "server/services/users.ts",
+      exported_from: ["server/services/users.ts", "server/services/index.ts"],
+      imported_as: [{ file_path: "app/api/users/route.ts", local_name: "loadUser" }],
+      call_sites: [{ file_path: "app/api/users/route.ts", start_line: 4, end_line: 4 }]
+    });
+
+    expect(identity).toMatchObject({
+      canonical_definition: "server/services/users.ts#getUserById",
+      imported_as: [{ file_path: "app/api/users/route.ts", local_name: "loadUser" }],
+      re_export_chain: ["server/services/index.ts"]
+    });
+  });
+
+  it("maps a changed repository function to affected routes and tests", () => {
+    const impact = buildChangeImpact({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      changed_files: ["server/repositories/users.ts"],
+      route_flows: [{
+        route: "GET /api/users",
+        service_file: "server/services/users.ts",
+        data_access_file: "server/repositories/users.ts",
+        data_operation: "prisma.user.findMany"
+      }],
+      test_files: ["server/services/users.test.ts"]
+    });
+
+    expect(impact).toMatchObject({
+      affected_routes: expect.arrayContaining(["GET /api/users"]),
+      affected_services: expect.arrayContaining(["server/services/users.ts"]),
+      affected_data_ops: expect.arrayContaining(["data_operation:read"]),
+      affected_tests: expect.arrayContaining(["server/services/users.test.ts"])
+    });
+  });
+
+  it("selects route and service tests relevant to a changed route flow", () => {
+    const result = selectRelevantTests({
+      changed_file: "app/api/users/route.ts",
+      route_flow: {
+        route: "GET /api/users",
+        service_file: "server/services/users.ts"
+      },
+      test_files: ["app/api/users/route.test.ts", "server/services/users.test.ts"]
+    });
+
+    expect(result).toMatchObject({
+      closest_tests: ["app/api/users/route.test.ts", "server/services/users.test.ts"],
+      missing_test_candidate: false,
+      required_check_hint: "npm test -- users"
     });
   });
 
