@@ -9,6 +9,7 @@ import {
   buildLayerArchitectureProof,
   buildEntrypointFlowProof,
   buildRepoMapReadModel,
+  classifyDataOperationRisk,
   createGraphQueryService,
   evaluateRoleEdge,
   fallbackFactRepoMapFiles,
@@ -74,6 +75,25 @@ describe("GraphQueryService", () => {
       entrypoint_layer: "route",
       terminal_layers_reached: ["data_access"],
       forbidden_edges_present: []
+    });
+  });
+
+  it("classifies data operations by side effect risk", () => {
+    expect(classifyDataOperationRisk({
+      receiver_name: "prisma.user",
+      operation_name: "delete"
+    })).toMatchObject({
+      operation_family: "orm_operation",
+      effect: "delete",
+      risk: "destructive_write"
+    });
+
+    expect(classifyDataOperationRisk({
+      receiver_name: "process.env",
+      operation_name: "SECRET"
+    })).toMatchObject({
+      operation_family: "env_secret_read",
+      effect: "secret_access"
     });
   });
 

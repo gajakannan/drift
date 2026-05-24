@@ -303,6 +303,68 @@ export interface ParserGap {
   created_at: string;
 }
 
+export type EntrypointKind =
+  | "api_route"
+  | "page_route"
+  | "server_action"
+  | "cli_command"
+  | "cron_job"
+  | "queue_consumer"
+  | "webhook_handler"
+  | "middleware"
+  | "test_entrypoint"
+  | "script"
+  | "migration"
+  | "lambda_handler"
+  | "worker";
+
+export interface EntrypointFact {
+  schema_version: "drift.entrypoint_fact.v1";
+  entrypoint_id: string;
+  repo_id: string;
+  scan_id: string;
+  kind: EntrypointKind;
+  file_path: string;
+  symbol?: string;
+  route_pattern?: string;
+  method?: string;
+  adapter_id: string;
+  confidence_label: ConfidenceLabel;
+  evidence_refs: string[];
+}
+
+export type DataOperationFamily =
+  | "orm_operation"
+  | "raw_sql_operation"
+  | "http_api_call"
+  | "filesystem_write"
+  | "cache_operation"
+  | "queue_publish"
+  | "queue_consume"
+  | "env_secret_read"
+  | "external_service_call"
+  | "auth_session_read"
+  | "payment_operation"
+  | "email_send";
+
+export type DataOperationEffect =
+  | "read"
+  | "write"
+  | "delete"
+  | "mutation"
+  | "side_effect"
+  | "external_effect"
+  | "secret_access"
+  | "network_effect";
+
+export interface DataOperationRisk {
+  schema_version: "drift.data_operation_risk.v1";
+  operation_family: DataOperationFamily;
+  effect: DataOperationEffect;
+  risk: "read" | "write" | "destructive_write" | "side_effect" | "secret_access" | "external_effect" | "unknown";
+  confidence_label: ConfidenceLabel;
+}
+
 export interface GraphNodeRecord {
   id: string;
   kind: "file" | "module" | "symbol" | "import" | "route" | "role" | "data_store" | "data_operation" | "endpoint" | "re_export";

@@ -329,6 +329,71 @@ export const ParserGapSchema = z.object({
   created_at: z.string().min(1)
 });
 
+export const EntrypointKindSchema = z.enum([
+  "api_route",
+  "page_route",
+  "server_action",
+  "cli_command",
+  "cron_job",
+  "queue_consumer",
+  "webhook_handler",
+  "middleware",
+  "test_entrypoint",
+  "script",
+  "migration",
+  "lambda_handler",
+  "worker"
+]);
+
+export const EntrypointFactSchema = z.object({
+  schema_version: z.literal("drift.entrypoint_fact.v1"),
+  entrypoint_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  kind: EntrypointKindSchema,
+  file_path: z.string().min(1),
+  symbol: z.string().min(1).optional(),
+  route_pattern: z.string().min(1).optional(),
+  method: z.string().min(1).optional(),
+  adapter_id: z.string().min(1),
+  confidence_label: ConfidenceLabelSchema,
+  evidence_refs: z.array(z.string().min(1))
+});
+
+export const DataOperationFamilySchema = z.enum([
+  "orm_operation",
+  "raw_sql_operation",
+  "http_api_call",
+  "filesystem_write",
+  "cache_operation",
+  "queue_publish",
+  "queue_consume",
+  "env_secret_read",
+  "external_service_call",
+  "auth_session_read",
+  "payment_operation",
+  "email_send"
+]);
+
+export const DataOperationEffectSchema = z.enum([
+  "read",
+  "write",
+  "delete",
+  "mutation",
+  "side_effect",
+  "external_effect",
+  "secret_access",
+  "network_effect"
+]);
+
+export const DataOperationRiskSchema = z.object({
+  schema_version: z.literal("drift.data_operation_risk.v1"),
+  operation_family: DataOperationFamilySchema,
+  effect: DataOperationEffectSchema,
+  risk: z.enum(["read", "write", "destructive_write", "side_effect", "secret_access", "external_effect", "unknown"]),
+  confidence_label: ConfidenceLabelSchema
+});
+
 export const GraphNodeRecordSchema = z.object({
   id: z.string().min(1),
   kind: z.enum(["file", "module", "symbol", "import", "route", "role", "data_store", "data_operation", "endpoint", "re_export"]),

@@ -16,10 +16,12 @@ import type {
 } from "@drift/factgraph";
 import type { SqliteDriftStorage } from "@drift/storage";
 export { buildEntrypointFlowProof } from "./flow-proof.js";
+export { classifyDataOperationRisk } from "./data-operation-risk.js";
 export { buildLayerArchitectureProof } from "./layer-architecture.js";
 export { evaluateRoleEdge } from "./role-ontology.js";
 export { scoreHelperSimilarity } from "./helper-similarity.js";
 export type { BuildEntrypointFlowProofInput } from "./flow-proof.js";
+export type { ClassifyDataOperationRiskInput } from "./data-operation-risk.js";
 export type {
   BuildLayerArchitectureProofInput,
   LayerArchitectureObservedEdge,

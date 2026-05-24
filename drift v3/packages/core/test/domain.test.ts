@@ -11,6 +11,7 @@ import {
   DRIFT_SCANNER_VERSION,
   DRIFT_TYPESCRIPT_ADAPTER_VERSION,
   EntrypointFlowProofSchema,
+  EntrypointFactSchema,
   FactRecordSchema,
   FileRoleSchema,
   FindingSchema,
@@ -124,6 +125,23 @@ describe("core domain", () => {
       schema_version: "drift.layer_architecture.v1",
       layers: expect.arrayContaining([expect.objectContaining({ role: "route" })])
     });
+  });
+
+  it("validates typed entrypoint facts", () => {
+    expect(EntrypointFactSchema.parse({
+      schema_version: "drift.entrypoint_fact.v1",
+      entrypoint_id: "entrypoint_api_users_get",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "api_route",
+      file_path: "app/api/users/route.ts",
+      symbol: "GET",
+      route_pattern: "/api/users",
+      method: "GET",
+      adapter_id: "next_app_router",
+      confidence_label: "certain",
+      evidence_refs: ["fact_route_users_get"]
+    })).toMatchObject({ kind: "api_route" });
   });
 
   it("creates deterministic agent envelope actions", () => {
