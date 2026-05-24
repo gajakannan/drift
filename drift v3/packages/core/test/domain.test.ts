@@ -10,9 +10,12 @@ import {
   DRIFT_RULE_ENGINE_VERSION,
   DRIFT_SCANNER_VERSION,
   DRIFT_TYPESCRIPT_ADAPTER_VERSION,
+  EntrypointFlowProofSchema,
   FileRoleSchema,
   FindingSchema,
+  HelperSimilarityEvidenceSchema,
   RepoContractSchema,
+  RequiredCheckExecutionSchema,
   authorizeContextExport,
   canonicalRepoContractJson,
   canonicalScanStateJson,
@@ -764,5 +767,104 @@ describe("core domain", () => {
       max_snippet_chars: 0,
       approved_snippet_chars: 0
     });
+  });
+
+  it("validates helper similarity evidence without source snippets", () => {
+    const parsed = HelperSimilarityEvidenceSchema.parse({
+      schema_version: "drift.helper_similarity.v1",
+      candidate_symbol: "getCurrentUser",
+      candidate_file_path: "apps/web/lib/get-current-user.ts",
+      canonical_symbol: "requireUser",
+      canonical_module: "@/lib/auth/require-user",
+      score: 0.91,
+      score_band: "high",
+      matched_features: ["purpose_tags", "parameter_shape", "call_dependencies"],
+      missing_features: ["return_shape"],
+      evidence_refs: ["fact_candidate_export", "fact_canonical_export"],
+      blocking_allowed: false
+    });
+
+    expect(parsed.blocking_allowed).toBe(false);
+    expect(parsed.matched_features).toContain("call_dependencies");
+  });
+
+  it("validates entrypoint flow proof with graph paths and missing evidence", () => {
+    const parsed = EntrypointFlowProofSchema.parse({
+      schema_version: "drift.entrypoint_flow_proof.v1",
+      entry_file_path: "apps/web/app/api/accounts/route.ts",
+      contract_id: "agent_contract_api_flow",
+      required_steps: [{
+        step_kind: "service_delegation",
+        satisfied: true,
+        evidence_refs: ["edge_route_to_service"],
+        graph_path: ["apps/web/app/api/accounts/route.ts", "@/server/services/accounts"]
+      }],
+      forbidden_steps: [{
+        step_kind: "direct_data_access",
+        present: false,
+        evidence_refs: [],
+        graph_path: []
+      }],
+      missing_evidence: []
+    });
+
+    expect(parsed.required_steps[0]?.satisfied).toBe(true);
+  });
+
+  it("rejects required check execution without argv proof", () => {
+    expect(() => RequiredCheckExecutionSchema.parse({
+      schema_version: "drift.required_check_execution.v1",
+      execution_id: "exec_1",
+      repo_id: "repo_1",
+      repo_root: "/repo",
+      repo_commit: "abc",
+      worktree_dirty: false,
+      scan_id: "scan_1",
+      repo_contract_id: "contract_1",
+      agent_contract_id: "agent_contract_checks",
+      command: "pnpm test",
+      command_hash: "hash",
+      cwd: "/repo",
+      started_at: "2026-05-24T00:00:00.000Z",
+      completed_at: "2026-05-24T00:00:01.000Z",
+      timeout_ms: 30000,
+      exit_code: 0,
+      status: "passed",
+      stdout_hash: "stdout",
+      stderr_hash: "stderr",
+      stdout_preview: "",
+      stderr_preview: "",
+      audit_event_id: "audit_1"
+    })).toThrow();
+  });
+
+  it("validates passed required check execution proof", () => {
+    const parsed = RequiredCheckExecutionSchema.parse({
+      schema_version: "drift.required_check_execution.v1",
+      execution_id: "exec_1",
+      repo_id: "repo_1",
+      repo_root: "/repo",
+      repo_commit: "abc",
+      worktree_dirty: false,
+      scan_id: "scan_1",
+      repo_contract_id: "contract_1",
+      agent_contract_id: "agent_contract_checks",
+      command: "pnpm test",
+      argv: ["pnpm", "test"],
+      command_hash: "hash",
+      cwd: "/repo",
+      started_at: "2026-05-24T00:00:00.000Z",
+      completed_at: "2026-05-24T00:00:01.000Z",
+      timeout_ms: 30000,
+      exit_code: 0,
+      status: "passed",
+      stdout_hash: "stdout",
+      stderr_hash: "stderr",
+      stdout_preview: "",
+      stderr_preview: "",
+      audit_event_id: "audit_1"
+    });
+
+    expect(parsed.argv).toEqual(["pnpm", "test"]);
   });
 });

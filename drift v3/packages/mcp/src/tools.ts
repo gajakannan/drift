@@ -157,6 +157,23 @@ export const DRIFT_READ_ONLY_MCP_TOOLS: DriftMcpTool[] = [
     }
   },
   {
+    name: "get_required_check_executions",
+    description: "Return stored required-check execution proof for a repo without running commands.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo_id: { type: "string" },
+        command: { type: "string" },
+        scan_id: { type: "string" },
+        repo_contract_id: { type: "string" },
+        limit: { type: "number" },
+        offset: { type: "number" }
+      },
+      required: ["repo_id"],
+      additionalProperties: false
+    }
+  },
+  {
     name: "get_allowed_context",
     description: "Check whether a path can be exposed through an agent-facing surface.",
     inputSchema: {

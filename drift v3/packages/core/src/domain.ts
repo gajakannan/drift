@@ -285,7 +285,8 @@ export interface AuditEvent {
     | "adapter_upgraded"
     | "scan_invalidated"
     | "baseline_created"
-    | "baseline_cleared";
+    | "baseline_cleared"
+    | "required_check_executed";
   target_type: string;
   target_id: string;
   metadata: Record<string, unknown>;
@@ -416,6 +417,78 @@ export interface Finding {
   suggested_fix?: string;
   related_node_ids?: string[];
   created_at: string;
+}
+
+export type HelperSimilarityFeature =
+  | "name_tokens"
+  | "purpose_tags"
+  | "parameter_shape"
+  | "return_shape"
+  | "call_dependencies"
+  | "import_dependencies"
+  | "body_operation_kinds";
+
+export interface HelperSimilarityEvidence {
+  schema_version: "drift.helper_similarity.v1";
+  candidate_symbol: string;
+  candidate_file_path: string;
+  canonical_symbol: string;
+  canonical_module: string;
+  score: number;
+  score_band: "low" | "medium" | "high" | "deterministic";
+  matched_features: HelperSimilarityFeature[];
+  missing_features: string[];
+  evidence_refs: string[];
+  blocking_allowed: boolean;
+}
+
+export interface EntrypointFlowProofStep {
+  step_kind: "auth_helper" | "validation_helper" | "service_delegation" | "response_boundary";
+  satisfied: boolean;
+  evidence_refs: string[];
+  graph_path: string[];
+}
+
+export interface EntrypointFlowForbiddenProofStep {
+  step_kind: "direct_data_access" | "inline_business_logic";
+  present: boolean;
+  evidence_refs: string[];
+  graph_path: string[];
+}
+
+export interface EntrypointFlowProof {
+  schema_version: "drift.entrypoint_flow_proof.v1";
+  entry_file_path: string;
+  contract_id: string;
+  required_steps: EntrypointFlowProofStep[];
+  forbidden_steps: EntrypointFlowForbiddenProofStep[];
+  missing_evidence: string[];
+}
+
+export interface RequiredCheckExecution {
+  schema_version: "drift.required_check_execution.v1";
+  execution_id: string;
+  repo_id: string;
+  repo_root: string;
+  repo_commit: string;
+  worktree_dirty: boolean;
+  scan_id: string | null;
+  repo_contract_id: string;
+  agent_contract_id: string;
+  command: string;
+  argv: string[];
+  command_hash: string;
+  cwd: string;
+  started_at: string;
+  completed_at: string;
+  timeout_ms: number;
+  exit_code: number | null;
+  status: "passed" | "failed" | "timed_out" | "blocked";
+  stdout_hash: string;
+  stderr_hash: string;
+  stdout_preview: string;
+  stderr_preview: string;
+  audit_event_id: string;
 }
 
 export interface RiskArea {

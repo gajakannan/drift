@@ -107,8 +107,8 @@ Current mismatch:
 | Finding | canonical-beta | `Finding`, `findings`, engine finding schema, persisted check/contract/layer/graph/fix context, beta proof evidence completeness | Typed public response schemas are not first-class yet. |
 | Check | canonical-beta | `runCheck`, engine check request/result schemas, `CheckRun`, `check_runs`, beta proof good-pass/bad-block loop | `check` uses check-time collection instead of requiring the stored scan to be fresh. |
 | Agent Envelope | canonical-defined | `AgentEnvelopeV2`, CLI/MCP envelope helpers | Envelope is intentionally minimal; it is not the full repo/context packet. |
-| MCP | canonical-beta | 10 read-only MCP tools, argument validation, tests, beta proof full CLI/MCP schema-stable parity hash | Transport boundary still has duplicated read-model assembly outside `@drift/query`. |
-| Storage/Migrations | canonical-beta | migrations 001-012 in source, SQLite storage tests, `check_runs` table, repo identity columns | Backup/restore is release-supported but not part of the narrow beta proof loop. |
+| MCP | canonical-beta | 11 read-only MCP tools, argument validation, tests, beta proof full CLI/MCP schema-stable parity hash | Transport boundary still has duplicated read-model assembly outside `@drift/query`. |
+| Storage/Migrations | canonical-beta | migrations 001-013 in source, SQLite storage tests, `check_runs`, required-check execution proof, repo identity columns | Backup/restore is release-supported but not part of the narrow beta proof loop. |
 | Governance/Audit | canonical-beta | mutation governance, `--confirm`, audit hash chain | Audit events do not carry explicit before/after object hashes. |
 | Backup/Restore | canonical-defined | backup manifests, create/verify/restore commands/tests | Beta only needs this if included in the demo/release claim. |
 | Release/Beta | canonical-beta | `verify:ci`, `beta:proof`, generated beta fixture proof, strict release proof beta input | Final release readiness is proven after packaged npm tarballs and engine checksums exist. |
@@ -475,8 +475,8 @@ Purpose: expose read-only repo truth to agent/tooling surfaces.
 
 Current implementation:
 
-- `DRIFT_READ_ONLY_MCP_TOOLS` defines 10 tools in `packages/mcp/src/tools.ts:3`.
-- Tool list: `get_runtime_info`, `get_capabilities`, `get_audit_status`, `get_scan_status`, `get_repo_contract`, `get_repo_map`, `get_task_preflight`, `get_conventions`, `get_findings`, `get_allowed_context`.
+- `DRIFT_READ_ONLY_MCP_TOOLS` defines 11 tools in `packages/mcp/src/tools.ts:3`.
+- Tool list: `get_runtime_info`, `get_capabilities`, `get_audit_status`, `get_scan_status`, `get_repo_contract`, `get_repo_map`, `get_task_preflight`, `get_conventions`, `get_findings`, `get_required_check_executions`, `get_allowed_context`.
 - MCP handlers are created by `createReadOnlyMcpHandlers` in `packages/mcp/src/index.ts:67`.
 - JSON-RPC rejects unknown non-read-only tools in `packages/mcp/src/index.ts:380`.
 - Argument validation rejects missing, extra, blank, unsafe, and wrong-typed args in `packages/mcp/src/index.ts:647`.
@@ -506,9 +506,9 @@ Purpose: durable local SQLite state.
 
 Current implementation:
 
-- 11 migrations exist in source in `packages/storage/src/migrations.ts:6`; `011_check_runs_and_finding_context` persists check runs and finding evidence context.
-- Tables cover repos, scan manifests, file snapshots, findings, baselines, audit events, facts, convention candidates, accepted conventions, repo contracts, backup manifests, fact graph artifacts, graph projections, scan file changes, symbol occurrence kind.
-- Source tests expect `supported_sqlite_schema_version: 12` in CLI and installed-flow coverage.
+- 13 migrations exist in source in `packages/storage/src/migrations.ts:6`; `013_required_check_executions` persists external required-check execution proof.
+- Tables cover repos, scan manifests, file snapshots, findings, baselines, audit events, facts, convention candidates, accepted conventions, repo contracts, backup manifests, fact graph artifacts, graph projections, scan file changes, symbol occurrence kind, and required-check executions.
+- Source tests expect `supported_sqlite_schema_version: 13` in CLI and installed-flow coverage.
 - Storage test persists repo, scan, findings, baselines, facts, and more in `packages/storage/test/sqlite-storage.test.ts:165`.
 - Release proof checks source and built schema versions so stale generated artifacts do not pass as release truth.
 

@@ -46,6 +46,14 @@ export interface DriftMcpHandlers {
     offset?: number;
     require_fresh?: boolean;
   }): unknown;
+  get_required_check_executions(input: {
+    repo_id: string;
+    command?: string;
+    scan_id?: string;
+    repo_contract_id?: string;
+    limit?: number;
+    offset?: number;
+  }): unknown;
   get_allowed_context(input: {
     repo_id: string;
     path: string;

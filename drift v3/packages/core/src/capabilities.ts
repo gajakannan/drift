@@ -31,6 +31,7 @@ export const DRIFT_DEFAULT_MCP_READ_ONLY_TOOLS = [
   "get_task_preflight",
   "get_conventions",
   "get_findings",
+  "get_required_check_executions",
   "get_allowed_context"
 ] as const;
 

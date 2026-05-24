@@ -483,5 +483,41 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE repos ADD COLUMN lockfile_hashes_json TEXT;
       ALTER TABLE repos ADD COLUMN resolver_input_hash TEXT;
     `
+  },
+  {
+    id: "013_required_check_executions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS required_check_executions (
+        execution_id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL,
+        repo_root TEXT NOT NULL,
+        repo_commit TEXT NOT NULL,
+        worktree_dirty INTEGER NOT NULL CHECK (worktree_dirty IN (0, 1)),
+        scan_id TEXT,
+        repo_contract_id TEXT NOT NULL,
+        agent_contract_id TEXT NOT NULL,
+        command TEXT NOT NULL,
+        argv_json TEXT NOT NULL,
+        command_hash TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        timeout_ms INTEGER NOT NULL,
+        exit_code INTEGER,
+        status TEXT NOT NULL CHECK (status IN ('passed', 'failed', 'timed_out', 'blocked')),
+        stdout_hash TEXT NOT NULL,
+        stderr_hash TEXT NOT NULL,
+        stdout_preview TEXT NOT NULL,
+        stderr_preview TEXT NOT NULL,
+        audit_event_id TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_required_check_executions_repo_command
+        ON required_check_executions(repo_id, command_hash, completed_at);
+
+      CREATE INDEX IF NOT EXISTS idx_required_check_executions_repo_contract
+        ON required_check_executions(repo_id, repo_contract_id, scan_id);
+    `
   }
 ];

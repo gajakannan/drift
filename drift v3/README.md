@@ -39,6 +39,7 @@ drift repo map --repo <repo_id> --role api_route --json
 drift repo map --repo <repo_id> --limit 50 --offset 0 --json
 drift prepare "add user search endpoint" --repo <repo_id> --require-fresh --json
 drift checks list --repo <repo_id> --limit 20 --offset 0 --json
+drift checks run --repo <repo_id> --command "pnpm test" --timeout-ms 120000 --json
 drift policy check-context --repo <repo_id> --path apps/web/app/api/users/route.ts --surface cli-preflight --require-fresh --json
 drift check --diff main...HEAD --repo <repo_id> --scope changed-hunks
 drift findings list --repo <repo_id>
@@ -203,6 +204,7 @@ The e2e suite packs and installs the workspace packages into a clean consumer pr
 - installed `drift repo map`
 - installed `drift repo map --limit --offset`
 - installed `drift checks list --limit --offset`
+- installed `drift checks run`
 - installed `drift baseline status`
 - installed `drift contract show`
 - installed `drift check`
@@ -233,6 +235,7 @@ The e2e suite packs and installs the workspace packages into a clean consumer pr
 - installed MCP `get_task_preflight`
 - installed MCP `get_conventions`
 - installed MCP `get_findings`
+- installed MCP `get_required_check_executions`
 - installed MCP `get_allowed_context`
 - installed `drift-mcp`
 - `pnpm beta:proof`

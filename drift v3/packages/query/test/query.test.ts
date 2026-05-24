@@ -5,7 +5,13 @@ import type { Finding, RepoContract } from "@drift/core";
 import { buildFactGraphArtifact, buildFactGraphArtifactFromParts } from "@drift/factgraph";
 import { openDriftStorage } from "@drift/storage";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildRepoMapReadModel, createGraphQueryService, fallbackFactRepoMapFiles } from "../src/index.js";
+import {
+  buildEntrypointFlowProof,
+  buildRepoMapReadModel,
+  createGraphQueryService,
+  fallbackFactRepoMapFiles,
+  scoreHelperSimilarity
+} from "../src/index.js";
 
 const tempDirs: string[] = [];
 
@@ -14,6 +20,96 @@ afterEach(async () => {
 });
 
 describe("GraphQueryService", () => {
+  it("scores renamed auth helper as high similarity to canonical helper", () => {
+    const result = scoreHelperSimilarity({
+      candidate: {
+        symbol: "getCurrentUser",
+        file_path: "apps/web/lib/get-current-user.ts",
+        purpose_tags: ["auth", "user"],
+        parameter_shape: ["request"],
+        return_shape: "user",
+        call_dependencies: ["getSession"],
+        import_dependencies: ["next/server"],
+        body_operation_kinds: ["auth_guard"]
+      },
+      canonical: {
+        symbol: "requireUser",
+        module: "@/lib/auth/require-user",
+        purpose_tags: ["auth", "user"],
+        parameter_shape: ["request"],
+        return_shape: "user",
+        call_dependencies: ["getSession"],
+        import_dependencies: ["next/server"],
+        body_operation_kinds: ["auth_guard"]
+      }
+    });
+
+    expect(result.score_band).toBe("high");
+    expect(result.matched_features).toContain("purpose_tags");
+    expect(result.matched_features).toContain("call_dependencies");
+    expect(result.blocking_allowed).toBe(false);
+  });
+
+  it("builds entrypoint flow proof from entrypoint facts", () => {
+    const proof = buildEntrypointFlowProof({
+      contract: {
+        kind: "entrypoint_flow",
+        id: "agent_contract_api_flow",
+        version: 1,
+        entry_roles: ["api_route"],
+        required_steps: [
+          { kind: "auth_helper", calls: ["requireUser"] },
+          { kind: "validation_helper", imports: ["@/lib/validation/account-schema"] },
+          { kind: "service_delegation", imports: ["@/server/services/accounts"] }
+        ],
+        forbidden_steps: [{ kind: "direct_data_access" }],
+        enforcement: "blocking"
+      },
+      entry_file_path: "apps/web/app/api/accounts/route.ts",
+      facts: [
+        {
+          id: "fact_call_auth",
+          repo_id: "repo_abc",
+          scan_id: "scan_abc",
+          kind: "symbol_called",
+          file_path: "apps/web/app/api/accounts/route.ts",
+          name: "requireUser",
+          start_line: 4,
+          end_line: 4
+        },
+        {
+          id: "fact_import_schema",
+          repo_id: "repo_abc",
+          scan_id: "scan_abc",
+          kind: "import_used",
+          file_path: "apps/web/app/api/accounts/route.ts",
+          name: "accountSchema",
+          value: "@/lib/validation/account-schema",
+          start_line: 1,
+          end_line: 1
+        },
+        {
+          id: "fact_import_service",
+          repo_id: "repo_abc",
+          scan_id: "scan_abc",
+          kind: "import_used",
+          file_path: "apps/web/app/api/accounts/route.ts",
+          name: "createAccount",
+          value: "@/server/services/accounts",
+          start_line: 2,
+          end_line: 2
+        }
+      ]
+    });
+
+    expect(proof.required_steps.every((step) => step.satisfied)).toBe(true);
+    expect(proof.forbidden_steps[0]).toMatchObject({
+      step_kind: "direct_data_access",
+      present: false
+    });
+    expect(proof.missing_evidence).toEqual([]);
+  });
+
   it("builds a shared repo-map read model from graph, facts, contracts, and findings", () => {
     const contract: RepoContract = {
       id: "contract_abc",

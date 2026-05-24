@@ -305,7 +305,8 @@ export const AuditEventSchema = z.object({
     "adapter_upgraded",
     "scan_invalidated",
     "baseline_created",
-    "baseline_cleared"
+    "baseline_cleared",
+    "required_check_executed"
   ]),
   target_type: z.string().min(1),
   target_id: z.string().min(1),
@@ -680,6 +681,94 @@ export const ContractFindingV2Schema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["evidence_refs"],
       message: "non-blocked findings require evidence references"
+    });
+  }
+});
+
+export const HelperSimilarityFeatureSchema = z.enum([
+  "name_tokens",
+  "purpose_tags",
+  "parameter_shape",
+  "return_shape",
+  "call_dependencies",
+  "import_dependencies",
+  "body_operation_kinds"
+]);
+
+export const HelperSimilarityEvidenceSchema = z.object({
+  schema_version: z.literal("drift.helper_similarity.v1"),
+  candidate_symbol: z.string().min(1),
+  candidate_file_path: RepoRelativePatternSchema,
+  canonical_symbol: z.string().min(1),
+  canonical_module: z.string().min(1),
+  score: z.number().min(0).max(1),
+  score_band: z.enum(["low", "medium", "high", "deterministic"]),
+  matched_features: z.array(HelperSimilarityFeatureSchema),
+  missing_features: z.array(z.string().min(1)),
+  evidence_refs: z.array(z.string().min(1)),
+  blocking_allowed: z.boolean()
+});
+
+export const EntrypointFlowProofStepSchema = z.object({
+  step_kind: z.enum(["auth_helper", "validation_helper", "service_delegation", "response_boundary"]),
+  satisfied: z.boolean(),
+  evidence_refs: z.array(z.string().min(1)),
+  graph_path: z.array(z.string().min(1))
+});
+
+export const EntrypointFlowForbiddenProofStepSchema = z.object({
+  step_kind: z.enum(["direct_data_access", "inline_business_logic"]),
+  present: z.boolean(),
+  evidence_refs: z.array(z.string().min(1)),
+  graph_path: z.array(z.string().min(1))
+});
+
+export const EntrypointFlowProofSchema = z.object({
+  schema_version: z.literal("drift.entrypoint_flow_proof.v1"),
+  entry_file_path: RepoRelativePatternSchema,
+  contract_id: z.string().min(1),
+  required_steps: z.array(EntrypointFlowProofStepSchema),
+  forbidden_steps: z.array(EntrypointFlowForbiddenProofStepSchema),
+  missing_evidence: z.array(z.string().min(1))
+});
+
+export const RequiredCheckExecutionSchema = z.object({
+  schema_version: z.literal("drift.required_check_execution.v1"),
+  execution_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  repo_root: z.string().min(1),
+  repo_commit: z.string().min(1),
+  worktree_dirty: z.boolean(),
+  scan_id: z.string().min(1).nullable(),
+  repo_contract_id: z.string().min(1),
+  agent_contract_id: z.string().min(1),
+  command: z.string().min(1),
+  argv: z.array(z.string().min(1)).min(1),
+  command_hash: z.string().min(1),
+  cwd: z.string().min(1),
+  started_at: z.string().datetime(),
+  completed_at: z.string().datetime(),
+  timeout_ms: z.number().int().positive(),
+  exit_code: z.number().int().nullable(),
+  status: z.enum(["passed", "failed", "timed_out", "blocked"]),
+  stdout_hash: z.string().min(1),
+  stderr_hash: z.string().min(1),
+  stdout_preview: z.string(),
+  stderr_preview: z.string(),
+  audit_event_id: z.string().min(1)
+}).superRefine((value, ctx) => {
+  if (value.completed_at < value.started_at) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["completed_at"],
+      message: "completed_at must be greater than or equal to started_at"
+    });
+  }
+  if (value.status === "passed" && value.exit_code !== 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["exit_code"],
+      message: "passed required checks must have exit_code 0"
     });
   }
 });

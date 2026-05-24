@@ -24,7 +24,7 @@ export function unknownCommandError(parsed: ParsedArgs): string | null {
     return exact(["map"]);
   }
   if (group === "checks") {
-    return exact(["list"]);
+    return exact(["list", "run"]);
   }
   if (group === "policy") {
     if (["show", "check-context", "set-egress"].includes(command ?? "")) {
@@ -104,8 +104,8 @@ export function validateCommandShape(parsed: ParsedArgs): void {
     exact("repo map", 2);
     return;
   }
-  if (group === "checks" && command === "list") {
-    exact("checks list", 2);
+  if (group === "checks" && (command === "list" || command === "run")) {
+    exact(`checks ${command}`, 2);
     return;
   }
   if (group === "policy") {

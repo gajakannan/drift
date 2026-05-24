@@ -151,11 +151,13 @@ export function helpText(parsed: ParsedArgs): string {
       "Usage:",
       "  drift --db <path> checks list --repo <repo_id> [--kind required|safe|all] [--path <file>] --json",
       "  drift --db <path> checks list --repo <repo_id> --limit 20 --offset 0 --json",
+      "  drift --db <path> checks run --repo <repo_id> --command \"pnpm test\" [--timeout-ms 120000] --json",
       "",
       "What checks list returns:",
       "  human-approved required checks and safe commands from the repo contract.",
       "  results are sorted by command and can be paginated for bounded automation output.",
       "  checks list does not mutate Drift state and does not run commands.",
+      "  checks run executes only commands that are both required by the active contract and approved as safe.",
       ""
     ].join("\n");
   }

@@ -36,7 +36,8 @@ describe("SQLite Drift storage", () => {
       "009_symbol_occurrence_kind",
       "010_audit_sequence",
       "011_check_runs_and_finding_context",
-      "012_repo_identity"
+      "012_repo_identity",
+      "013_required_check_executions"
     ]);
     storage.close();
   });
@@ -94,7 +95,8 @@ describe("SQLite Drift storage", () => {
       "009_symbol_occurrence_kind",
       "010_audit_sequence",
       "011_check_runs_and_finding_context",
-      "012_repo_identity"
+      "012_repo_identity",
+      "013_required_check_executions"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -321,6 +323,56 @@ describe("SQLite Drift storage", () => {
       })
     ]);
     expect(storage.listBaselineViolations("repo_abc")).toHaveLength(1);
+    storage.close();
+  });
+
+  it("persists required check execution proof for later CLI and MCP reads", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+
+    storage.recordRequiredCheckExecution({
+      schema_version: "drift.required_check_execution.v1",
+      execution_id: "required_check_exec_abc",
+      repo_id: "repo_abc",
+      repo_root: "/repo",
+      repo_commit: "abc123",
+      worktree_dirty: false,
+      scan_id: "scan_abc",
+      repo_contract_id: "contract_abc",
+      agent_contract_id: "agent_contract_checks",
+      command: "node scripts/smoke-check.mjs",
+      argv: ["node", "scripts/smoke-check.mjs"],
+      command_hash: "hash_command",
+      cwd: "/repo",
+      started_at: "2026-05-10T00:00:01.000Z",
+      completed_at: "2026-05-10T00:00:02.000Z",
+      timeout_ms: 30000,
+      exit_code: 0,
+      status: "passed",
+      stdout_hash: "hash_stdout",
+      stderr_hash: "hash_stderr",
+      stdout_preview: "ok",
+      stderr_preview: "",
+      audit_event_id: "audit_required_check"
+    });
+
+    expect(storage.latestRequiredCheckExecution("repo_abc", "node scripts/smoke-check.mjs")).toMatchObject({
+      execution_id: "required_check_exec_abc",
+      argv: ["node", "scripts/smoke-check.mjs"],
+      status: "passed"
+    });
+    expect(storage.listRequiredCheckExecutions("repo_abc", {
+      command: "node scripts/smoke-check.mjs",
+      scan_id: "scan_abc",
+      repo_contract_id: "contract_abc"
+    })).toHaveLength(1);
     storage.close();
   });
 

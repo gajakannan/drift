@@ -7,6 +7,7 @@ import {
   type Finding,
   type RepoContract
 } from "@drift/core";
+import { buildEntrypointFlowProof, scoreHelperSimilarity } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -349,6 +350,24 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
   for (const finding of entrypointFlowFindings) {
     storage.upsertFinding(finding);
   }
+  const requiredCheckProofFindings = runRequiredCheckProofCheck({
+    repoId,
+    contract,
+    storage,
+    now,
+    scope: scope as "changed-hunks" | "changed-files" | "full",
+    parsedDiff,
+    baseline,
+    existingFindings,
+    checkData,
+    snapshotsByPath,
+    checkId,
+    checkScanId
+  });
+  findings.push(...requiredCheckProofFindings);
+  for (const finding of requiredCheckProofFindings) {
+    storage.upsertFinding(finding);
+  }
 
   const blockingCount = findings.filter((finding) =>
     finding.status === "new" &&
@@ -507,6 +526,11 @@ function runCanonicalHelperReuseCheck(input: {
 }): Finding[] {
   const findings: Finding[] = [];
   const changedFiles = new Set(input.parsedDiff.files.map((file) => file.path));
+  if (changedFiles.size === 0 && input.scope === "full") {
+    for (const snapshot of input.checkData.snapshots) {
+      changedFiles.add(snapshot.file_path);
+    }
+  }
   const exportedFacts = input.checkData.facts.filter((fact) =>
     fact.kind === "exported_symbol" && changedFiles.has(fact.file_path)
   );
@@ -518,21 +542,27 @@ function runCanonicalHelperReuseCheck(input: {
 
     for (const helper of contract.canonical_helpers) {
       const forbiddenSymbols = new Set(helper.avoid_new_symbols_matching ?? []);
-      if (forbiddenSymbols.size === 0) {
-        continue;
-      }
 
       for (const exported of exportedFacts) {
-        if (!forbiddenSymbols.has(exported.name) || isCanonicalHelperModule(exported.file_path, helper.module)) {
+        if (isCanonicalHelperModule(exported.file_path, helper.module)) {
           continue;
         }
 
+        const exactDuplicate = forbiddenSymbols.has(exported.name);
+        const similarity = exactDuplicate ? null : scoreHelperSimilarity({
+          candidate: helperProfileForExport(input.checkData.facts, exported),
+          canonical: canonicalHelperProfile(input.checkData.facts, helper),
+          blockingThreshold: "deterministic"
+        });
+        if (!exactDuplicate && similarity?.score_band !== "high") {
+          continue;
+        }
         const diffStatus = diffStatusFor(exported.file_path, exported.start_line, input.parsedDiff, input.scope);
         const fingerprint = canonicalHelperReuseFindingFingerprint(
           contract.id,
           helper.helper_id,
           exported.file_path,
-          exported.name
+          exactDuplicate ? exported.name : `${exported.name}:fuzzy:${similarity?.score ?? 0}`
         );
         const snapshot = input.snapshotsByPath.get(exported.file_path);
         const status = input.baseline.some((entry) =>
@@ -547,10 +577,12 @@ function runCanonicalHelperReuseCheck(input: {
           check_id: input.checkId,
           repo_contract_id: input.contract.id,
           fingerprint,
-          title: "Duplicate canonical helper introduced",
-          message: `${exported.file_path} exports ${exported.name}; reuse ${helper.symbol} from ${helper.module} instead of creating a parallel helper.`,
-          severity: contract.enforcement === "blocking" ? "error" : "warning",
-          enforcement_result: contract.enforcement === "blocking" ? "block" : "warn",
+          title: exactDuplicate ? "Duplicate canonical helper introduced" : "Possible duplicate canonical helper introduced",
+          message: exactDuplicate
+            ? `${exported.file_path} exports ${exported.name}; reuse ${helper.symbol} from ${helper.module} instead of creating a parallel helper.`
+            : `${exported.file_path} exports ${exported.name}; it is highly similar to ${helper.symbol} from ${helper.module}.`,
+          severity: exactDuplicate && contract.enforcement === "blocking" ? "error" : "warning",
+          enforcement_result: exactDuplicate && contract.enforcement === "blocking" ? "block" : "warn",
           status,
           diff_status: diffStatus,
           evidence_refs: [{
@@ -560,13 +592,15 @@ function runCanonicalHelperReuseCheck(input: {
             start_line: exported.start_line,
             end_line: exported.end_line,
             symbol: exported.name,
-            fact_ids: [exported.id],
+            fact_ids: [exported.id, ...(similarity?.evidence_refs ?? [])].filter((value, index, all) =>
+              all.indexOf(value) === index
+            ),
             scan_id: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
             file_hash: snapshot?.content_hash ?? "",
             redaction_state: "none"
           }],
           expected_layer: "canonical_helper",
-          actual_layer: "duplicate_helper",
+          actual_layer: exactDuplicate ? "duplicate_helper" : "possible_duplicate_helper",
           graph_path: [exported.file_path, helper.module],
           suggested_fix: canonicalHelperSuggestedFix(helper, exported.name),
           related_node_ids: [],
@@ -584,6 +618,93 @@ function canonicalHelperSuggestedFix(
   duplicateSymbol: string
 ): string {
   return `Import ${helper.symbol} from ${helper.module} instead of creating ${duplicateSymbol}.`;
+}
+
+function helperProfileForExport(facts: FactRecord[], exported: FactRecord): {
+  symbol: string;
+  file_path: string;
+  purpose_tags: string[];
+  parameter_shape: string[];
+  return_shape: string;
+  call_dependencies: string[];
+  import_dependencies: string[];
+  body_operation_kinds: string[];
+  evidence_refs: string[];
+} {
+  const fileFacts = facts.filter((fact) => fact.file_path === exported.file_path);
+  return {
+    symbol: exported.name,
+    file_path: exported.file_path,
+    purpose_tags: helperPurposeTags(exported.name, exported.file_path),
+    parameter_shape: ["request"],
+    return_shape: helperReturnShape(exported.name),
+    call_dependencies: uniqueSorted(fileFacts
+      .filter((fact) => fact.kind === "symbol_called")
+      .map((fact) => fact.name)),
+    import_dependencies: uniqueSorted(fileFacts
+      .filter((fact) => fact.kind === "import_used" && fact.value)
+      .map((fact) => fact.value as string)),
+    body_operation_kinds: helperBodyOperationKinds(fileFacts),
+    evidence_refs: fileFacts.map((fact) => fact.id)
+  };
+}
+
+function canonicalHelperProfile(
+  facts: FactRecord[],
+  helper: CanonicalHelperReuseAgentContract["canonical_helpers"][number]
+): {
+  symbol: string;
+  module: string;
+  purpose_tags: string[];
+  parameter_shape: string[];
+  return_shape: string;
+  call_dependencies: string[];
+  import_dependencies: string[];
+  body_operation_kinds: string[];
+  evidence_refs: string[];
+} {
+  const helperFacts = facts.filter((fact) => isCanonicalHelperModule(fact.file_path, helper.module));
+  return {
+    symbol: helper.symbol,
+    module: helper.module,
+    purpose_tags: helper.purpose_tags,
+    parameter_shape: ["request"],
+    return_shape: helperReturnShape(helper.symbol),
+    call_dependencies: uniqueSorted(helperFacts
+      .filter((fact) => fact.kind === "symbol_called")
+      .map((fact) => fact.name)),
+    import_dependencies: uniqueSorted(helperFacts
+      .filter((fact) => fact.kind === "import_used" && fact.value)
+      .map((fact) => fact.value as string)),
+    body_operation_kinds: helperBodyOperationKinds(helperFacts, helper.purpose_tags),
+    evidence_refs: helperFacts.map((fact) => fact.id)
+  };
+}
+
+function helperPurposeTags(symbol: string, filePath: string): string[] {
+  const text = `${symbol} ${filePath}`.toLowerCase();
+  return uniqueSorted([
+    text.includes("auth") || text.includes("user") ? "auth" : "",
+    text.includes("user") ? "user" : "",
+    text.includes("valid") || text.includes("schema") ? "validation" : ""
+  ].filter(Boolean));
+}
+
+function helperReturnShape(symbol: string): string {
+  return /user/i.test(symbol) ? "user" : "unknown";
+}
+
+function helperBodyOperationKinds(facts: FactRecord[], fallbackTags: string[] = []): string[] {
+  const names = facts.map((fact) => `${fact.name} ${fact.value ?? ""}`).join(" ").toLowerCase();
+  return uniqueSorted([
+    names.includes("session") || fallbackTags.includes("auth") ? "auth_guard" : "",
+    names.includes("schema") || fallbackTags.includes("validation") ? "validation" : "",
+    ...facts.filter((fact) => fact.kind === "data_operation_detected").map((fact) => fact.name)
+  ].filter(Boolean));
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
 function isCanonicalHelperModule(filePath: string, moduleSpecifier: string): boolean {
@@ -900,6 +1021,11 @@ function runEntrypointFlowCheck(input: {
 
     const entryFiles = filesWithRoles(input.checkData.facts, changedFiles, contract.entry_roles);
     for (const filePath of entryFiles) {
+      const proof = buildEntrypointFlowProof({
+        contract,
+        entry_file_path: filePath,
+        facts: input.checkData.facts
+      });
       const callNames = new Set(input.checkData.facts
         .filter((fact) => fact.kind === "symbol_called" && fact.file_path === filePath)
         .map((fact) => fact.name));
@@ -980,6 +1106,135 @@ function runEntrypointFlowCheck(input: {
             suggestedFix: `Import ${importSource} before completing this entrypoint.`
           }));
         }
+      }
+
+      for (const forbiddenStep of proof.forbidden_steps) {
+        if (!forbiddenStep.present) {
+          continue;
+        }
+        const evidenceFact = input.checkData.facts.find((fact) =>
+          forbiddenStep.evidence_refs.includes(fact.id)
+        ) ?? fileDetectedFact(input.checkData.facts, filePath);
+        findings.push(agentContractFinding({
+          repoId: input.repoId,
+          repoContractId: input.contract.id,
+          agentContractId: contract.id,
+          checkId: input.checkId,
+          checkScanId: input.checkScanId,
+          checkData: input.checkData,
+          snapshotsByPath: input.snapshotsByPath,
+          baseline: input.baseline,
+          existingFindings: input.existingFindings,
+          parsedDiff: input.parsedDiff,
+          scope: input.scope,
+          now: input.now,
+          fingerprintKind: `entrypoint-flow-forbidden-${forbiddenStep.step_kind}`,
+          title: "Entrypoint flow contract violated",
+          message: `${filePath} includes forbidden ${forbiddenStep.step_kind} in its entrypoint flow.`,
+          severity: contract.enforcement === "blocking" ? "error" : "warning",
+          enforcementResult: contract.enforcement === "blocking" ? "block" : "warn",
+          filePath,
+          startLine: evidenceFact?.start_line ?? 1,
+          endLine: evidenceFact?.end_line ?? 1,
+          symbol: forbiddenStep.step_kind,
+          importSource: evidenceFact?.value,
+          factIds: forbiddenStep.evidence_refs,
+          expectedLayer: "service_delegation",
+          actualLayer: forbiddenStep.step_kind,
+          graphPath: forbiddenStep.graph_path,
+          suggestedFix: "Delegate data access and business logic through an accepted service layer."
+        }));
+      }
+    }
+  }
+
+  return findings;
+}
+
+function runRequiredCheckProofCheck(input: {
+  repoId: string;
+  contract: RepoContract;
+  storage: SqliteDriftStorage;
+  now: string;
+  scope: "changed-hunks" | "changed-files" | "full";
+  parsedDiff: ReturnType<typeof parseUnifiedDiff>;
+  baseline: ReturnType<SqliteDriftStorage["listBaselineViolations"]>;
+  existingFindings: Map<string, Finding>;
+  checkData: ScanData;
+  snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
+  checkId: string;
+  checkScanId: string;
+}): Finding[] {
+  const findings: Finding[] = [];
+  const changedFiles = new Set(input.parsedDiff.files.map((file) => file.path));
+  if (changedFiles.size === 0 && input.scope === "full") {
+    for (const snapshot of input.checkData.snapshots) {
+      changedFiles.add(snapshot.file_path);
+    }
+  }
+  const changedRoles = new Set(input.checkData.facts
+    .filter((fact) => fact.kind === "file_role_detected" && changedFiles.has(fact.file_path))
+    .map((fact) => fact.name));
+
+  for (const agentContract of input.contract.agent_contracts ?? []) {
+    if (agentContract.kind !== "required_change_checks") {
+      continue;
+    }
+    for (const rule of agentContract.rules) {
+      const pathMatch = !rule.applies_to.path_globs?.length ||
+        [...changedFiles].some((file) =>
+          rule.applies_to.path_globs!.some((glob) => matchesGlob(file, glob))
+        );
+      const roleMatch = !rule.applies_to.file_roles?.length ||
+        rule.applies_to.file_roles.some((role) => changedRoles.has(role));
+      if (!pathMatch || !roleMatch) {
+        continue;
+      }
+      for (const requiredCheck of rule.required_checks) {
+        if (!requiredCheck.required_for_release) {
+          continue;
+        }
+        const latest = input.storage.latestRequiredCheckExecution(input.repoId, requiredCheck.command);
+        if (
+          latest?.status === "passed" &&
+          latest.repo_contract_id === input.contract.id &&
+          latest.agent_contract_id === agentContract.id
+        ) {
+          continue;
+        }
+        const firstFile = [...changedFiles].sort()[0] ?? input.checkData.snapshots[0]?.file_path ?? "required-checks";
+        const firstChangedLine = [...(input.parsedDiff.files.find((file) => file.path === firstFile)
+          ?.changedLines ?? [])].sort((left, right) => left - right)[0];
+        const fileFact = fileDetectedFact(input.checkData.facts, firstFile);
+        const evidenceStartLine = firstChangedLine ?? fileFact?.start_line ?? 1;
+        findings.push(agentContractFinding({
+          repoId: input.repoId,
+          repoContractId: input.contract.id,
+          agentContractId: agentContract.id,
+          checkId: input.checkId,
+          checkScanId: input.checkScanId,
+          checkData: input.checkData,
+          snapshotsByPath: input.snapshotsByPath,
+          baseline: input.baseline,
+          existingFindings: input.existingFindings,
+          parsedDiff: input.parsedDiff,
+          scope: input.scope,
+          now: input.now,
+          fingerprintKind: "required-check-not-run",
+          title: "Required check has not been proven",
+          message: `${requiredCheck.command} is required for this change, but Drift has no passing execution proof for the active contract.`,
+          severity: "error",
+          enforcementResult: "block",
+          filePath: firstFile,
+          startLine: evidenceStartLine,
+          endLine: Math.max(evidenceStartLine, fileFact?.end_line ?? evidenceStartLine),
+          symbol: requiredCheck.command,
+          factIds: fileFact ? [fileFact.id] : [],
+          expectedLayer: "required_check_execution",
+          actualLayer: "required_check_not_run",
+          graphPath: [firstFile, requiredCheck.command],
+          suggestedFix: `Run drift checks run --repo ${input.repoId} --command "${requiredCheck.command}" --json.`
+        }));
       }
     }
   }

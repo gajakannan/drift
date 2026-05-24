@@ -15,6 +15,7 @@ import type {
   ModuleDependent,
   RepoContract,
   RepoRecord,
+  RequiredCheckExecution,
   ResolverDependency,
   ScanFileChange,
   ScanManifest,
@@ -33,6 +34,7 @@ import {
   ModuleDependentSchema,
   RepoContractSchema,
   RepoRecordSchema,
+  RequiredCheckExecutionSchema,
   ResolverDependencySchema,
   ScanFileChangeSchema,
   ScanManifestSchema,
@@ -975,6 +977,80 @@ export class SqliteDriftStorage {
     return RepoContractSchema.parse(JSON.parse(rowValue<string>(row, "contract_json")));
   }
 
+  recordRequiredCheckExecution(execution: RequiredCheckExecution): void {
+    const parsed = RequiredCheckExecutionSchema.parse(execution);
+    this.db
+      .prepare(`
+        INSERT INTO required_check_executions (
+          execution_id, repo_id, repo_root, repo_commit, worktree_dirty, scan_id,
+          repo_contract_id, agent_contract_id, command, argv_json, command_hash, cwd,
+          started_at, completed_at, timeout_ms, exit_code, status, stdout_hash,
+          stderr_hash, stdout_preview, stderr_preview, audit_event_id
+        )
+        VALUES (
+          @execution_id, @repo_id, @repo_root, @repo_commit, @worktree_dirty, @scan_id,
+          @repo_contract_id, @agent_contract_id, @command, @argv_json, @command_hash, @cwd,
+          @started_at, @completed_at, @timeout_ms, @exit_code, @status, @stdout_hash,
+          @stderr_hash, @stdout_preview, @stderr_preview, @audit_event_id
+        )
+        ON CONFLICT(execution_id) DO UPDATE SET
+          status = excluded.status,
+          completed_at = excluded.completed_at,
+          exit_code = excluded.exit_code,
+          stdout_hash = excluded.stdout_hash,
+          stderr_hash = excluded.stderr_hash,
+          stdout_preview = excluded.stdout_preview,
+          stderr_preview = excluded.stderr_preview
+      `)
+      .run({
+        ...parsed,
+        worktree_dirty: parsed.worktree_dirty ? 1 : 0,
+        scan_id: parsed.scan_id ?? null,
+        argv_json: stringifyJson(parsed.argv),
+        exit_code: parsed.exit_code ?? null
+      });
+  }
+
+  listRequiredCheckExecutions(
+    repoId: string,
+    filters: { command?: string; scan_id?: string; repo_contract_id?: string } = {}
+  ): RequiredCheckExecution[] {
+    const conditions = ["repo_id = ?"];
+    const values: unknown[] = [repoId];
+    if (filters.command) {
+      conditions.push("command = ?");
+      values.push(filters.command);
+    }
+    if (filters.scan_id) {
+      conditions.push("scan_id = ?");
+      values.push(filters.scan_id);
+    }
+    if (filters.repo_contract_id) {
+      conditions.push("repo_contract_id = ?");
+      values.push(filters.repo_contract_id);
+    }
+    return this.db
+      .prepare(`
+        SELECT * FROM required_check_executions
+        WHERE ${conditions.join(" AND ")}
+        ORDER BY completed_at DESC, execution_id DESC
+      `)
+      .all(...values)
+      .map(requiredCheckExecutionFromRow);
+  }
+
+  latestRequiredCheckExecution(repoId: string, command: string): RequiredCheckExecution | null {
+    const row = this.db
+      .prepare(`
+        SELECT * FROM required_check_executions
+        WHERE repo_id = ? AND command = ?
+        ORDER BY completed_at DESC, execution_id DESC
+        LIMIT 1
+      `)
+      .get(repoId, command);
+    return row ? requiredCheckExecutionFromRow(row) : null;
+  }
+
   appendAuditEvent(event: AuditEvent): void {
     const parsed = AuditEventSchema.parse(event);
     const previousEventHash = this.latestAuditEventHash(parsed.repo_id);
@@ -1556,6 +1632,34 @@ function resolverDependencyFromEdge(
     source_path: sourcePath,
     dependency_path: dependencyPath,
     dependency_kind: dependencyKind
+  });
+}
+
+function requiredCheckExecutionFromRow(row: unknown): RequiredCheckExecution {
+  return RequiredCheckExecutionSchema.parse({
+    schema_version: "drift.required_check_execution.v1",
+    execution_id: rowValue<string>(row, "execution_id"),
+    repo_id: rowValue<string>(row, "repo_id"),
+    repo_root: rowValue<string>(row, "repo_root"),
+    repo_commit: rowValue<string>(row, "repo_commit"),
+    worktree_dirty: rowValue<number>(row, "worktree_dirty") === 1,
+    scan_id: rowValue<string | null>(row, "scan_id"),
+    repo_contract_id: rowValue<string>(row, "repo_contract_id"),
+    agent_contract_id: rowValue<string>(row, "agent_contract_id"),
+    command: rowValue<string>(row, "command"),
+    argv: parseJsonArray(rowValue<string>(row, "argv_json")).map(String),
+    command_hash: rowValue<string>(row, "command_hash"),
+    cwd: rowValue<string>(row, "cwd"),
+    started_at: rowValue<string>(row, "started_at"),
+    completed_at: rowValue<string>(row, "completed_at"),
+    timeout_ms: rowValue<number>(row, "timeout_ms"),
+    exit_code: rowValue<number | null>(row, "exit_code"),
+    status: rowValue<string>(row, "status"),
+    stdout_hash: rowValue<string>(row, "stdout_hash"),
+    stderr_hash: rowValue<string>(row, "stderr_hash"),
+    stdout_preview: rowValue<string>(row, "stdout_preview"),
+    stderr_preview: rowValue<string>(row, "stderr_preview"),
+    audit_event_id: rowValue<string>(row, "audit_event_id")
   });
 }
 

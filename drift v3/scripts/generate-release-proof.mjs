@@ -295,6 +295,11 @@ function betaProofFields({ dirtyState, sourceBuildSchemaMatch, installedCliSmoke
     "finding_evidence_complete",
     strictBetaInput ? null : "DRIFT_RELEASE_FINDING_EVIDENCE_COMPLETE"
   );
+  const requiredCheckExecutionProofVerified = booleanInput(
+    betaProofInput,
+    "required_check_execution_proof_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_REQUIRED_CHECK_EXECUTION_PROOF_VERIFIED"
+  );
   const auditVerified = booleanInput(
     betaProofInput,
     "audit_verified",
@@ -332,6 +337,7 @@ function betaProofFields({ dirtyState, sourceBuildSchemaMatch, installedCliSmoke
     good_route_passed: goodRoutePassed,
     bad_route_blocked: badRouteBlocked,
     finding_evidence_complete: findingEvidenceComplete,
+    required_check_execution_proof_verified: requiredCheckExecutionProofVerified,
     mcp_cli_parity_hash: mcpCliParityHash,
     mcp_cli_parity_verified: Boolean(mcpCliParityHash),
     audit_head_hash: stringInput(
@@ -414,6 +420,7 @@ function missingBetaProofFields(proof) {
     good_route_passed: proof.good_route_passed,
     bad_route_blocked: proof.bad_route_blocked,
     finding_evidence_complete: proof.finding_evidence_complete,
+    required_check_execution_proof_verified: proof.required_check_execution_proof_verified,
     mcp_cli_parity_verified: proof.mcp_cli_parity_verified,
     audit_head_hash: proof.audit_head_hash,
     audit_verified: proof.audit_verified

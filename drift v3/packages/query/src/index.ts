@@ -15,6 +15,10 @@ import type {
   GraphNode
 } from "@drift/factgraph";
 import type { SqliteDriftStorage } from "@drift/storage";
+export { buildEntrypointFlowProof } from "./flow-proof.js";
+export { scoreHelperSimilarity } from "./helper-similarity.js";
+export type { BuildEntrypointFlowProofInput } from "./flow-proof.js";
+export type { HelperFeatureProfile, ScoreHelperSimilarityInput } from "./helper-similarity.js";
 
 export interface GraphRepoMapFile {
   path: string;

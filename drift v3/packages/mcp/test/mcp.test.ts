@@ -1220,6 +1220,79 @@ describe("read-only MCP handlers", () => {
     })]);
   });
 
+  it("exposes required-check execution proof through read-only MCP", async () => {
+    const databasePath = await seedMcpDatabase();
+    const command = "node -e \"process.stdout.write('ok')\"";
+    const storage = openDriftStorage({ databasePath });
+    storage.recordRequiredCheckExecution({
+      schema_version: "drift.required_check_execution.v1",
+      execution_id: "required_check_execution_abc",
+      repo_id: "repo_abc",
+      repo_root: "/tmp/repo",
+      repo_commit: "abc123",
+      worktree_dirty: false,
+      scan_id: "scan_abc",
+      repo_contract_id: "contract_abc",
+      agent_contract_id: "agent_contract_smoke_checks",
+      command,
+      argv: ["node", "-e", "process.stdout.write('ok')"],
+      command_hash: createHash("sha256").update(command).digest("hex"),
+      cwd: "/tmp/repo",
+      started_at: "2026-05-10T00:00:30.000Z",
+      completed_at: "2026-05-10T00:00:31.000Z",
+      timeout_ms: 30000,
+      exit_code: 0,
+      status: "passed",
+      stdout_hash: createHash("sha256").update("ok").digest("hex"),
+      stderr_hash: createHash("sha256").update("").digest("hex"),
+      stdout_preview: "ok",
+      stderr_preview: "",
+      audit_event_id: "audit_event_required_check_abc"
+    });
+    storage.close();
+
+    const handlers = createReadOnlyMcpHandlers({ databasePath });
+    const proof = handlers.get_required_check_executions({
+      repo_id: "repo_abc",
+      command
+    }) as {
+      summary: Record<string, unknown>;
+      filters: Record<string, unknown>;
+      latest_by_command: Array<Record<string, unknown>>;
+      executions: Array<Record<string, unknown>>;
+    };
+
+    expect(proof).toMatchObject({
+      response_schema: "drift.required_check_executions.v1",
+      repo_id: "repo_abc",
+      policy: { allowed: true, surface: "log" },
+      filters: {
+        command,
+        scan_id: null,
+        repo_contract_id: null
+      },
+      summary: {
+        repo_contract_id: "contract_abc",
+        total_count: 1,
+        returned_count: 1,
+        latest_passed_count: 1,
+        latest_failed_count: 0
+      },
+      latest_by_command: [{
+        execution_id: "required_check_execution_abc",
+        command,
+        status: "passed",
+        stdout_preview: "ok"
+      }],
+      executions: [{
+        execution_id: "required_check_execution_abc",
+        command,
+        status: "passed",
+        argv: ["node", "-e", "process.stdout.write('ok')"]
+      }]
+    });
+  });
+
   it("returns a stale MCP preflight when the repo root is missing", async () => {
     const databasePath = await seedMcpDatabase();
     const storage = openDriftStorage({ databasePath });
@@ -2096,6 +2169,7 @@ describe("read-only MCP handlers", () => {
       "get_task_preflight",
       "get_conventions",
       "get_findings",
+      "get_required_check_executions",
       "get_allowed_context"
     ]);
     const repoMapRoleSchema = DRIFT_READ_ONLY_MCP_TOOLS.find((tool) => tool.name === "get_repo_map")
@@ -2129,7 +2203,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 12,
+        supported_sqlite_schema_version: 13,
         storage_driver: "sqlite"
       },
       v1_scope: {

@@ -6,6 +6,7 @@ import { createBackup,listBackups } from "../commands/backup.js";
 import { baselineStatus,clearBaseline,createBaseline } from "../commands/baseline.js";
 import { runCheck } from "../commands/check.js";
 import { listChecks } from "../commands/checks.js";
+import { runRequiredCheck } from "../commands/checks-run.js";
 import { addContractWaiver,exportContract,importContractDryRun,listContractWaivers,removeContractWaiver,showContract,showContractWaiver,validateContract } from "../commands/contract.js";
 import { acceptCandidate,addConventionException,editCandidate,listAcceptedConventions,listConventionCandidates,rejectCandidate,showConventionCandidate } from "../commands/conventions.js";
 import { listFindings,markFindingFixed,resolveFindingWithReason,showFinding } from "../commands/findings.js";
@@ -51,6 +52,10 @@ export async function runCommand(storage: SqliteDriftStorage, parsed: ParsedArgs
 
   if (group === "checks" && command === "list") {
     return listChecks(storage, parsed);
+  }
+
+  if (group === "checks" && command === "run") {
+    return runRequiredCheck(storage, parsed);
   }
 
   if (group === "policy" && command === "show") {

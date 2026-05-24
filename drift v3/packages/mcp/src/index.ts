@@ -341,6 +341,51 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       };
     }),
 
+    get_required_check_executions: ({ repo_id, command, scan_id, repo_contract_id, limit, offset }) => withStorage(options, (storage) => {
+      const requestedRepoId = requiredMcpString(repo_id, "repo_id");
+      const requestedCommand = optionalMcpString(command, "command");
+      const requestedScanId = optionalMcpString(scan_id, "scan_id");
+      const requestedRepoContractId = optionalMcpString(repo_contract_id, "repo_contract_id");
+      const requestedLimit = optionalMcpPositiveInteger(limit, "limit") ?? 50;
+      const requestedOffset = optionalMcpNonNegativeInteger(offset, "offset") ?? 0;
+      const { contract, policy } = requiredAuthorizedMcpContract(storage, requestedRepoId, "log");
+      const executions = storage.listRequiredCheckExecutions(requestedRepoId, {
+        command: requestedCommand,
+        scan_id: requestedScanId,
+        repo_contract_id: requestedRepoContractId
+      });
+      const page = executions.slice(requestedOffset, requestedOffset + requestedLimit);
+      const latestByCommand = new Map<string, (typeof executions)[number]>();
+      for (const execution of executions) {
+        if (!latestByCommand.has(execution.command)) {
+          latestByCommand.set(execution.command, execution);
+        }
+      }
+      const latestExecutions = [...latestByCommand.values()];
+      return {
+        response_schema: "drift.required_check_executions.v1",
+        repo_id: requestedRepoId,
+        policy,
+        governance: preflightGovernance(),
+        filters: {
+          command: requestedCommand ?? null,
+          scan_id: requestedScanId ?? null,
+          repo_contract_id: requestedRepoContractId ?? null
+        },
+        summary: {
+          repo_contract_id: contract.id,
+          total_count: executions.length,
+          returned_count: page.length,
+          limit: requestedLimit,
+          offset: requestedOffset,
+          latest_passed_count: latestExecutions.filter((execution) => execution.status === "passed").length,
+          latest_failed_count: latestExecutions.filter((execution) => execution.status !== "passed").length
+        },
+        latest_by_command: latestExecutions,
+        executions: page
+      };
+    }),
+
     get_allowed_context: ({
       repo_id,
       path,
@@ -1693,12 +1738,34 @@ function requiredChecksForFiles(
   contract: RepoContract,
   relevantFiles: RelevantFile[]
 ): PreparedRequiredCheck[] {
-  return contract.required_checks.flatMap((check) => {
+  return allRequiredChecks(contract).flatMap((check) => {
     const matchedFiles = relevantFiles
       .filter((file) => requiredCheckMatchesFile(check, file.path, file.roles))
       .map((file) => file.path);
     return matchedFiles.length > 0 ? [{ ...check, matched_files: matchedFiles }] : [];
   });
+}
+
+function allRequiredChecks(contract: RepoContract): RepoContract["required_checks"] {
+  return [
+    ...contract.required_checks,
+    ...(contract.agent_contracts ?? []).flatMap((agentContract) => {
+      if (agentContract.kind !== "required_change_checks") {
+        return [];
+      }
+      return agentContract.rules.flatMap((rule) =>
+        rule.required_checks.map((check) => ({
+          command: check.command,
+          applies_to: {
+            path_globs: rule.applies_to.path_globs ?? [],
+            file_roles: rule.applies_to.file_roles ?? []
+          },
+          reason: check.reason,
+          source: "contract" as const
+        }))
+      );
+    })
+  ];
 }
 
 function requiredChecksFromGraphRisk(input: {
