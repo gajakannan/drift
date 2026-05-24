@@ -1530,6 +1530,40 @@ describe("read-only MCP handlers", () => {
     });
   });
 
+  it("returns allowed context before a contract exists using the default local policy", async () => {
+    const { databasePath, repoId } = await seedMcpNoContractDatabase();
+    const allowedContext = createReadOnlyMcpHandlers({ databasePath }).get_allowed_context({
+      repo_id: repoId,
+      path: "apps/web/app/api/users/route.ts"
+    }) as {
+      contract?: { ready: boolean; id: string | null; source: string };
+      decision: { allowed: boolean; surface: string; mode: string };
+      redactions: { allow_full_file_content: boolean; max_snippet_chars: number };
+      file_context: { convention_ids: string[]; risky_area_ids: string[] };
+      summary: { allowed: boolean };
+    };
+
+    expect(allowedContext.contract).toMatchObject({
+      ready: false,
+      id: null,
+      source: "default_local_policy"
+    });
+    expect(allowedContext.decision).toMatchObject({
+      allowed: true,
+      surface: "mcp",
+      mode: "local_only"
+    });
+    expect(allowedContext.file_context).toMatchObject({
+      convention_ids: [],
+      risky_area_ids: []
+    });
+    expect(allowedContext.redactions).toMatchObject({
+      allow_full_file_content: false,
+      max_snippet_chars: 1200
+    });
+    expect(allowedContext.summary.allowed).toBe(true);
+  });
+
   it("scopes MCP preflight required checks and risky areas to task-relevant files", async () => {
     const databasePath = await seedMcpDatabase();
     const storage = openDriftStorage({ databasePath });

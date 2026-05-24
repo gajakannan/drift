@@ -242,6 +242,83 @@ export async function GET() {
 }
 
 #[test]
+fn scan_stream_resolves_typescript_sources_for_js_esm_specifiers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).expect("create src dir");
+    fs::write(
+        src.join("index.ts"),
+        r#"import { helper } from "./helper.js";
+
+export function run() {
+  return helper();
+}
+"#,
+    )
+    .expect("write index");
+    fs::write(
+        src.join("helper.ts"),
+        "export function helper() { return 'ok'; }\n",
+    )
+    .expect("write helper");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_drift-engine"))
+        .args([
+            "scan-repo",
+            dir.path().to_str().expect("utf8 temp dir"),
+            "--format",
+            "jsonl",
+            "--repo-id",
+            "repo_abc",
+            "--scan-id",
+            "scan_abc",
+        ])
+        .output()
+        .expect("run drift-engine");
+    assert!(
+        output.status.success(),
+        "engine failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = String::from_utf8(output.stdout)
+        .expect("utf8 stdout")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json line"))
+        .collect::<Vec<_>>();
+    let edges = events
+        .iter()
+        .filter(|event| event["event"] == "graph_edge_batch")
+        .flat_map(|event| event["graph_edges"].as_array().expect("edges").iter())
+        .collect::<Vec<_>>();
+    let diagnostics = events
+        .iter()
+        .filter(|event| event["event"] == "diagnostic_batch")
+        .flat_map(|event| event["diagnostics"].as_array().expect("diagnostics").iter())
+        .collect::<Vec<_>>();
+
+    assert!(
+        edges.iter().any(|edge| {
+            edge["kind"] == "IMPORT_RESOLVES_TO_MODULE"
+                && edge["to"] == "module:src/helper.ts"
+                && edge["metadata"]["resolved_file_path"] == "src/helper.ts"
+                && edge["metadata"]["resolution_status"] == "resolved"
+        }),
+        "missing resolved edge to TypeScript source for .js specifier: {edges:#?}"
+    );
+    assert!(
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "unresolved_import"
+                && diagnostic["file_path"] == "src/index.ts"
+                && diagnostic["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("./helper.js"))
+        }),
+        "reported unresolved import for TypeScript source-backed .js specifier: {diagnostics:#?}"
+    );
+}
+
+#[test]
 fn scan_stream_emits_static_endpoint_shape_for_next_routes() {
     let dir = tempfile::tempdir().expect("tempdir");
     let app_route = dir.path().join("src/app/api/users/[id]");

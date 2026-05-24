@@ -105,8 +105,29 @@ export function buildRepoTopology(input: BuildRepoTopologyInput): RepoTopology {
 }
 
 function areaForPath(path: string): string {
+  const packageMatch = path.match(/^packages\/([^/]+)\//);
+  if (packageMatch) {
+    return `${titleCase(packageMatch[1].replace(/[-_]/g, " "))} Package`;
+  }
+  const crateMatch = path.match(/^crates\/([^/]+)\//);
+  if (crateMatch) {
+    return `${titleCase(crateMatch[1].replace(/[-_]/g, " "))} Crate`;
+  }
+  const fixtureMatch = path.match(/^test\/fixtures\/([^/]+)\//);
+  if (fixtureMatch) {
+    return `${titleCase(fixtureMatch[1].replace(/[-_]/g, " "))} Fixture`;
+  }
+  if (path.startsWith("scripts/")) {
+    return "Scripts";
+  }
   const apiMatch = path.match(/(?:^|\/)api\/([^/]+)/);
   const serviceMatch = path.match(/(?:^|\/)(?:services|repositories)\/([^/.]+)/);
+  if (!apiMatch && !serviceMatch) {
+    const appMatch = path.match(/^apps\/([^/]+)\//);
+    if (appMatch) {
+      return `${titleCase(appMatch[1].replace(/[-_]/g, " "))} App`;
+    }
+  }
   const raw = apiMatch?.[1] ?? serviceMatch?.[1] ?? path.split("/").filter(Boolean)[0] ?? "Repository";
   return `${titleCase(raw.replace(/[-_]/g, " "))} Management`;
 }

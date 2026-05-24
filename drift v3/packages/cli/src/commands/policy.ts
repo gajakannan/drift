@@ -63,6 +63,11 @@ export function checkPolicyContext(storage: SqliteDriftStorage, parsed: ParsedAr
       request_full_file_content: requestFullFileContent,
       require_fresh: requireFresh
     },
+    contract: {
+      ready: true,
+      id: contract.id,
+      source: "accepted_contract"
+    },
     governance: preflightGovernance(),
     scan_status: scanStatus,
     freshness_requirement: freshness,

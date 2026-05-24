@@ -1878,17 +1878,40 @@ fn alias_capture(pattern: &str, source: &str) -> String {
 }
 
 fn candidate_paths(base: &str) -> Vec<String> {
-    vec![
+    let mut candidates = vec![
         base.to_string(),
         format!("{base}.ts"),
         format!("{base}.tsx"),
+        format!("{base}.mts"),
+        format!("{base}.cts"),
         format!("{base}.js"),
         format!("{base}.jsx"),
+        format!("{base}.mjs"),
+        format!("{base}.cjs"),
         format!("{base}/index.ts"),
         format!("{base}/index.tsx"),
+        format!("{base}/index.mts"),
+        format!("{base}/index.cts"),
         format!("{base}/index.js"),
         format!("{base}/index.jsx"),
-    ]
+        format!("{base}/index.mjs"),
+        format!("{base}/index.cjs"),
+    ];
+    for (runtime_ext, source_exts) in [
+        (".js", [".ts", ".tsx", ".mts", ".cts"].as_slice()),
+        (".jsx", [".tsx", ".ts"].as_slice()),
+        (".mjs", [".mts", ".ts", ".tsx"].as_slice()),
+        (".cjs", [".cts", ".ts", ".tsx"].as_slice()),
+    ] {
+        if let Some(stripped) = base.strip_suffix(runtime_ext) {
+            candidates.extend(
+                source_exts
+                    .iter()
+                    .map(|source_ext| format!("{stripped}{source_ext}")),
+            );
+        }
+    }
+    candidates
 }
 
 fn join_repo_path(left: &str, right: &str) -> String {

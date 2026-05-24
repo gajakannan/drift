@@ -640,6 +640,74 @@ describe("SQLite Drift storage", () => {
     storage.close();
   });
 
+  it("deduplicates parser gaps by semantic location and message within a scan", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_abc",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    storage.upsertParserGaps([
+      {
+        schema_version: "drift.parser_gap.v1",
+        gap_id: "parser_gap_first",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        kind: "unresolved_import",
+        file_path: "packages/core/test/domain.test.ts",
+        start_line: 1,
+        end_line: 1,
+        confidence_impact: "lowers_flow",
+        message: "Could not resolve import ../src/index.js.",
+        evidence_refs: ["diagnostic_a"],
+        created_at: "2026-05-10T00:00:02.000Z"
+      },
+      {
+        schema_version: "drift.parser_gap.v1",
+        gap_id: "parser_gap_second",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        kind: "unresolved_import",
+        file_path: "packages/core/test/domain.test.ts",
+        start_line: 1,
+        end_line: 1,
+        confidence_impact: "lowers_flow",
+        message: "Could not resolve import ../src/index.js.",
+        evidence_refs: ["diagnostic_b"],
+        created_at: "2026-05-10T00:00:03.000Z"
+      }
+    ]);
+
+    expect(storage.listParserGaps("repo_abc", "scan_abc")).toEqual([
+      expect.objectContaining({
+        gap_id: "parser_gap_first",
+        evidence_refs: ["diagnostic_a", "diagnostic_b"]
+      })
+    ]);
+    storage.close();
+  });
+
   it("persists symbol identities for alias and re-export analysis", async () => {
     const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
     storage.migrate();

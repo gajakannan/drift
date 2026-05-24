@@ -459,9 +459,11 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       withStorage(options, (storage) => {
         const requestedRepoId = requiredMcpString(repo_id, "repo_id");
         const requestedPath = requiredRepoRelativeMcpPath(path);
-        requiredMcpRepo(storage, requestedRepoId);
-        const contract = requiredContract(storage.getRepoContract(requestedRepoId), requestedRepoId);
         const requestedSurface = validatePolicySurface(surface);
+        const { contract, ready: contractReady } = mcpContractOrDefault(
+          storage,
+          requestedRepoId
+        );
         const request = {
           path: requestedPath,
           surface: requestedSurface,
@@ -484,6 +486,11 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
           repo_id: requestedRepoId,
           path: requestedPath,
           request,
+          contract: {
+            ready: contractReady,
+            id: contractReady ? contract.id : null,
+            source: contractReady ? "accepted_contract" : "default_local_policy"
+          },
           governance: preflightGovernance(),
           scan_status: scanStatus,
           freshness_requirement: freshness,
@@ -962,6 +969,18 @@ function authorizedMcpContractOrDefault(
   repoId: string,
   surface: PolicyDecision["surface"] = "mcp"
 ): { contract: RepoContract; policy: PolicyDecision; ready: boolean } {
+  const { contract, ready } = mcpContractOrDefault(storage, repoId);
+  const policy = authorizeContextExport(contract, surface);
+  if (!policy.allowed) {
+    throw new Error(`Policy denied MCP output: ${policy.reason}`);
+  }
+  return { contract, policy, ready };
+}
+
+function mcpContractOrDefault(
+  storage: ReturnType<typeof openDriftStorage>,
+  repoId: string
+): { contract: RepoContract; ready: boolean } {
   const repo = requiredMcpRepoRecord(storage, repoId);
   const storedContract = storage.getRepoContract(repoId);
   const contract = storedContract ?? {
@@ -985,11 +1004,7 @@ function authorizedMcpContractOrDefault(
     },
     agent_permissions: []
   };
-  const policy = authorizeContextExport(contract, surface);
-  if (!policy.allowed) {
-    throw new Error(`Policy denied MCP output: ${policy.reason}`);
-  }
-  return { contract, policy, ready: Boolean(storedContract) };
+  return { contract, ready: Boolean(storedContract) };
 }
 
 function requiredMcpRepo(storage: ReturnType<typeof openDriftStorage>, repoId: string): void {

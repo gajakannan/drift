@@ -442,7 +442,7 @@ export class SqliteDriftStorage {
   }
 
   upsertParserGaps(gaps: ParserGap[]): void {
-    const parsedGaps = gaps.map((gap) => ParserGapSchema.parse(gap));
+    const parsedGaps = deduplicateParserGaps(gaps.map((gap) => ParserGapSchema.parse(gap)));
     const insert = this.db.prepare(`
       INSERT INTO parser_gaps (
         gap_id, schema_version, repo_id, scan_id, kind, file_path, start_line, end_line,
@@ -1457,6 +1457,31 @@ function parserGapFromRow(row: unknown): ParserGap {
       ? JSON.parse(record.evidence_refs_json) as unknown
       : []
   });
+}
+
+function deduplicateParserGaps(gaps: ParserGap[]): ParserGap[] {
+  const bySemanticKey = new Map<string, ParserGap>();
+  for (const gap of gaps) {
+    const key = [
+      gap.repo_id,
+      gap.scan_id,
+      gap.kind,
+      gap.file_path,
+      gap.start_line,
+      gap.end_line,
+      gap.message
+    ].join("\0");
+    const existing = bySemanticKey.get(key);
+    if (!existing) {
+      bySemanticKey.set(key, gap);
+      continue;
+    }
+    bySemanticKey.set(key, {
+      ...existing,
+      evidence_refs: sortedUnique([...existing.evidence_refs, ...gap.evidence_refs])
+    });
+  }
+  return [...bySemanticKey.values()];
 }
 
 function symbolIdentityFromRow(row: unknown): SymbolIdentity {

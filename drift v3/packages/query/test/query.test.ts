@@ -454,6 +454,60 @@ describe("GraphQueryService", () => {
     });
   });
 
+  it("groups monorepo package and crate paths into package-aware topology areas", () => {
+    const topology = buildRepoTopology({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      files: [
+        {
+          path: "packages/cli/src/commands/check.ts",
+          roles: ["cli_command_module"],
+          imports: ["@drift/core"],
+          exported_symbols: ["runCheck"],
+          risky_area_ids: []
+        },
+        {
+          path: "packages/core/src/domain.ts",
+          roles: ["core_module"],
+          imports: [],
+          exported_symbols: ["RepoContract"],
+          risky_area_ids: []
+        },
+        {
+          path: "crates/drift-engine/src/main.rs",
+          roles: ["engine_bridge_module"],
+          imports: [],
+          exported_symbols: [],
+          risky_area_ids: []
+        },
+        {
+          path: "test/fixtures/next-api-direct-db/app/api/users/route.ts",
+          roles: ["api_route"],
+          imports: ["@/lib/db"],
+          exported_symbols: ["GET"],
+          risky_area_ids: []
+        }
+      ]
+    });
+
+    expect(topology.areas.map((area) => area.name)).toEqual(expect.arrayContaining([
+      "Cli Package",
+      "Core Package",
+      "Drift Engine Crate",
+      "Next Api Direct Db Fixture"
+    ]));
+    expect(topology.areas).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "Cli Package",
+        modules: ["packages/cli/src/commands/check.ts"]
+      }),
+      expect.objectContaining({
+        name: "Drift Engine Crate",
+        modules: ["crates/drift-engine/src/main.rs"]
+      })
+    ]));
+  });
+
   it("maps repo files from persisted FactGraph projections without reading raw facts", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-query-"));
     tempDirs.push(dir);

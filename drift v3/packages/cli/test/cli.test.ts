@@ -10018,6 +10018,11 @@ describe("drift CLI convention review", () => {
         read_only: true,
         agent_can_mutate: false
       },
+      contract: {
+        ready: true,
+        id: "contract_abc",
+        source: "accepted_contract"
+      },
       redactions: {
         denied_globs: [".env*", "**/*.pem"],
         allow_full_file_content: false,
