@@ -19,12 +19,14 @@ import type {
   Severity
 } from "@drift/core";
 import {
+  AgentPreflightPacketV2Schema,
   FileRoleSchema,
   authorizeContextExport,
   canonicalRepoContractJson,
   canonicalScanStateJson,
   createAgentEnvelopeV2,
   createAgentPreflightPacket,
+  createContextPolicyMatrix,
   createDriftCapabilities,
   matchesPolicyGlob
 } from "@drift/core";
@@ -38,6 +40,7 @@ import {
 } from "@drift/core";
 import {
   buildChangeImpact,
+  classifyAgentTask,
   buildRepoMapReadModel,
   createGraphQueryService,
   fallbackFactRepoMapFiles,
@@ -186,6 +189,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         })
       ];
       const changeImpactRouteFlows = routeFlowsForChangeImpact(graphContext);
+      const taskModel = classifyAgentTask(requestedTask);
       const testFiles = scanStatus.latest_scan
         ? storage.listFileSnapshots(requestedRepoId, scanStatus.latest_scan.id)
             .filter((snapshot) => /(\.test|\.spec)\.[tj]sx?$/.test(snapshot.file_path))
@@ -213,6 +217,35 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         changed_paths: relevantFiles.map((file) => file.path),
         file_roles: uniqueFileRoles(relevantFiles),
         graph_node_ids: graphNodeIdsForPreflight(graphContext, relevantFiles)
+      });
+      const parserGaps = scanStatus.latest_scan
+        ? storage.listParserGaps(requestedRepoId, scanStatus.latest_scan.id)
+        : [];
+      const contextPolicy = createContextPolicyMatrix(contract, policy);
+      const taskPreflightPacket = AgentPreflightPacketV2Schema.parse({
+        schema_version: "drift.agent_preflight.v2",
+        repo_id: requestedRepoId,
+        scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
+        task_model: taskModel,
+        repo_map_summary: {
+          relevant_file_count: relevantFiles.length,
+          route_flow_count: graphContext.route_flows.length,
+          parser_gap_count: parserGaps.length
+        },
+        accepted_conventions: activeConventions.map(preflightConvention),
+        relevant_files: relevantFiles,
+        role_layer_proof: [],
+        change_impact: changeImpact,
+        test_intelligence: testSelection.test_intelligence,
+        parser_gaps: parserGaps,
+        required_checks: requiredChecks,
+        forbidden_actions: taskModel.forbidden_actions,
+        context_policy: contextPolicy,
+        confidence: {
+          graph_confidence: graphConfidence(graphContext.available, parserGaps.length),
+          reasons: graphConfidenceReasons(graphContext.available, parserGaps.length)
+        },
+        legacy_packet: agentContractPacket
       });
       return {
         response_schema: "drift.task.preflight.v1",
@@ -255,6 +288,8 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         scan_status: scanStatus,
         freshness_requirement: freshnessRequirement(Boolean(require_fresh), scanStatus),
         graph_context: graphContext,
+        task_model: taskModel,
+        task_preflight_packet: taskPreflightPacket,
         change_impact: changeImpact,
         test_intelligence: testSelection.test_intelligence,
         agent_contract_packet: agentContractPacket,
@@ -266,6 +301,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         required_checks: requiredChecks,
         safe_commands: contract.safe_commands,
         governance: preflightGovernance(),
+        context_policy: contextPolicy,
         redactions: {
           denied_globs: contract.context_egress.denied_globs,
           excluded_file_count: countDeniedFiles(
@@ -442,6 +478,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
           requested_snippet_chars,
           request_full_file_content
         });
+        const contextPolicy = createContextPolicyMatrix(contract, decision);
         return {
           response_schema: "drift.allowed-context.v1",
           repo_id: requestedRepoId,
@@ -463,6 +500,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
             deniedGlobCount: contract.context_egress.denied_globs.length
           }),
           decision,
+          context_policy: contextPolicy,
           next_commands: policyContextNextCommands(requestedRepoId, requestedPath, decision)
         };
       })
@@ -1438,6 +1476,24 @@ function graphNodeIdsForPreflight(
       ])
     ])
   ].filter((id): id is string => Boolean(id)));
+}
+
+function graphConfidence(graphAvailable: boolean, parserGapCount: number): number {
+  if (!graphAvailable) {
+    return 0;
+  }
+  return parserGapCount > 0 ? 0.82 : 1;
+}
+
+function graphConfidenceReasons(graphAvailable: boolean, parserGapCount: number): string[] {
+  const reasons = [];
+  if (!graphAvailable) {
+    reasons.push("graph_unavailable");
+  }
+  if (parserGapCount > 0) {
+    reasons.push("parser_gaps_present");
+  }
+  return reasons;
 }
 
 function routeFlowsForChangeImpact(

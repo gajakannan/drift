@@ -3,8 +3,11 @@ import {
   AcceptedConventionSchema,
   AgentContractSchema,
   AgentContractSelectionSchema,
+  AgentPreflightPacketV2Schema,
   AgentPreflightPacketSchema,
+  AgentTaskSchema,
   ContractFindingV2Schema,
+  ContextPolicyMatrixSchema,
   DRIFT_CONTRACT_SCHEMA_VERSION,
   DRIFT_RESOLVER_VERSION,
   DRIFT_RULE_ENGINE_VERSION,
@@ -26,6 +29,7 @@ import {
   authorizeContextExport,
   canonicalRepoContractJson,
   canonicalScanStateJson,
+  createContextPolicyMatrix,
   createAgentPreflightPacket,
   createAgentEnvelopeV2,
   createPolicyProof,
@@ -435,6 +439,139 @@ describe("core domain", () => {
       diagnostics: []
     });
     expect(packet.selected_helpers[0]?.symbol).toBe("requireUser");
+  });
+
+  it("validates task-aware preflight packets", () => {
+    const taskModel = AgentTaskSchema.parse({
+      schema_version: "drift.agent_task.v1",
+      task_id: "agent_task_users_filter",
+      task_text: "add filtering to users endpoint",
+      task_intent: "feature",
+      target_area: "user_management",
+      likely_files: ["**/app/api/**/route.ts"],
+      likely_entrypoint_kinds: ["api_route"],
+      required_context: ["accepted_conventions", "change_impact", "repo_map"],
+      risky_contracts: ["api_route_no_direct_data_access"],
+      required_checks: ["drift check --scope changed-hunks"],
+      forbidden_actions: ["create_waiver", "modify_repo_contract"],
+      human_approval_needed: false
+    });
+    const contextPolicy = ContextPolicyMatrixSchema.parse({
+      schema_version: "drift.context_policy.v1",
+      can_read_repo_map: true,
+      can_read_source_snippets: false,
+      can_read_contract: true,
+      can_read_findings: true,
+      can_execute_commands: false,
+      can_modify_contract: false,
+      can_create_waiver: false,
+      can_request_human_approval: true,
+      can_access_secret_like_files: false,
+      can_emit_patch: false,
+      egress_level: "symbol_only"
+    });
+    const changeImpact = ChangeImpactSchema.parse({
+      schema_version: "drift.change_impact.v1",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      changed_files: ["app/api/users/route.ts"],
+      changed_symbols: [],
+      changed_routes: ["app/api/users/route.ts"],
+      changed_tests: [],
+      changed_contract_surfaces: ["entrypoint"],
+      affected_routes: ["GET /api/users"],
+      affected_services: [],
+      affected_data_ops: [],
+      affected_tests: [],
+      affected_callers: [],
+      affected_importers: [],
+      missing_test_candidates: ["GET /api/users"]
+    });
+    const legacyPacket = AgentPreflightPacketSchema.parse({
+      schema_version: "drift.agent.preflight.v3",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      stale: false,
+      task: "add filtering to users endpoint",
+      selected_contracts: [],
+      selected_conventions: [],
+      selected_helpers: [],
+      placement_guidance: [],
+      import_boundaries: [],
+      required_flows: [],
+      required_checks: [],
+      active_exceptions: [],
+      active_waivers: [],
+      agent_instructions: [],
+      diagnostics: []
+    });
+
+    expect(AgentPreflightPacketV2Schema.parse({
+      schema_version: "drift.agent_preflight.v2",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      task_model: taskModel,
+      repo_map_summary: {
+        relevant_file_count: 1,
+        route_flow_count: 1,
+        parser_gap_count: 0
+      },
+      accepted_conventions: [],
+      relevant_files: [],
+      role_layer_proof: [],
+      change_impact: changeImpact,
+      test_intelligence: [],
+      parser_gaps: [],
+      required_checks: [],
+      forbidden_actions: ["create_waiver", "modify_repo_contract"],
+      context_policy: contextPolicy,
+      confidence: {
+        graph_confidence: 0.92,
+        reasons: []
+      },
+      legacy_packet: legacyPacket
+    })).toMatchObject({ schema_version: "drift.agent_preflight.v2" });
+  });
+
+  it("derives an agent-safe context policy matrix", () => {
+    const contract = RepoContractSchema.parse({
+      id: "contract_abc",
+      repo_id: "repo_abc",
+      contract_schema_version: 1,
+      repo_fingerprint: "repo-fingerprint",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z",
+      conventions: [],
+      rejected_inferences: [],
+      waivers: [],
+      risky_areas: [],
+      safe_commands: [],
+      required_checks: [],
+      context_egress: {
+        default_mode: "local_only",
+        denied_globs: [".env*", "**/*.pem"],
+        max_snippet_chars: 1200,
+        allow_full_file_content: false
+      },
+      agent_permissions: []
+    });
+    const decision = authorizeContextExport(contract, "cli-preflight", {
+      path: "apps/web/app/api/users/route.ts"
+    });
+
+    expect(createContextPolicyMatrix(contract, decision)).toMatchObject({
+      can_read_repo_map: true,
+      can_read_source_snippets: false,
+      can_read_contract: true,
+      can_read_findings: true,
+      can_execute_commands: false,
+      can_modify_contract: false,
+      can_create_waiver: false,
+      can_request_human_approval: true,
+      can_access_secret_like_files: false,
+      can_emit_patch: false,
+      egress_level: "symbol_only"
+    });
   });
 
   it("validates evidence-complete contract findings", () => {

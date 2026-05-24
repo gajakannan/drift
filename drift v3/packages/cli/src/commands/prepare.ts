@@ -1,5 +1,12 @@
-import { FileRoleSchema,authorizeContextExport,createAgentPreflightPacket,type FileRole } from "@drift/core";
-import { buildChangeImpact,selectRelevantTests,type ChangeImpactRouteFlow } from "@drift/query";
+import {
+  AgentPreflightPacketV2Schema,
+  FileRoleSchema,
+  authorizeContextExport,
+  createAgentPreflightPacket,
+  createContextPolicyMatrix,
+  type FileRole
+} from "@drift/core";
+import { buildChangeImpact,classifyAgentTask,selectRelevantTests,type ChangeImpactRouteFlow } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { optionalRepoRelativeFlag,requiredValue,stringFlag } from "../args/flag-readers.js";
@@ -80,6 +87,7 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     })
   ];
   const changeImpactRouteFlows = routeFlowsForChangeImpact(graphContext);
+  const taskModel = classifyAgentTask(task);
   const testFiles = scanStatus.latest_scan
     ? storage.listFileSnapshots(repoId, scanStatus.latest_scan.id)
         .filter((snapshot) => /(\.test|\.spec)\.[tj]sx?$/.test(snapshot.file_path))
@@ -106,6 +114,35 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     changed_paths: relevantFiles.map((file) => file.path),
     file_roles: uniqueFileRoles(relevantFiles),
     graph_node_ids: graphNodeIdsForPreflight(graphContext, relevantFiles)
+  });
+  const parserGaps = scanStatus.latest_scan
+    ? storage.listParserGaps(repoId, scanStatus.latest_scan.id)
+    : [];
+  const contextPolicy = createContextPolicyMatrix(contract, policy);
+  const taskPreflightPacket = AgentPreflightPacketV2Schema.parse({
+    schema_version: "drift.agent_preflight.v2",
+    repo_id: repoId,
+    scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
+    task_model: taskModel,
+    repo_map_summary: {
+      relevant_file_count: relevantFiles.length,
+      route_flow_count: graphContext.route_flows.length,
+      parser_gap_count: parserGaps.length
+    },
+    accepted_conventions: conventions,
+    relevant_files: relevantFiles,
+    role_layer_proof: [],
+    change_impact: changeImpact,
+    test_intelligence: testSelection.test_intelligence,
+    parser_gaps: parserGaps,
+    required_checks: requiredChecks,
+    forbidden_actions: taskModel.forbidden_actions,
+    context_policy: contextPolicy,
+    confidence: {
+      graph_confidence: graphConfidence(graphContext.available, parserGaps.length),
+      reasons: graphConfidenceReasons(graphContext.available, parserGaps.length)
+    },
+    legacy_packet: agentContractPacket
   });
   const auditIntegrity = scanStatus.audit_integrity;
   const redactions = {
@@ -157,6 +194,8 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     scan_status: scanStatus,
     freshness_requirement: freshnessRequirement(requireFresh, scanStatus),
     graph_context: graphContext,
+    task_model: taskModel,
+    task_preflight_packet: taskPreflightPacket,
     change_impact: changeImpact,
     test_intelligence: testSelection.test_intelligence,
     agent_contract_packet: agentContractPacket,
@@ -168,6 +207,7 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     required_checks: requiredChecks,
     safe_commands: contract.safe_commands,
     governance: preflightGovernance(),
+    context_policy: contextPolicy,
     redactions,
     next_commands: contractReady
       ? [
@@ -211,6 +251,24 @@ function uniqueFileRoles(relevantFiles: Array<{ roles: string[] }>): FileRole[] 
 
 function isFileRole(value: string): value is FileRole {
   return FileRoleSchema.safeParse(value).success;
+}
+
+function graphConfidence(graphAvailable: boolean, parserGapCount: number): number {
+  if (!graphAvailable) {
+    return 0;
+  }
+  return parserGapCount > 0 ? 0.82 : 1;
+}
+
+function graphConfidenceReasons(graphAvailable: boolean, parserGapCount: number): string[] {
+  const reasons = [];
+  if (!graphAvailable) {
+    reasons.push("graph_unavailable");
+  }
+  if (parserGapCount > 0) {
+    reasons.push("parser_gaps_present");
+  }
+  return reasons;
 }
 
 function graphNodeIdsForPreflight(

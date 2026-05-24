@@ -415,6 +415,33 @@ export interface TestIntelligence {
   stale_test_candidate: boolean;
 }
 
+export type AgentTaskIntent =
+  | "bugfix"
+  | "feature"
+  | "refactor"
+  | "test_addition"
+  | "migration"
+  | "dependency_update"
+  | "config_change"
+  | "security_change"
+  | "performance_change"
+  | "unknown";
+
+export interface AgentTask {
+  schema_version: "drift.agent_task.v1";
+  task_id: string;
+  task_text: string;
+  task_intent: AgentTaskIntent;
+  target_area: string | null;
+  likely_files: string[];
+  likely_entrypoint_kinds: EntrypointKind[];
+  required_context: string[];
+  risky_contracts: string[];
+  required_checks: string[];
+  forbidden_actions: string[];
+  human_approval_needed: boolean;
+}
+
 export interface GraphNodeRecord {
   id: string;
   kind: "file" | "module" | "symbol" | "import" | "route" | "role" | "data_store" | "data_operation" | "endpoint" | "re_export";
@@ -879,6 +906,32 @@ export interface AgentPreflightPacket {
   diagnostics: string[];
 }
 
+export interface AgentPreflightPacketV2 {
+  schema_version: "drift.agent_preflight.v2";
+  repo_id: string;
+  scan_id: string;
+  task_model: AgentTask;
+  repo_map_summary: {
+    relevant_file_count: number;
+    route_flow_count: number;
+    parser_gap_count: number;
+  };
+  accepted_conventions: unknown[];
+  relevant_files: unknown[];
+  role_layer_proof: unknown[];
+  change_impact: ChangeImpact;
+  test_intelligence: TestIntelligence[];
+  parser_gaps: ParserGap[];
+  required_checks: unknown[];
+  forbidden_actions: string[];
+  context_policy: ContextPolicyMatrix;
+  confidence: {
+    graph_confidence: number;
+    reasons: string[];
+  };
+  legacy_packet: AgentPreflightPacket;
+}
+
 export interface ContractFindingV2 {
   schema_version: "drift.finding.v2";
   finding_id: string;
@@ -910,6 +963,21 @@ export interface ContextEgressPolicy {
 export interface AgentPermission {
   agent: string;
   permissions: Array<"read_context" | "request_preflight" | "propose_resolution">;
+}
+
+export interface ContextPolicyMatrix {
+  schema_version: "drift.context_policy.v1";
+  can_read_repo_map: boolean;
+  can_read_source_snippets: boolean;
+  can_read_contract: boolean;
+  can_read_findings: boolean;
+  can_execute_commands: boolean;
+  can_modify_contract: boolean;
+  can_create_waiver: boolean;
+  can_request_human_approval: boolean;
+  can_access_secret_like_files: boolean;
+  can_emit_patch: boolean;
+  egress_level: "no_source" | "symbol_only" | "snippet_allowed" | "full_file_allowed";
 }
 
 export interface LayerArchitectureContract {

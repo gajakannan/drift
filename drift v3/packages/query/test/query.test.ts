@@ -11,6 +11,7 @@ import {
   buildChangeImpact,
   buildRepoMapReadModel,
   buildSymbolIdentity,
+  classifyAgentTask,
   classifyDataOperationRisk,
   createGraphQueryService,
   evaluateRoleEdge,
@@ -154,6 +155,15 @@ describe("GraphQueryService", () => {
       closest_tests: ["app/api/users/route.test.ts", "server/services/users.test.ts"],
       missing_test_candidate: false,
       required_check_hint: "npm test -- users"
+    });
+  });
+
+  it("classifies a user endpoint filtering task", () => {
+    expect(classifyAgentTask("add filtering to users endpoint")).toMatchObject({
+      task_intent: "feature",
+      target_area: "user_management",
+      likely_entrypoint_kinds: ["api_route"],
+      human_approval_needed: false
     });
   });
 

@@ -453,6 +453,34 @@ export const TestIntelligenceSchema = z.object({
   stale_test_candidate: z.boolean()
 });
 
+export const AgentTaskIntentSchema = z.enum([
+  "bugfix",
+  "feature",
+  "refactor",
+  "test_addition",
+  "migration",
+  "dependency_update",
+  "config_change",
+  "security_change",
+  "performance_change",
+  "unknown"
+]);
+
+export const AgentTaskSchema = z.object({
+  schema_version: z.literal("drift.agent_task.v1"),
+  task_id: z.string().min(1),
+  task_text: z.string().min(1),
+  task_intent: AgentTaskIntentSchema,
+  target_area: z.string().min(1).nullable(),
+  likely_files: z.array(z.string().min(1)),
+  likely_entrypoint_kinds: z.array(EntrypointKindSchema),
+  required_context: z.array(z.string().min(1)),
+  risky_contracts: z.array(z.string().min(1)),
+  required_checks: z.array(z.string().min(1)),
+  forbidden_actions: z.array(z.string().min(1)),
+  human_approval_needed: z.boolean()
+});
+
 export const GraphNodeRecordSchema = z.object({
   id: z.string().min(1),
   kind: z.enum(["file", "module", "symbol", "import", "route", "role", "data_store", "data_operation", "endpoint", "re_export"]),
@@ -858,6 +886,47 @@ export const AgentPreflightPacketSchema = z.object({
   active_waivers: z.array(z.unknown()),
   agent_instructions: z.array(z.string().min(1)),
   diagnostics: z.array(z.string().min(1))
+});
+
+export const ContextPolicyMatrixSchema = z.object({
+  schema_version: z.literal("drift.context_policy.v1"),
+  can_read_repo_map: z.boolean(),
+  can_read_source_snippets: z.boolean(),
+  can_read_contract: z.boolean(),
+  can_read_findings: z.boolean(),
+  can_execute_commands: z.boolean(),
+  can_modify_contract: z.boolean(),
+  can_create_waiver: z.boolean(),
+  can_request_human_approval: z.boolean(),
+  can_access_secret_like_files: z.boolean(),
+  can_emit_patch: z.boolean(),
+  egress_level: z.enum(["no_source", "symbol_only", "snippet_allowed", "full_file_allowed"])
+});
+
+export const AgentPreflightPacketV2Schema = z.object({
+  schema_version: z.literal("drift.agent_preflight.v2"),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  task_model: AgentTaskSchema,
+  repo_map_summary: z.object({
+    relevant_file_count: z.number().int().nonnegative(),
+    route_flow_count: z.number().int().nonnegative(),
+    parser_gap_count: z.number().int().nonnegative()
+  }),
+  accepted_conventions: z.array(z.unknown()),
+  relevant_files: z.array(z.unknown()),
+  role_layer_proof: z.array(z.unknown()),
+  change_impact: ChangeImpactSchema,
+  test_intelligence: z.array(TestIntelligenceSchema),
+  parser_gaps: z.array(ParserGapSchema),
+  required_checks: z.array(z.unknown()),
+  forbidden_actions: z.array(z.string().min(1)),
+  context_policy: ContextPolicyMatrixSchema,
+  confidence: z.object({
+    graph_confidence: z.number().min(0).max(1),
+    reasons: z.array(z.string().min(1))
+  }),
+  legacy_packet: AgentPreflightPacketSchema
 });
 
 export const ContractFindingV2Schema = z.object({

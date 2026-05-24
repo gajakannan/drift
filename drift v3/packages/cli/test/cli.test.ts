@@ -8763,6 +8763,28 @@ describe("drift CLI convention review", () => {
     expect(payload.scan_status.indexed_file_count).toBeGreaterThan(0);
     expect(payload.scan_status.source_change_count).toBeGreaterThan(0);
     expect(payload.scan_status.changes.added).toContain("apps/web/app/api/search/route.ts");
+    expect(payload.task_model).toMatchObject({
+      schema_version: "drift.agent_task.v1",
+      task_intent: "feature",
+      target_area: "user_management",
+      likely_entrypoint_kinds: ["api_route"],
+      human_approval_needed: false
+    });
+    expect(payload.task_preflight_packet).toMatchObject({
+      schema_version: "drift.agent_preflight.v2",
+      repo_id: repoId,
+      task_model: {
+        task_intent: "feature",
+        target_area: "user_management"
+      },
+      context_policy: {
+        egress_level: "symbol_only",
+        can_modify_contract: false
+      },
+      legacy_packet: {
+        schema_version: "drift.agent.preflight.v3"
+      }
+    });
     expect(payload.change_impact).toMatchObject({
       schema_version: "drift.change_impact.v1",
       repo_id: repoId
@@ -9868,6 +9890,14 @@ describe("drift CLI convention review", () => {
       "--snippet-chars", "5000",
       "--json"
     ]);
+    const permissionMatrix = await runCli([
+      "--db", databasePath,
+      "policy", "check-context",
+      "--repo", "repo_abc",
+      "--path", "apps/web/app/api/users/route.ts",
+      "--surface", "cli-preflight",
+      "--json"
+    ]);
     const denied = await runCli([
       "--db", databasePath,
       "policy", "check-context",
@@ -9948,6 +9978,19 @@ describe("drift CLI convention review", () => {
       mode: "redacted",
       max_snippet_chars: 1200,
       approved_snippet_chars: 1200
+    });
+    expect(JSON.parse(permissionMatrix.stdout).context_policy).toMatchObject({
+      can_read_repo_map: true,
+      can_read_source_snippets: false,
+      can_read_contract: true,
+      can_read_findings: true,
+      can_execute_commands: false,
+      can_modify_contract: false,
+      can_create_waiver: false,
+      can_request_human_approval: true,
+      can_access_secret_like_files: false,
+      can_emit_patch: false,
+      egress_level: "symbol_only"
     });
     expect(JSON.parse(allowed.stdout).next_commands).toEqual([
       "drift prepare \"task\" --repo repo_abc --path apps/web/app/api/users/route.ts --json",

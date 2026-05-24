@@ -1,4 +1,4 @@
-import { authorizeContextExport,type RepoContract } from "@drift/core";
+import { authorizeContextExport,createContextPolicyMatrix,type RepoContract } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { actorFlag,agentPermissionFlag,hasAnyFlag,optionalContextDefaultModeFlag,optionalPositiveIntegerFlag,optionalRepoRelativeFlag,requiredFlag,requiredNonEmptyFlag,requiredRepoRelativeFlag,stringFlag } from "../args/flag-readers.js";
@@ -51,6 +51,7 @@ export function checkPolicyContext(storage: SqliteDriftStorage, parsed: ParsedAr
     requested_snippet_chars: requestedSnippetChars,
     request_full_file_content: requestFullFileContent
   });
+  const contextPolicy = createContextPolicyMatrix(contract, decision);
   const payload = {
     response_schema: "drift.allowed-context.v1",
     repo_id: repoId,
@@ -78,6 +79,7 @@ export function checkPolicyContext(storage: SqliteDriftStorage, parsed: ParsedAr
       deniedGlobCount: contract.context_egress.denied_globs.length
     }),
     decision,
+    context_policy: contextPolicy,
     next_commands: policyContextNextCommands(repoId, contextPath, decision)
   };
 

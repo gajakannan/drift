@@ -21,6 +21,7 @@ export { classifyDataOperationRisk } from "./data-operation-risk.js";
 export { buildLayerArchitectureProof } from "./layer-architecture.js";
 export { buildSymbolIdentity } from "./symbol-identity.js";
 export { selectRelevantTests } from "./test-intelligence.js";
+export { classifyAgentTask } from "./task-intent.js";
 export { evaluateRoleEdge } from "./role-ontology.js";
 export { scoreHelperSimilarity } from "./helper-similarity.js";
 export type { BuildEntrypointFlowProofInput } from "./flow-proof.js";

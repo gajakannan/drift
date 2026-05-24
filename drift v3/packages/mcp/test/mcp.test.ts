@@ -889,6 +889,24 @@ describe("read-only MCP handlers", () => {
         schema_version: "drift.change_impact.v1",
         repo_id: "repo_abc"
       },
+      task_model: {
+        schema_version: "drift.agent_task.v1",
+        task_intent: "feature",
+        target_area: "user_management",
+        likely_entrypoint_kinds: ["api_route"],
+        human_approval_needed: false
+      },
+      task_preflight_packet: {
+        schema_version: "drift.agent_preflight.v2",
+        repo_id: "repo_abc",
+        context_policy: {
+          egress_level: "symbol_only",
+          can_modify_contract: false
+        },
+        legacy_packet: {
+          schema_version: "drift.agent.preflight.v3"
+        }
+      },
       test_intelligence: [],
       baseline: { active_count: 1 },
       findings: [{ id: "finding_abc" }],
@@ -1167,6 +1185,24 @@ describe("read-only MCP handlers", () => {
         "drift repo map --repo repo_abc --path apps/web/app/api/users/route.ts --json",
         "drift policy show --repo repo_abc --json"
       ]
+    });
+    expect(handlers.get_allowed_context({
+      repo_id: "repo_abc",
+      path: "apps/web/app/api/users/route.ts"
+    })).toMatchObject({
+      context_policy: {
+        can_read_repo_map: true,
+        can_read_source_snippets: false,
+        can_read_contract: true,
+        can_read_findings: true,
+        can_execute_commands: false,
+        can_modify_contract: false,
+        can_create_waiver: false,
+        can_request_human_approval: true,
+        can_access_secret_like_files: false,
+        can_emit_patch: false,
+        egress_level: "symbol_only"
+      }
     });
     expect(handlers.get_allowed_context({
       repo_id: "repo_abc",
