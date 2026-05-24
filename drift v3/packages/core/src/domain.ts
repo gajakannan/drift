@@ -89,7 +89,20 @@ export type EnforcementCapability =
   | "heuristic_check"
   | "deterministic_check";
 
-export type Severity = "info" | "warning" | "error";
+export type Severity = "info" | "warning" | "error" | "blocking" | "release_blocking";
+
+export type FindingDriftCategory =
+  | "new_violation"
+  | "existing_violation"
+  | "worsened_violation"
+  | "improved_violation"
+  | "new_convention_candidate"
+  | "convention_conflict"
+  | "architecture_regression"
+  | "test_coverage_regression"
+  | "unresolved_graph_regression"
+  | "missing_proof"
+  | "parser_gap";
 
 export type EnforcementMode = "off" | "brief" | "warn" | "block";
 
@@ -116,6 +129,8 @@ export interface ConventionException {
   file_roles?: FileRole[];
   contract_kinds?: AgentContractKind[];
   expires_at?: string;
+  requires_reapproval_on_change?: boolean;
+  approved_file_hashes?: Array<{ file_path: string; content_hash: string }>;
   created_by: string;
   created_at: string;
 }
@@ -509,6 +524,9 @@ export interface AuditEvent {
   target_type: string;
   target_id: string;
   metadata: Record<string, unknown>;
+  before_hash?: string | null;
+  after_hash?: string | null;
+  object_schema_version?: string | null;
   created_at: string;
   sequence?: number;
   previous_event_hash?: string | null;
@@ -635,6 +653,10 @@ export interface Finding {
   graph_path?: string[];
   suggested_fix?: string;
   related_node_ids?: string[];
+  confidence_label?: ConfidenceLabel | "heuristic";
+  drift_category?: FindingDriftCategory;
+  introduced_by_diff?: boolean;
+  affected_contract?: string;
   created_at: string;
 }
 
@@ -690,13 +712,21 @@ export interface RequiredCheckExecution {
   repo_id: string;
   repo_root: string;
   repo_commit: string;
+  git_branch: string;
+  git_commit_sha: string;
   worktree_dirty: boolean;
+  untracked_files_present: boolean;
   scan_id: string | null;
   repo_contract_id: string;
   agent_contract_id: string;
+  contract_fingerprint: string;
+  repo_contract_version: number;
   command: string;
   argv: string[];
   command_hash: string;
+  diff_hash: string;
+  lockfile_hash: string | null;
+  package_manager: string | null;
   cwd: string;
   started_at: string;
   completed_at: string;

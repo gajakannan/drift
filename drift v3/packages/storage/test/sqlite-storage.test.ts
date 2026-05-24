@@ -56,7 +56,9 @@ describe("SQLite Drift storage", () => {
       "013_required_check_executions",
       "014_fact_quality",
       "015_parser_gaps",
-      "016_symbol_identities"
+      "016_symbol_identities",
+      "017_required_check_state_binding",
+      "018_audit_object_hashes"
     ]);
     storage.close();
   });
@@ -118,7 +120,9 @@ describe("SQLite Drift storage", () => {
       "013_required_check_executions",
       "014_fact_quality",
       "015_parser_gaps",
-      "016_symbol_identities"
+      "016_symbol_identities",
+      "017_required_check_state_binding",
+      "018_audit_object_hashes"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -429,13 +433,21 @@ describe("SQLite Drift storage", () => {
       repo_id: "repo_abc",
       repo_root: "/repo",
       repo_commit: "abc123",
+      git_branch: "main",
+      git_commit_sha: "abc123",
       worktree_dirty: false,
+      untracked_files_present: false,
       scan_id: "scan_abc",
       repo_contract_id: "contract_abc",
       agent_contract_id: "agent_contract_checks",
+      contract_fingerprint: "contract-fp",
+      repo_contract_version: 1,
       command: "node scripts/smoke-check.mjs",
       argv: ["node", "scripts/smoke-check.mjs"],
       command_hash: "hash_command",
+      diff_hash: "diff-fp",
+      lockfile_hash: null,
+      package_manager: null,
       cwd: "/repo",
       started_at: "2026-05-10T00:00:01.000Z",
       completed_at: "2026-05-10T00:00:02.000Z",
@@ -452,7 +464,9 @@ describe("SQLite Drift storage", () => {
     expect(storage.latestRequiredCheckExecution("repo_abc", "node scripts/smoke-check.mjs")).toMatchObject({
       execution_id: "required_check_exec_abc",
       argv: ["node", "scripts/smoke-check.mjs"],
-      status: "passed"
+      status: "passed",
+      diff_hash: "diff-fp",
+      contract_fingerprint: "contract-fp"
     });
     expect(storage.listRequiredCheckExecutions("repo_abc", {
       command: "node scripts/smoke-check.mjs",
@@ -1303,10 +1317,28 @@ describe("SQLite Drift storage", () => {
     const events = storage.listAuditEvents("repo_abc");
     expect(events[0]?.event_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(events[1]?.previous_event_hash).toBe(events[0]?.event_hash);
+    storage.appendAuditEvent({
+      id: "audit_event_c",
+      repo_id: "repo_abc",
+      actor: "local-user",
+      action: "policy_changed",
+      target_type: "repo_contract",
+      target_id: "contract_abc",
+      metadata: {},
+      before_hash: "0".repeat(64),
+      after_hash: "1".repeat(64),
+      object_schema_version: "drift.repo_contract.v1",
+      created_at: "2026-05-10T00:00:02.000Z"
+    });
+    expect(storage.listAuditEvents("repo_abc").at(-1)).toMatchObject({
+      before_hash: "0".repeat(64),
+      after_hash: "1".repeat(64),
+      object_schema_version: "drift.repo_contract.v1"
+    });
     expect(storage.verifyAuditChain("repo_abc")).toMatchObject({
       valid: true,
-      event_count: 2,
-      verified_count: 2,
+      event_count: 3,
+      verified_count: 3,
       broken_at_event_id: null,
       reasons: []
     });
@@ -1320,7 +1352,7 @@ describe("SQLite Drift storage", () => {
     const tampered = openDriftStorage({ databasePath });
     expect(tampered.verifyAuditChain("repo_abc")).toMatchObject({
       valid: false,
-      event_count: 2,
+      event_count: 3,
       verified_count: 1,
       broken_at_event_id: "audit_event_b",
       reasons: ["event_hash_mismatch"]

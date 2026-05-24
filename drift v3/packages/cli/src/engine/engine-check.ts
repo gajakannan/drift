@@ -70,7 +70,7 @@ export function engineCheckRequest(input: EngineCheckInput): EngineCheckRequest 
         rule_id: convention.kind,
         kind: convention.kind,
         matcher: convention.matcher as unknown as Record<string, unknown>,
-        severity: convention.severity,
+        severity: engineConventionSeverity(convention.severity),
         enforcement_mode: convention.enforcement_mode,
         enforcement_capability: convention.enforcement_capability
       })),
@@ -101,4 +101,11 @@ export function engineCheckRequest(input: EngineCheckInput): EngineCheckRequest 
       follow_symlinks: false
     }
   };
+}
+
+function engineConventionSeverity(severity: AcceptedConvention["severity"]): "info" | "warning" | "error" {
+  if (severity === "blocking" || severity === "release_blocking") {
+    return "error";
+  }
+  return severity;
 }

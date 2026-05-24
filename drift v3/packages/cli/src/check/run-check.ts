@@ -5,6 +5,7 @@ import {
   type FactRecord,
   type FileRole,
   type Finding,
+  type RequiredCheckExecution,
   type RepoContract
 } from "@drift/core";
 import { buildEntrypointFlowProof, scoreHelperSimilarity } from "@drift/query";
@@ -32,7 +33,7 @@ import {
   findingFingerprint
 } from "./finding-fingerprint.js";
 import { enforcementResultFor,isActiveConvention,isForbiddenImport } from "./rule-evaluation.js";
-import { findContractWaiverForImport,isExceptedImport,isExceptedPath } from "./waivers.js";
+import { findContractWaiverForImport,isExceptedImport,isExceptedPath,waiverRequiresReapproval } from "./waivers.js";
 
 export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs): Promise<CommandPayload> {
   const repoId = resolveRepoId(parsed);
@@ -58,9 +59,11 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
   const checkId = `check_${hashStable(`${repoId}:${scope}:${now}`).slice(0, 16)}`;
   const checkScanId = `scan_check_${hashStable(`${repoId}:${now}`).slice(0, 16)}`;
   const contractFingerprintValue = contractFingerprint(contract);
+  const rawDiff = scope === "full" ? null : loadDiff(repo.root_path, parsed);
   const parsedDiff = scope === "full"
     ? fullRepoDiff(repo.root_path)
-    : parseUnifiedDiff(loadDiff(repo.root_path, parsed));
+    : parseUnifiedDiff(rawDiff ?? "");
+  const diffHash = rawDiff ? hashStable(rawDiff) : "full_scope";
   const baseline = storage.listBaselineViolations(repoId);
   const existingFindings = new Map(
     storage.listFindings(repoId).map((finding) => [finding.fingerprint, finding])
@@ -156,7 +159,9 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     checkData,
     snapshotsByPath,
     checkId,
-    checkScanId
+    checkScanId,
+    contractFingerprintValue,
+    diffHash
   });
 
   if (engineOwned) {
@@ -199,6 +204,27 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
         }
         const waiver = findContractWaiverForImport(filePath, importUsed.name, importUsed.value, contract, now);
         if (waiver) {
+          const staleWaiver = waiverRequiresReapproval(
+            waiver,
+            filePath,
+            snapshotsByPath.get(filePath)?.content_hash
+          );
+          if (staleWaiver) {
+            findings.push(waiverReapprovalFinding({
+              repoId,
+              repoContractId: contract.id,
+              conventionId: convention.id,
+              checkId,
+              scanId: checkData.snapshots[0]?.scan_id ?? checkScanId,
+              filePath,
+              line: importUsed.start_line,
+              symbol: importUsed.name,
+              importSource: importUsed.value,
+              fileHash: snapshotsByPath.get(filePath)?.content_hash ?? "",
+              waiverId: waiver.id,
+              now
+            }));
+          } else {
           waivedFindingsCount += 1;
           waivedFindings.push({
             waiver_id: waiver.id,
@@ -210,6 +236,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
             reason: waiver.reason
           });
           continue;
+          }
         }
 
         const diffStatus = diffStatusFor(filePath, importUsed.start_line, parsedDiff, scope);
@@ -276,7 +303,9 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     checkData,
     snapshotsByPath,
     checkId,
-    checkScanId
+    checkScanId,
+    contractFingerprintValue,
+    diffHash
   });
   findings.push(...helperReuseFindings);
   for (const finding of helperReuseFindings) {
@@ -362,7 +391,9 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     checkData,
     snapshotsByPath,
     checkId,
-    checkScanId
+    checkScanId,
+    contractFingerprintValue,
+    diffHash
   });
   findings.push(...requiredCheckProofFindings);
   for (const finding of requiredCheckProofFindings) {
@@ -511,6 +542,65 @@ function directDataAccessSuggestedFix(): string {
   return "Move data access behind a service layer before returning from the route.";
 }
 
+function waiverReapprovalFinding(input: {
+  repoId: string;
+  repoContractId: string;
+  conventionId: string;
+  checkId: string;
+  scanId: string;
+  filePath: string;
+  line: number;
+  symbol: string;
+  importSource: string;
+  fileHash: string;
+  waiverId: string;
+  now: string;
+}): Finding {
+  const fingerprint = hashStable([
+    "waiver-reapproval-required",
+    input.waiverId,
+    input.conventionId,
+    input.filePath
+  ].join(":"));
+  return {
+    id: `finding_${fingerprint.slice(0, 16)}`,
+    repo_id: input.repoId,
+    convention_id: input.conventionId,
+    check_id: input.checkId,
+    repo_contract_id: input.repoContractId,
+    fingerprint,
+    title: "Waiver requires reapproval after file change",
+    message: `${input.filePath} matches waiver ${input.waiverId}, but the file hash no longer matches the approved waiver state.`,
+    severity: "warning",
+    confidence_label: "certain",
+    drift_category: "worsened_violation",
+    introduced_by_diff: true,
+    affected_contract: input.repoContractId,
+    enforcement_result: "warn",
+    status: "new",
+    diff_status: "touched_existing",
+    evidence_refs: [{
+      id: `evidence_${fingerprint.slice(0, 16)}`,
+      kind: "violation",
+      file_path: input.filePath,
+      start_line: input.line,
+      end_line: input.line,
+      symbol: input.symbol,
+      import_source: input.importSource,
+      fact_ids: [],
+      scan_id: input.scanId,
+      file_hash: input.fileHash,
+      redaction_state: "none"
+    }],
+    expected_layer: "approved_waiver_state",
+    actual_layer: "waiver_stale_after_file_change",
+    graph_path: [input.filePath, input.waiverId],
+    suggested_fix: `Reapprove waiver ${input.waiverId} for the current file content or remove the waiver and fix the violation.`,
+    related_node_ids: [],
+    created_at: input.now
+  };
+}
+
 function runCanonicalHelperReuseCheck(input: {
   repoId: string;
   contract: RepoContract;
@@ -523,6 +613,8 @@ function runCanonicalHelperReuseCheck(input: {
   snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
   checkId: string;
   checkScanId: string;
+  contractFingerprintValue: string;
+  diffHash: string;
 }): Finding[] {
   const findings: Finding[] = [];
   const changedFiles = new Set(input.parsedDiff.files.map((file) => file.path));
@@ -1164,6 +1256,8 @@ function runRequiredCheckProofCheck(input: {
   snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
   checkId: string;
   checkScanId: string;
+  contractFingerprintValue: string;
+  diffHash: string;
 }): Finding[] {
   const findings: Finding[] = [];
   const changedFiles = new Set(input.parsedDiff.files.map((file) => file.path));
@@ -1198,10 +1292,19 @@ function runRequiredCheckProofCheck(input: {
         if (
           latest?.status === "passed" &&
           latest.repo_contract_id === input.contract.id &&
-          latest.agent_contract_id === agentContract.id
+          latest.agent_contract_id === agentContract.id &&
+          latest.contract_fingerprint === input.contractFingerprintValue &&
+          latest.diff_hash === input.diffHash
         ) {
           continue;
         }
+        const proofState = requiredCheckProofState(
+          latest,
+          input.contract.id,
+          agentContract.id,
+          input.contractFingerprintValue,
+          input.diffHash
+        );
         const firstFile = [...changedFiles].sort()[0] ?? input.checkData.snapshots[0]?.file_path ?? "required-checks";
         const firstChangedLine = [...(input.parsedDiff.files.find((file) => file.path === firstFile)
           ?.changedLines ?? [])].sort((left, right) => left - right)[0];
@@ -1221,8 +1324,8 @@ function runRequiredCheckProofCheck(input: {
           scope: input.scope,
           now: input.now,
           fingerprintKind: "required-check-not-run",
-          title: "Required check has not been proven",
-          message: `${requiredCheck.command} is required for this change, but Drift has no passing execution proof for the active contract.`,
+          title: proofState.title,
+          message: proofState.message(requiredCheck.command),
           severity: "error",
           enforcementResult: "block",
           filePath: firstFile,
@@ -1231,7 +1334,7 @@ function runRequiredCheckProofCheck(input: {
           symbol: requiredCheck.command,
           factIds: fileFact ? [fileFact.id] : [],
           expectedLayer: "required_check_execution",
-          actualLayer: "required_check_not_run",
+          actualLayer: proofState.actualLayer,
           graphPath: [firstFile, requiredCheck.command],
           suggestedFix: `Run drift checks run --repo ${input.repoId} --command "${requiredCheck.command}" --json.`
         }));
@@ -1240,6 +1343,65 @@ function runRequiredCheckProofCheck(input: {
   }
 
   return findings;
+}
+
+function requiredCheckProofState(
+  latest: RequiredCheckExecution | null,
+  repoContractId: string,
+  agentContractId: string,
+  contractFingerprintValue: string,
+  diffHash: string
+): {
+  title: string;
+  actualLayer: string;
+  message: (command: string) => string;
+} {
+  if (!latest) {
+    return {
+      title: "Required check has not been proven",
+      actualLayer: "required_check_not_run",
+      message: (command) =>
+        `${command} is required for this change, but Drift has no passing execution proof for the active contract.`
+    };
+  }
+  if (latest.status !== "passed") {
+    return {
+      title: "Required check has not passed",
+      actualLayer: "required_check_failed",
+      message: (command) =>
+        `${command} is required for this change, but the latest execution proof did not pass.`
+    };
+  }
+  if (latest.repo_contract_id !== repoContractId || latest.agent_contract_id !== agentContractId) {
+    return {
+      title: "Required check proof belongs to another contract",
+      actualLayer: "required_check_wrong_contract",
+      message: (command) =>
+        `${command} has passing proof, but it was recorded for a different repo or agent contract.`
+    };
+  }
+  if (latest.contract_fingerprint !== contractFingerprintValue) {
+    return {
+      title: "Required check proof is stale for the active contract",
+      actualLayer: "required_check_stale_contract",
+      message: (command) =>
+        `${command} has passing proof, but the active contract fingerprint changed after it ran.`
+    };
+  }
+  if (latest.diff_hash !== diffHash) {
+    return {
+      title: "Required check proof is stale for this diff",
+      actualLayer: "required_check_stale_proof",
+      message: (command) =>
+        `${command} has passing proof, but it was recorded for a different diff.`
+    };
+  }
+  return {
+    title: "Required check has not been proven",
+    actualLayer: "required_check_not_run",
+    message: (command) =>
+      `${command} is required for this change, but Drift has no passing execution proof for the active contract.`
+  };
 }
 
 function modulePlacementAllowed(filePath: string, allowedPaths: string[], forbiddenPaths: string[]): boolean {
@@ -1482,6 +1644,8 @@ async function runEngineOwnedDirectDataAccessCheck(input: {
   snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
   checkId: string;
   checkScanId: string;
+  contractFingerprintValue: string;
+  diffHash: string;
 }): Promise<{ findings: Finding[]; waivedFindings: WaivedFinding[]; waivedFindingsCount: number }> {
   const findings: Finding[] = [];
   const waivedFindings: WaivedFinding[] = [];
@@ -1522,6 +1686,27 @@ async function runEngineOwnedDirectDataAccessCheck(input: {
         }
         const waiver = findContractWaiverForImport(filePath, importUsed.name, importUsed.value, input.contract, input.now);
         if (waiver) {
+          const staleWaiver = waiverRequiresReapproval(
+            waiver,
+            filePath,
+            input.snapshotsByPath.get(filePath)?.content_hash
+          );
+          if (staleWaiver) {
+            findings.push(waiverReapprovalFinding({
+              repoId: input.repoId,
+              repoContractId: input.contract.id,
+              conventionId: convention.id,
+              checkId: input.checkId,
+              scanId: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
+              filePath,
+              line: importUsed.start_line,
+              symbol: importUsed.name,
+              importSource: importUsed.value,
+              fileHash: input.snapshotsByPath.get(filePath)?.content_hash ?? "",
+              waiverId: waiver.id,
+              now: input.now
+            }));
+          } else {
           skippedImportFactIds.add(importUsed.fact_id);
           if (directlyForbidden || graphForbidden) {
             waivedFindingsCount += 1;
@@ -1536,6 +1721,7 @@ async function runEngineOwnedDirectDataAccessCheck(input: {
             });
           }
           continue;
+          }
         }
         allowedGraphImportFacts.set(importFactGraphKey(filePath, importUsed), importUsed);
         importFactsByEvidence.set(`${filePath}:${importUsed.start_line}`, importUsed);
@@ -1875,6 +2061,7 @@ export function runFullRepoCheck(
   if (!repo) {
     return [];
   }
+  const checkId = `check_full_${hashStable(`${repoId}:${now}`).slice(0, 16)}`;
 
   const files = walkIndexableFiles(repo.root_path).filter(isApiRoutePath);
   const diff = {
@@ -1910,12 +2097,35 @@ export function runFullRepoCheck(
         if (isExceptedImport(filePath, importUsed.name, importUsed.source, convention, now)) {
           continue;
         }
-        if (findContractWaiverForImport(filePath, importUsed.name, importUsed.source, contract, now)) {
-          continue;
+        const snapshot = snapshotsByPath.get(filePath);
+        const waiver = findContractWaiverForImport(filePath, importUsed.name, importUsed.source, contract, now);
+        if (waiver) {
+          const staleWaiver = waiverRequiresReapproval(
+            waiver,
+            filePath,
+            snapshot?.content_hash
+          );
+          if (staleWaiver) {
+            findings.push(waiverReapprovalFinding({
+              repoId,
+              repoContractId: contract.id,
+              conventionId: convention.id,
+              checkId,
+              scanId: snapshot?.scan_id ?? checkId,
+              filePath,
+              line: importUsed.line,
+              symbol: importUsed.name,
+              importSource: importUsed.source,
+              fileHash: snapshot?.content_hash ?? "",
+              waiverId: waiver.id,
+              now
+            }));
+          } else {
+            continue;
+          }
         }
 
         const fingerprint = findingFingerprint(convention.id, filePath, importUsed.name, importUsed.source);
-        const snapshot = snapshotsByPath.get(filePath);
         const finding: Finding = {
           id: `finding_${fingerprint.slice(0, 16)}`,
           repo_id: repoId,

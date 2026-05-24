@@ -6,6 +6,7 @@ import {
   AgentPreflightPacketV2Schema,
   AgentPreflightPacketSchema,
   AgentTaskSchema,
+  AuditEventSchema,
   ContractFindingV2Schema,
   ContextPolicyMatrixSchema,
   DRIFT_CONTRACT_SCHEMA_VERSION,
@@ -594,6 +595,49 @@ describe("core domain", () => {
     expect(finding.status).toBe("advisory");
   });
 
+  it("validates finding confidence and drift category", () => {
+    expect(FindingSchema.parse({
+      id: "finding_release_blocking",
+      repo_id: "repo_abc",
+      convention_id: "agent_contract_api_flow",
+      fingerprint: "finding-fp",
+      title: "API flow regressed",
+      message: "Route bypasses the accepted service layer.",
+      severity: "release_blocking",
+      enforcement_result: "block",
+      status: "new",
+      diff_status: "new_in_diff",
+      evidence_refs: [],
+      confidence_label: "certain",
+      drift_category: "new_violation",
+      introduced_by_diff: true,
+      affected_contract: "agent_contract_api_flow",
+      created_at: "2026-05-24T00:00:00.000Z"
+    })).toMatchObject({
+      severity: "release_blocking",
+      drift_category: "new_violation"
+    });
+  });
+
+  it("validates audit events with before and after object hashes", () => {
+    expect(AuditEventSchema.parse({
+      id: "audit_1",
+      repo_id: "repo_abc",
+      actor: "geoff",
+      action: "policy_changed",
+      target_type: "repo_contract",
+      target_id: "contract_abc",
+      metadata: {},
+      before_hash: "0".repeat(64),
+      after_hash: "1".repeat(64),
+      object_schema_version: "drift.repo_contract.v1",
+      created_at: "2026-05-24T00:00:00.000Z"
+    })).toMatchObject({
+      before_hash: "0".repeat(64),
+      after_hash: "1".repeat(64)
+    });
+  });
+
   it("builds deterministic agent preflight packets from repo contracts", () => {
     const contract = RepoContractSchema.parse({
       id: "contract_abc",
@@ -1116,12 +1160,20 @@ describe("core domain", () => {
       repo_id: "repo_1",
       repo_root: "/repo",
       repo_commit: "abc",
+      git_branch: "main",
+      git_commit_sha: "abc",
       worktree_dirty: false,
+      untracked_files_present: false,
       scan_id: "scan_1",
       repo_contract_id: "contract_1",
       agent_contract_id: "agent_contract_checks",
+      contract_fingerprint: "contract-fp",
+      repo_contract_version: 1,
       command: "pnpm test",
       command_hash: "hash",
+      diff_hash: "diff-fp",
+      lockfile_hash: null,
+      package_manager: null,
       cwd: "/repo",
       started_at: "2026-05-24T00:00:00.000Z",
       completed_at: "2026-05-24T00:00:01.000Z",
@@ -1143,13 +1195,21 @@ describe("core domain", () => {
       repo_id: "repo_1",
       repo_root: "/repo",
       repo_commit: "abc",
+      git_branch: "main",
+      git_commit_sha: "abc",
       worktree_dirty: false,
+      untracked_files_present: false,
       scan_id: "scan_1",
       repo_contract_id: "contract_1",
       agent_contract_id: "agent_contract_checks",
+      contract_fingerprint: "contract-fp",
+      repo_contract_version: 1,
       command: "pnpm test",
       argv: ["pnpm", "test"],
       command_hash: "hash",
+      diff_hash: "diff-fp",
+      lockfile_hash: null,
+      package_manager: null,
       cwd: "/repo",
       started_at: "2026-05-24T00:00:00.000Z",
       completed_at: "2026-05-24T00:00:01.000Z",

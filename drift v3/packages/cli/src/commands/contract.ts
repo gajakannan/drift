@@ -1,7 +1,7 @@
 import { authorizeContextExport,DRIFT_CONTRACT_SCHEMA_VERSION,type RepoContract,RepoContractSchema } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,mkdirSync,statSync,writeFileSync } from "node:fs";
-import { dirname,extname } from "node:path";
+import { dirname,extname,join } from "node:path";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { actorFlag,optionalChecksumFlag,optionalIsoTimestampFlag,optionalNonEmptyFlag,optionalRepoRelativeFlag,optionalWaiverStatusFlag,rejectAmbiguousDryRunConfirm,requiredNonEmptyFlag,stringFlag } from "../args/flag-readers.js";
 import { requiredDatabasePath,resolveRepoId } from "../args/repo-flags.js";
@@ -317,7 +317,7 @@ export function importContractDryRun(
 
 export function addContractWaiver(storage: SqliteDriftStorage, parsed: ParsedArgs): CommandPayload {
   const repoId = resolveRepoId(parsed);
-  requiredRepo(storage, repoId);
+  const repo = requiredRepo(storage, repoId);
   if (!parsed.flags.has("confirm")) {
     throw new Error("Contract waiver changes require --confirm.");
   }
@@ -334,6 +334,9 @@ export function addContractWaiver(storage: SqliteDriftStorage, parsed: ParsedArg
   const now = stringFlag(parsed, "now") ?? new Date().toISOString();
   const actor = actorFlag(parsed);
   const contract = requiredRepoContract(storage, repoId);
+  const approvedFileHashes = parsed.flags.has("reapprove-on-change") && path && !path.includes("*")
+    ? approvedFileHashForPath(repo.root_path, path)
+    : [];
   const waiver = {
     id: contractWaiverId(repoId, path, symbol, importSource),
     reason,
@@ -341,6 +344,8 @@ export function addContractWaiver(storage: SqliteDriftStorage, parsed: ParsedArg
     ...(symbol ? { symbols: [symbol] } : {}),
     ...(importSource ? { imports: [importSource] } : {}),
     ...(expiresAt ? { expires_at: expiresAt } : {}),
+    ...(parsed.flags.has("reapprove-on-change") ? { requires_reapproval_on_change: true } : {}),
+    ...(approvedFileHashes.length > 0 ? { approved_file_hashes: approvedFileHashes } : {}),
     created_by: actor,
     created_at: now
   };
@@ -376,6 +381,8 @@ export function addContractWaiver(storage: SqliteDriftStorage, parsed: ParsedArg
     waivers: [...contract.waivers, waiver],
     updated_at: now
   };
+  const beforeHash = contractFingerprint(contract);
+  const afterHash = contractFingerprint(updatedContract);
   storage.transaction(() => {
     storage.upsertRepoContract(updatedContract);
     storage.appendAuditEvent(auditEvent({
@@ -390,9 +397,13 @@ export function addContractWaiver(storage: SqliteDriftStorage, parsed: ParsedArg
         symbol: symbol ?? null,
         import_source: importSource ?? null,
         expires_at: expiresAt ?? null,
+        requires_reapproval_on_change: parsed.flags.has("reapprove-on-change"),
         reason
       },
-      createdAt: now
+      createdAt: now,
+      beforeHash,
+      afterHash,
+      objectSchemaVersion: "drift.repo_contract.v1"
     }));
   });
 
@@ -499,6 +510,8 @@ export function removeContractWaiver(
     waivers: contract.waivers.filter((waiver) => waiver.id !== waiverId),
     updated_at: now
   };
+  const beforeHash = contractFingerprint(contract);
+  const afterHash = contractFingerprint(updatedContract);
   storage.transaction(() => {
     storage.upsertRepoContract(updatedContract);
     storage.appendAuditEvent(auditEvent({
@@ -512,7 +525,10 @@ export function removeContractWaiver(
         removed: true,
         reason: existing.reason
       },
-      createdAt: now
+      createdAt: now,
+      beforeHash,
+      afterHash,
+      objectSchemaVersion: "drift.repo_contract.v1"
     }));
   });
 
@@ -529,4 +545,18 @@ export function removeContractWaiver(
   return {
     payload: parsed.flags.has("json") ? payload : formatContractWaiverRemoveText(payload)
   };
+}
+
+function approvedFileHashForPath(
+  repoRoot: string,
+  path: string
+): Array<{ file_path: string; content_hash: string }> {
+  const absolutePath = join(repoRoot, path);
+  if (!existsSync(absolutePath) || !statSync(absolutePath).isFile()) {
+    return [];
+  }
+  return [{
+    file_path: path,
+    content_hash: fileContentHash(absolutePath)
+  }];
 }

@@ -68,6 +68,7 @@ export const BOOLEAN_FLAGS = new Set([
   "json",
   "require-checksum",
   "require-fresh",
+  "reapprove-on-change",
   "strict",
   "version"
 ]);

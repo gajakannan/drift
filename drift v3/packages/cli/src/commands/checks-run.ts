@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { authorizeContextExport } from "@drift/core";
 import type { RequiredCheckExecution, RepoContract } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
@@ -7,10 +8,11 @@ import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { actorFlag,optionalPositiveIntegerFlag,requiredNonEmptyFlag,stringFlag } from "../args/flag-readers.js";
 import { resolveRepoId } from "../args/repo-flags.js";
 import { auditEvent,preflightGovernance } from "../domain/governance.js";
-import { hashStable } from "../domain/identifiers.js";
+import { contractFingerprint,hashStable } from "../domain/identifiers.js";
 import { allRequiredChecks } from "../domain/preflight.js";
 import { requiredRepoContract } from "../domain/repo-paths.js";
 import { gitOutput } from "../io/git.js";
+import { loadDiff } from "../check/diff.js";
 
 export async function runRequiredCheck(storage: SqliteDriftStorage, parsed: ParsedArgs): Promise<CommandPayload> {
   const repoId = resolveRepoId(parsed);
@@ -40,7 +42,13 @@ export async function runRequiredCheck(storage: SqliteDriftStorage, parsed: Pars
   const agentContractId = agentContractIdForRequiredCommand(contract, command);
   const executionId = `required_check_exec_${hashStable(`${repoId}:${command}:${startedAt}`).slice(0, 16)}`;
   const repoCommit = gitOutput(repo.root_path, ["rev-parse", "HEAD"]) || latestScan?.commit || "unknown";
-  const worktreeDirty = gitOutput(repo.root_path, ["status", "--porcelain"]).length > 0 || Boolean(latestScan?.dirty);
+  const gitBranch = gitOutput(repo.root_path, ["rev-parse", "--abbrev-ref", "HEAD"]) || latestScan?.branch || "unknown";
+  const gitStatus = gitOutput(repo.root_path, ["status", "--porcelain"]);
+  const worktreeDirty = gitStatus.length > 0 || Boolean(latestScan?.dirty);
+  const untrackedFilesPresent = gitStatus.split(/\r?\n/).some((line) => line.startsWith("??"));
+  const contractFingerprintValue = contractFingerprint(contract);
+  const diffHash = requiredCheckDiffHash(repo.root_path, parsed);
+  const lockfileHash = lockfileHashForRepo(repo.root_path);
   const executed = await executeCommand(argv, repo.root_path, timeoutMs);
   const completedAt = new Date().toISOString();
   const status: RequiredCheckExecution["status"] = executed.timedOut
@@ -56,13 +64,21 @@ export async function runRequiredCheck(storage: SqliteDriftStorage, parsed: Pars
     repo_id: repoId,
     repo_root: repo.root_path,
     repo_commit: repoCommit,
+    git_branch: gitBranch,
+    git_commit_sha: repoCommit,
     worktree_dirty: worktreeDirty,
+    untracked_files_present: untrackedFilesPresent,
     scan_id: latestScan?.id ?? null,
     repo_contract_id: contract.id,
     agent_contract_id: agentContractId,
+    contract_fingerprint: contractFingerprintValue,
+    repo_contract_version: contract.contract_schema_version,
     command,
     argv,
     command_hash: sha256(command),
+    diff_hash: diffHash,
+    lockfile_hash: lockfileHash,
+    package_manager: repo.package_manager ?? null,
     cwd: repo.root_path,
     started_at: startedAt,
     completed_at: completedAt,
@@ -89,7 +105,9 @@ export async function runRequiredCheck(storage: SqliteDriftStorage, parsed: Pars
       status,
       exit_code: executed.exitCode,
       scan_id: proof.scan_id,
-      repo_contract_id: contract.id
+      repo_contract_id: contract.id,
+      contract_fingerprint: contractFingerprintValue,
+      diff_hash: diffHash
     },
     createdAt: completedAt
   }));
@@ -107,7 +125,9 @@ export async function runRequiredCheck(storage: SqliteDriftStorage, parsed: Pars
       passed: status === "passed",
       exit_code: executed.exitCode,
       timed_out: executed.timedOut,
-      worktree_dirty: worktreeDirty
+      worktree_dirty: worktreeDirty,
+      diff_hash: diffHash,
+      contract_fingerprint: contractFingerprintValue
     }
   };
 
@@ -115,6 +135,23 @@ export async function runRequiredCheck(storage: SqliteDriftStorage, parsed: Pars
     exitCode: status === "passed" ? 0 : 1,
     payload
   };
+}
+
+function requiredCheckDiffHash(repoRoot: string, parsed: ParsedArgs): string {
+  if (!parsed.flags.has("diff") && !parsed.flags.has("diff-file")) {
+    return "no_diff";
+  }
+  return sha256(loadDiff(repoRoot, parsed));
+}
+
+function lockfileHashForRepo(repoRoot: string): string | null {
+  for (const name of ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"]) {
+    const path = `${repoRoot}/${name}`;
+    if (existsSync(path)) {
+      return sha256(readFileSync(path, "utf8"));
+    }
+  }
+  return null;
 }
 
 function executeCommand(argv: string[], cwd: string, timeoutMs: number): Promise<{

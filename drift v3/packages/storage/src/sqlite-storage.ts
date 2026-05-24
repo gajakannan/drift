@@ -1112,14 +1112,18 @@ export class SqliteDriftStorage {
     this.db
       .prepare(`
         INSERT INTO required_check_executions (
-          execution_id, repo_id, repo_root, repo_commit, worktree_dirty, scan_id,
-          repo_contract_id, agent_contract_id, command, argv_json, command_hash, cwd,
+          execution_id, repo_id, repo_root, repo_commit, git_branch, git_commit_sha,
+          worktree_dirty, untracked_files_present, scan_id, repo_contract_id, agent_contract_id,
+          contract_fingerprint, repo_contract_version, command, argv_json, command_hash,
+          diff_hash, lockfile_hash, package_manager, cwd,
           started_at, completed_at, timeout_ms, exit_code, status, stdout_hash,
           stderr_hash, stdout_preview, stderr_preview, audit_event_id
         )
         VALUES (
-          @execution_id, @repo_id, @repo_root, @repo_commit, @worktree_dirty, @scan_id,
-          @repo_contract_id, @agent_contract_id, @command, @argv_json, @command_hash, @cwd,
+          @execution_id, @repo_id, @repo_root, @repo_commit, @git_branch, @git_commit_sha,
+          @worktree_dirty, @untracked_files_present, @scan_id, @repo_contract_id, @agent_contract_id,
+          @contract_fingerprint, @repo_contract_version, @command, @argv_json, @command_hash,
+          @diff_hash, @lockfile_hash, @package_manager, @cwd,
           @started_at, @completed_at, @timeout_ms, @exit_code, @status, @stdout_hash,
           @stderr_hash, @stdout_preview, @stderr_preview, @audit_event_id
         )
@@ -1130,13 +1134,25 @@ export class SqliteDriftStorage {
           stdout_hash = excluded.stdout_hash,
           stderr_hash = excluded.stderr_hash,
           stdout_preview = excluded.stdout_preview,
-          stderr_preview = excluded.stderr_preview
+          stderr_preview = excluded.stderr_preview,
+          git_branch = excluded.git_branch,
+          git_commit_sha = excluded.git_commit_sha,
+          worktree_dirty = excluded.worktree_dirty,
+          untracked_files_present = excluded.untracked_files_present,
+          contract_fingerprint = excluded.contract_fingerprint,
+          repo_contract_version = excluded.repo_contract_version,
+          diff_hash = excluded.diff_hash,
+          lockfile_hash = excluded.lockfile_hash,
+          package_manager = excluded.package_manager
       `)
       .run({
         ...parsed,
         worktree_dirty: parsed.worktree_dirty ? 1 : 0,
+        untracked_files_present: parsed.untracked_files_present ? 1 : 0,
         scan_id: parsed.scan_id ?? null,
         argv_json: stringifyJson(parsed.argv),
+        lockfile_hash: parsed.lockfile_hash ?? null,
+        package_manager: parsed.package_manager ?? null,
         exit_code: parsed.exit_code ?? null
       });
   }
@@ -1196,15 +1212,18 @@ export class SqliteDriftStorage {
         .prepare(`
           INSERT INTO audit_events (
             id, repo_id, actor, action, target_type, target_id, metadata_json,
-            created_at, sequence, previous_event_hash, event_hash
+            before_hash, after_hash, object_schema_version, created_at, sequence, previous_event_hash, event_hash
           )
           VALUES (
             @id, @repo_id, @actor, @action, @target_type, @target_id, @metadata_json,
-            @created_at, @sequence, @previous_event_hash, @event_hash
+            @before_hash, @after_hash, @object_schema_version, @created_at, @sequence, @previous_event_hash, @event_hash
           )
         `)
         .run({
           ...eventWithHash,
+          before_hash: eventWithHash.before_hash ?? null,
+          after_hash: eventWithHash.after_hash ?? null,
+          object_schema_version: eventWithHash.object_schema_version ?? null,
           metadata_json: stringifyJson(eventWithHash.metadata)
         });
     } catch (error) {
@@ -1582,6 +1601,9 @@ function auditEventFromRow(row: unknown): AuditEvent {
   return AuditEventSchema.parse({
     ...record,
     sequence: typeof record.sequence === "number" ? record.sequence : undefined,
+    before_hash: record.before_hash ?? null,
+    after_hash: record.after_hash ?? null,
+    object_schema_version: record.object_schema_version ?? null,
     metadata: parseJsonObject(record.metadata_json)
   });
 }
@@ -1799,13 +1821,21 @@ function requiredCheckExecutionFromRow(row: unknown): RequiredCheckExecution {
     repo_id: rowValue<string>(row, "repo_id"),
     repo_root: rowValue<string>(row, "repo_root"),
     repo_commit: rowValue<string>(row, "repo_commit"),
+    git_branch: rowValue<string>(row, "git_branch"),
+    git_commit_sha: rowValue<string>(row, "git_commit_sha"),
     worktree_dirty: rowValue<number>(row, "worktree_dirty") === 1,
+    untracked_files_present: rowValue<number>(row, "untracked_files_present") === 1,
     scan_id: rowValue<string | null>(row, "scan_id"),
     repo_contract_id: rowValue<string>(row, "repo_contract_id"),
     agent_contract_id: rowValue<string>(row, "agent_contract_id"),
+    contract_fingerprint: rowValue<string>(row, "contract_fingerprint"),
+    repo_contract_version: rowValue<number>(row, "repo_contract_version"),
     command: rowValue<string>(row, "command"),
     argv: parseJsonArray(rowValue<string>(row, "argv_json")).map(String),
     command_hash: rowValue<string>(row, "command_hash"),
+    diff_hash: rowValue<string>(row, "diff_hash"),
+    lockfile_hash: rowValue<string | null>(row, "lockfile_hash"),
+    package_manager: rowValue<string | null>(row, "package_manager"),
     cwd: rowValue<string>(row, "cwd"),
     started_at: rowValue<string>(row, "started_at"),
     completed_at: rowValue<string>(row, "completed_at"),

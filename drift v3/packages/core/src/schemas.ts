@@ -108,7 +108,21 @@ export const EnforcementCapabilitySchema = z.enum([
   "deterministic_check"
 ]);
 
-export const SeveritySchema = z.enum(["info", "warning", "error"]);
+export const SeveritySchema = z.enum(["info", "warning", "error", "blocking", "release_blocking"]);
+export const FindingConfidenceLabelSchema = z.enum(["certain", "high", "medium", "low", "heuristic"]);
+export const FindingDriftCategorySchema = z.enum([
+  "new_violation",
+  "existing_violation",
+  "worsened_violation",
+  "improved_violation",
+  "new_convention_candidate",
+  "convention_conflict",
+  "architecture_regression",
+  "test_coverage_regression",
+  "unresolved_graph_regression",
+  "missing_proof",
+  "parser_gap"
+]);
 
 export const EnforcementModeSchema = z.enum(["off", "brief", "warn", "block"]);
 
@@ -135,6 +149,11 @@ export const ConventionExceptionSchema = z.object({
   file_roles: z.array(FileRoleSchema).optional(),
   contract_kinds: z.array(AgentContractKindSchema).optional(),
   expires_at: z.string().datetime().optional(),
+  requires_reapproval_on_change: z.boolean().optional(),
+  approved_file_hashes: z.array(z.object({
+    file_path: RepoRelativePatternSchema,
+    content_hash: z.string().min(1)
+  })).optional(),
   created_by: z.string().min(1),
   created_at: z.string().datetime()
 });
@@ -550,6 +569,9 @@ export const AuditEventSchema = z.object({
   target_type: z.string().min(1),
   target_id: z.string().min(1),
   metadata: z.record(z.unknown()),
+  before_hash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
+  after_hash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
+  object_schema_version: z.string().min(1).nullable().optional(),
   created_at: z.string().datetime(),
   sequence: z.number().int().positive().optional(),
   previous_event_hash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
@@ -679,6 +701,10 @@ export const FindingSchema = z.object({
   graph_path: z.array(z.string().min(1)).optional(),
   suggested_fix: z.string().min(1).optional(),
   related_node_ids: z.array(z.string().min(1)).optional(),
+  confidence_label: FindingConfidenceLabelSchema.optional(),
+  drift_category: FindingDriftCategorySchema.optional(),
+  introduced_by_diff: z.boolean().optional(),
+  affected_contract: z.string().min(1).optional(),
   created_at: z.string().datetime()
 });
 
@@ -1018,13 +1044,21 @@ export const RequiredCheckExecutionSchema = z.object({
   repo_id: z.string().min(1),
   repo_root: z.string().min(1),
   repo_commit: z.string().min(1),
+  git_branch: z.string().min(1),
+  git_commit_sha: z.string().min(1),
   worktree_dirty: z.boolean(),
+  untracked_files_present: z.boolean(),
   scan_id: z.string().min(1).nullable(),
   repo_contract_id: z.string().min(1),
   agent_contract_id: z.string().min(1),
+  contract_fingerprint: z.string().min(1),
+  repo_contract_version: z.number().int().positive(),
   command: z.string().min(1),
   argv: z.array(z.string().min(1)).min(1),
   command_hash: z.string().min(1),
+  diff_hash: z.string().min(1),
+  lockfile_hash: z.string().min(1).nullable(),
+  package_manager: z.string().min(1).nullable(),
   cwd: z.string().min(1),
   started_at: z.string().datetime(),
   completed_at: z.string().datetime(),

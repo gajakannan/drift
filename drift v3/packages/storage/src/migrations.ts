@@ -592,5 +592,29 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_symbol_identities_repo_name
         ON symbol_identities(repo_id, symbol_name);
     `
+  },
+  {
+    id: "017_required_check_state_binding",
+    sql: `
+      ALTER TABLE required_check_executions ADD COLUMN git_branch TEXT NOT NULL DEFAULT 'unknown';
+      ALTER TABLE required_check_executions ADD COLUMN git_commit_sha TEXT NOT NULL DEFAULT 'unknown';
+      ALTER TABLE required_check_executions ADD COLUMN untracked_files_present INTEGER NOT NULL DEFAULT 0 CHECK (untracked_files_present IN (0, 1));
+      ALTER TABLE required_check_executions ADD COLUMN contract_fingerprint TEXT NOT NULL DEFAULT 'unknown';
+      ALTER TABLE required_check_executions ADD COLUMN repo_contract_version INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE required_check_executions ADD COLUMN diff_hash TEXT NOT NULL DEFAULT 'no_diff';
+      ALTER TABLE required_check_executions ADD COLUMN lockfile_hash TEXT;
+      ALTER TABLE required_check_executions ADD COLUMN package_manager TEXT;
+
+      CREATE INDEX IF NOT EXISTS idx_required_check_executions_state_binding
+        ON required_check_executions(repo_id, repo_contract_id, contract_fingerprint, diff_hash, completed_at);
+    `
+  },
+  {
+    id: "018_audit_object_hashes",
+    sql: `
+      ALTER TABLE audit_events ADD COLUMN before_hash TEXT;
+      ALTER TABLE audit_events ADD COLUMN after_hash TEXT;
+      ALTER TABLE audit_events ADD COLUMN object_schema_version TEXT;
+    `
   }
 ];
