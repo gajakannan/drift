@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildFactGraphArtifactFromParts } from "@drift/factgraph";
-import { openDriftStorage } from "@drift/storage";
+import { MIGRATIONS, openDriftStorage } from "@drift/storage";
 import { runCli } from "../src/index.js";
 
 const tempDirs: string[] = [];
@@ -7807,7 +7807,7 @@ describe("drift CLI convention review", () => {
       valid: false,
       repo_id: "repo_abc",
       schema_supported: false,
-      schema_version: 18
+      schema_version: MIGRATIONS.length + 1
     });
   });
 
@@ -7869,7 +7869,7 @@ describe("drift CLI convention review", () => {
     expect(JSON.parse(verified.stdout)).toMatchObject({
       valid: false,
       schema_supported: false,
-      schema_version: 14,
+      schema_version: MIGRATIONS.length - 1,
       missing_migrations: ["003_repo_contracts_and_conventions"]
     });
   });
