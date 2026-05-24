@@ -33,6 +33,7 @@ import {
   createContextPolicyMatrix,
   createAgentPreflightPacket,
   createAgentEnvelopeV2,
+  createContractParityLedger,
   createPolicyProof,
   makeDriftId
 } from "../src/index.js";
@@ -636,6 +637,39 @@ describe("core domain", () => {
       before_hash: "0".repeat(64),
       after_hash: "1".repeat(64)
     });
+  });
+
+  it("reports contract parity for all canonical contracts", () => {
+    const ledger = createContractParityLedger();
+
+    expect(ledger.contracts.map((contract) => contract.name)).toEqual([
+      "ParsedFactContract",
+      "FactQualityContract",
+      "GraphContract",
+      "RoleOntologyContract",
+      "LayerArchitectureContract",
+      "AdapterContract",
+      "DataOperationContract",
+      "EntrypointContract",
+      "SymbolIdentityContract",
+      "ChangeImpactContract",
+      "TestIntelligenceContract",
+      "ConventionElectionContract",
+      "RepoContract",
+      "RuleContract",
+      "FindingContract",
+      "WaiverContract",
+      "BaselineContract",
+      "CheckProofContract",
+      "AgentTaskContract",
+      "AgentPreflightContract",
+      "ContextPolicyContract",
+      "AuditContract",
+      "ReleaseProofContract"
+    ]);
+    expect(ledger.summary.not_implemented_count).toBe(0);
+    expect(ledger.summary.missing_count).toBe(0);
+    expect(ledger.summary.partial_beta_required_count).toBe(0);
   });
 
   it("builds deterministic agent preflight packets from repo contracts", () => {

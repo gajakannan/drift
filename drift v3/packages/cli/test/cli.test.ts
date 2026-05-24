@@ -483,6 +483,11 @@ describe("drift CLI convention review", () => {
       languages: ["typescript", "javascript"],
       storage: "sqlite"
     });
+    expect(payload.capabilities.contract_parity.summary).toMatchObject({
+      missing_count: 0,
+      partial_beta_required_count: 0,
+      not_implemented_count: 0
+    });
     expect(payload.claims_manifest).toMatchObject({
       schema_version: "drift.production.claims.v1",
       allowed_claims: expect.arrayContaining(["local_first_cli", "typescript_api_route_layering"]),
@@ -9602,6 +9607,17 @@ describe("drift CLI convention review", () => {
         convention_coverage_count: 1,
         risky_file_count: 1,
         open_finding_count: 1
+      },
+      topology: {
+        schema_version: "drift.repo_topology.v1",
+        areas: expect.arrayContaining([
+          expect.objectContaining({
+            name: "Users Management",
+            entrypoints: expect.arrayContaining(["GET /api/users"]),
+            modules: expect.arrayContaining(["apps/web/app/api/users/route.ts"])
+          })
+        ]),
+        unknown_zones: []
       },
       freshness_requirement: {
         required: false,

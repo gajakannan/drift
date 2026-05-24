@@ -300,6 +300,11 @@ function betaProofFields({ dirtyState, sourceBuildSchemaMatch, installedCliSmoke
     "required_check_execution_proof_verified",
     strictBetaInput ? null : "DRIFT_RELEASE_REQUIRED_CHECK_EXECUTION_PROOF_VERIFIED"
   );
+  const contractParityVerified = booleanInput(
+    betaProofInput,
+    "contract_parity_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_CONTRACT_PARITY_VERIFIED"
+  );
   const auditVerified = booleanInput(
     betaProofInput,
     "audit_verified",
@@ -338,6 +343,7 @@ function betaProofFields({ dirtyState, sourceBuildSchemaMatch, installedCliSmoke
     bad_route_blocked: badRouteBlocked,
     finding_evidence_complete: findingEvidenceComplete,
     required_check_execution_proof_verified: requiredCheckExecutionProofVerified,
+    contract_parity_verified: contractParityVerified,
     mcp_cli_parity_hash: mcpCliParityHash,
     mcp_cli_parity_verified: Boolean(mcpCliParityHash),
     audit_head_hash: stringInput(
@@ -421,6 +427,7 @@ function missingBetaProofFields(proof) {
     bad_route_blocked: proof.bad_route_blocked,
     finding_evidence_complete: proof.finding_evidence_complete,
     required_check_execution_proof_verified: proof.required_check_execution_proof_verified,
+    contract_parity_verified: proof.contract_parity_verified,
     mcp_cli_parity_verified: proof.mcp_cli_parity_verified,
     audit_head_hash: proof.audit_head_hash,
     audit_verified: proof.audit_verified

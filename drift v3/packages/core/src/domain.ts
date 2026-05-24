@@ -754,6 +754,34 @@ export interface RiskArea {
   reason: string;
 }
 
+export interface RepoTopologyArea {
+  name: string;
+  entrypoints: string[];
+  modules: string[];
+  services: string[];
+  data_access: string[];
+  tests: string[];
+  external_systems: string[];
+  risky_zones: string[];
+}
+
+export interface RepoTopology {
+  schema_version: "drift.repo_topology.v1";
+  repo_id: string;
+  scan_id: string | null;
+  areas: RepoTopologyArea[];
+  entrypoints: string[];
+  modules: string[];
+  layers: string[];
+  flows: string[];
+  tests: string[];
+  configs: string[];
+  external_systems: string[];
+  risky_zones: string[];
+  generated_zones: string[];
+  unknown_zones: string[];
+}
+
 export interface SafeCommand {
   command: string;
   reason: string;

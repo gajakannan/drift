@@ -7,6 +7,7 @@ import type {
   ResolverDependency,
   SymbolOccurrence
 } from "@drift/core";
+import type { RepoTopology } from "@drift/core";
 import type {
   GraphCompleteness as GraphCompletenessRecord,
   GraphDiagnostic,
@@ -15,6 +16,7 @@ import type {
   GraphNode
 } from "@drift/factgraph";
 import type { SqliteDriftStorage } from "@drift/storage";
+import { buildRepoTopology } from "./repo-topology.js";
 export { buildEntrypointFlowProof } from "./flow-proof.js";
 export { buildChangeImpact } from "./change-impact.js";
 export { classifyDataOperationRisk } from "./data-operation-risk.js";
@@ -24,6 +26,7 @@ export { selectRelevantTests } from "./test-intelligence.js";
 export { classifyAgentTask } from "./task-intent.js";
 export { evaluateRoleEdge } from "./role-ontology.js";
 export { scoreHelperSimilarity } from "./helper-similarity.js";
+export { buildRepoTopology } from "./repo-topology.js";
 export type { BuildEntrypointFlowProofInput } from "./flow-proof.js";
 export type { BuildChangeImpactInput, ChangeImpactRouteFlow } from "./change-impact.js";
 export type { ClassifyDataOperationRiskInput } from "./data-operation-risk.js";
@@ -76,6 +79,7 @@ export interface RepoMapReadModel {
   summary: RepoMapSummary;
   impact_summary: RepoMapImpactSummary;
   pagination: RepoMapPagination;
+  topology: RepoTopology;
 }
 
 export interface RepoMapSummary {
@@ -690,6 +694,8 @@ export function createGraphQueryService(storage: SqliteDriftStorage): GraphQuery
 }
 
 export function buildRepoMapReadModel(input: {
+  repoId?: string;
+  scanId?: string | null;
   graphFiles: GraphRepoMapFile[];
   factFiles: GraphRepoMapFile[];
   contract: RepoContract;
@@ -714,7 +720,12 @@ export function buildRepoMapReadModel(input: {
     listed_files: listedFiles,
     summary: repoMapSummary(allFiles, filteredFiles, listedFiles),
     impact_summary: repoMapImpactSummary(listedFiles),
-    pagination: repoMapPagination(filteredFiles.length, listedFiles.length, input.limit, offset)
+    pagination: repoMapPagination(filteredFiles.length, listedFiles.length, input.limit, offset),
+    topology: buildRepoTopology({
+      repo_id: input.repoId ?? input.contract.repo_id,
+      scan_id: input.scanId ?? null,
+      files: allFiles
+    })
   };
 }
 

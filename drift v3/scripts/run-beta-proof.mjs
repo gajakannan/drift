@@ -14,10 +14,11 @@ const root = process.cwd();
 
 ensureBuiltRuntime();
 
-const [{ runCli }, { createReadOnlyMcpHandlers }, { openDriftStorage }] = await Promise.all([
+const [{ runCli }, { createReadOnlyMcpHandlers }, { openDriftStorage }, { createContractParityLedger }] = await Promise.all([
   import(pathToFileURL(resolve("packages/cli/dist/index.js")).href),
   import(pathToFileURL(resolve("packages/mcp/dist/index.js")).href),
-  import(pathToFileURL(resolve("packages/storage/dist/index.js")).href)
+  import(pathToFileURL(resolve("packages/storage/dist/index.js")).href),
+  import(pathToFileURL(resolve("packages/core/dist/index.js")).href)
 ]);
 
 const tempRoot = await mkdtemp(join(tmpdir(), "drift-beta-proof-"));
@@ -70,11 +71,12 @@ try {
     "--json"
   ]);
 
-  const requiredCheckExecution = await runJson([
+  await runJson([
     "--db", databasePath,
     "checks", "run",
     "--repo", repoId,
     "--command", requiredCheckCommand,
+    "--diff-file", goodDiff,
     "--timeout-ms", "30000",
     "--now", "2026-05-10T00:00:01.500Z",
     "--json"
@@ -90,6 +92,17 @@ try {
     "--json"
   ]);
 
+  const requiredCheckExecution = await runJson([
+    "--db", databasePath,
+    "checks", "run",
+    "--repo", repoId,
+    "--command", requiredCheckCommand,
+    "--diff-file", badDiff,
+    "--timeout-ms", "30000",
+    "--now", "2026-05-10T00:00:02.500Z",
+    "--json"
+  ]);
+
   const badCheck = await runJson([
     "--db", databasePath,
     "check",
@@ -101,6 +114,9 @@ try {
   ], { exitCodes: [1] });
 
   const parity = await mcpCliParity({ databasePath, repoId });
+  const contractParity = createContractParityLedger();
+  const contractParityVerified = contractParity.summary.missing_count === 0 &&
+    contractParity.summary.partial_beta_required_count === 0;
   const audit = await runJson([
     "--db", databasePath,
     "audit", "verify",
@@ -178,6 +194,7 @@ try {
       badCheck.findings?.some((item) => item.enforcement_result === "block"),
     finding_evidence_complete: findingEvidenceComplete,
     required_check_execution_proof_verified: requiredCheckExecutionProofVerified,
+    contract_parity_verified: contractParityVerified,
     mcp_cli_parity_hash: parity.hash,
     mcp_cli_parity_verified: parity.verified,
     audit_head_hash: audit.verification?.head_event_hash ?? null,
@@ -221,6 +238,7 @@ try {
         argv: requiredCheckExecution.execution?.argv ?? [],
         mcp_summary: mcpRequiredCheckExecutions.summary ?? null
       },
+      contract_parity: contractParity,
       mcp_cli_parity: parity.bundle,
       audit_verification: audit.verification
     },
@@ -523,6 +541,7 @@ function assertBetaProof(proof) {
     "bad_route_blocked",
     "finding_evidence_complete",
     "required_check_execution_proof_verified",
+    "contract_parity_verified",
     "mcp_cli_parity_verified",
     "audit_verified"
   ]) {

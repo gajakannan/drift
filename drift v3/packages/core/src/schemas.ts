@@ -1102,6 +1102,34 @@ export const RiskAreaSchema = z.object({
   reason: z.string().min(1)
 });
 
+export const RepoTopologyAreaSchema = z.object({
+  name: z.string().min(1),
+  entrypoints: z.array(z.string().min(1)),
+  modules: z.array(z.string().min(1)),
+  services: z.array(z.string().min(1)),
+  data_access: z.array(z.string().min(1)),
+  tests: z.array(z.string().min(1)),
+  external_systems: z.array(z.string().min(1)),
+  risky_zones: z.array(z.string().min(1))
+});
+
+export const RepoTopologySchema = z.object({
+  schema_version: z.literal("drift.repo_topology.v1"),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1).nullable(),
+  areas: z.array(RepoTopologyAreaSchema),
+  entrypoints: z.array(z.string().min(1)),
+  modules: z.array(z.string().min(1)),
+  layers: z.array(z.string().min(1)),
+  flows: z.array(z.string().min(1)),
+  tests: z.array(z.string().min(1)),
+  configs: z.array(z.string().min(1)),
+  external_systems: z.array(z.string().min(1)),
+  risky_zones: z.array(z.string().min(1)),
+  generated_zones: z.array(z.string().min(1)),
+  unknown_zones: z.array(z.string().min(1))
+});
+
 export const SafeCommandSchema = z.object({
   command: z.string().min(1),
   reason: z.string().min(1),

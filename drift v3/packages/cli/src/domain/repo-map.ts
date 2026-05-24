@@ -34,6 +34,8 @@ export function policyFileContext(
   const findings = storage.listFindings(repoId);
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
   const readModel = buildRepoMapReadModel({
+    repoId,
+    scanId: latestScan?.id ?? null,
     graphFiles: graphMap?.files ?? [],
     factFiles: fallbackFactRepoMapFiles(snapshots, facts),
     contract,
@@ -87,6 +89,8 @@ export function repoMapPayload(
   const findings = storage.listFindings(repoId);
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
   const readModel = buildRepoMapReadModel({
+    repoId,
+    scanId: latestScan?.id ?? null,
     graphFiles: graphMap?.files ?? [],
     factFiles: fallbackFactRepoMapFiles(snapshots, facts),
     contract,
@@ -123,6 +127,7 @@ export function repoMapPayload(
     },
     summary: readModel.summary,
     impact_summary: readModel.impact_summary,
+    topology: readModel.topology,
     pagination: readModel.pagination,
     freshness_requirement: freshnessRequirement(Boolean(options.requireFresh), scanStatus),
     files: readModel.listed_files,

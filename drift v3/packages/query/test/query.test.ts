@@ -10,6 +10,7 @@ import {
   buildEntrypointFlowProof,
   buildChangeImpact,
   buildRepoMapReadModel,
+  buildRepoTopology,
   buildSymbolIdentity,
   classifyAgentTask,
   classifyDataOperationRisk,
@@ -396,6 +397,60 @@ describe("GraphQueryService", () => {
       convention_coverage_count: 1,
       risky_file_count: 1,
       open_finding_count: 1
+    });
+  });
+
+  it("builds an area-oriented repo topology", () => {
+    const topology = buildRepoTopology({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      files: [
+        {
+          path: "app/api/users/route.ts",
+          roles: ["api_route"],
+          imports: ["@/server/services/users"],
+          exported_symbols: ["GET"],
+          risky_area_ids: ["risk_users"]
+        },
+        {
+          path: "server/services/users.ts",
+          roles: ["service"],
+          imports: ["@/server/repositories/users"],
+          exported_symbols: ["listUsers"],
+          risky_area_ids: []
+        },
+        {
+          path: "server/repositories/users.ts",
+          roles: ["data_access"],
+          imports: ["@prisma/client"],
+          exported_symbols: ["findUsers"],
+          risky_area_ids: []
+        },
+        {
+          path: "server/services/users.test.ts",
+          roles: ["test_unit"],
+          imports: ["vitest"],
+          exported_symbols: [],
+          risky_area_ids: []
+        }
+      ]
+    });
+
+    expect(topology).toMatchObject({
+      schema_version: "drift.repo_topology.v1",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      areas: expect.arrayContaining([
+        expect.objectContaining({
+          name: "Users Management",
+          entrypoints: ["GET /api/users"],
+          services: ["server/services/users.ts"],
+          data_access: ["server/repositories/users.ts"],
+          tests: ["server/services/users.test.ts"]
+        })
+      ]),
+      external_systems: expect.arrayContaining(["@prisma/client", "vitest"]),
+      risky_zones: ["risk_users"]
     });
   });
 

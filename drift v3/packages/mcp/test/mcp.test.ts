@@ -687,6 +687,13 @@ describe("read-only MCP handlers", () => {
         mcp_mutation_tools: [],
         supported_wedge: {
           storage: "sqlite"
+        },
+        contract_parity: {
+          summary: {
+            missing_count: 0,
+            partial_beta_required_count: 0,
+            not_implemented_count: 0
+          }
         }
       }
     });
@@ -769,6 +776,15 @@ describe("read-only MCP handlers", () => {
         convention_coverage_count: 1,
         risky_file_count: 1,
         open_finding_count: 1
+      },
+      topology: {
+        schema_version: "drift.repo_topology.v1",
+        areas: expect.arrayContaining([
+          expect.objectContaining({
+            name: "Users Management",
+            entrypoints: ["GET /api/users"]
+          })
+        ])
       },
       freshness_requirement: {
         required: false,

@@ -128,6 +128,7 @@ describe("release hygiene", () => {
       bad_route_blocked: null,
       finding_evidence_complete: null,
       required_check_execution_proof_verified: null,
+      contract_parity_verified: null,
       mcp_cli_parity_verified: false,
       audit_verified: null
     });
@@ -144,6 +145,7 @@ describe("release hygiene", () => {
         "bad_route_blocked",
         "finding_evidence_complete",
         "required_check_execution_proof_verified",
+        "contract_parity_verified",
         "mcp_cli_parity_verified",
         "audit_verified"
       ])
@@ -169,8 +171,13 @@ describe("release hygiene", () => {
       bad_route_blocked: true,
       finding_evidence_complete: true,
       required_check_execution_proof_verified: true,
+      contract_parity_verified: true,
       mcp_cli_parity_verified: true,
       audit_verified: true
+    });
+    expect(betaProof.evidence.contract_parity.summary).toMatchObject({
+      missing_count: 0,
+      partial_beta_required_count: 0
     });
     expect(betaProof.beta_proof.dogfood_or_fixture_repo_id).toMatch(/^repo_[a-f0-9]+$/);
     expect(betaProof.beta_proof.scan_id).toMatch(/^scan_/);
@@ -207,6 +214,7 @@ describe("release hygiene", () => {
       bad_route_blocked: true,
       finding_evidence_complete: true,
       required_check_execution_proof_verified: true,
+      contract_parity_verified: true,
       mcp_cli_parity_hash: betaProof.beta_proof.mcp_cli_parity_hash,
       mcp_cli_parity_verified: true,
       audit_head_hash: betaProof.beta_proof.audit_head_hash,
@@ -236,6 +244,7 @@ describe("release hygiene", () => {
           DRIFT_RELEASE_BAD_ROUTE_BLOCKED: "true",
           DRIFT_RELEASE_FINDING_EVIDENCE_COMPLETE: "true",
           DRIFT_RELEASE_REQUIRED_CHECK_EXECUTION_PROOF_VERIFIED: "true",
+          DRIFT_RELEASE_CONTRACT_PARITY_VERIFIED: "true",
           DRIFT_RELEASE_MCP_CLI_PARITY_HASH: "0".repeat(64),
           DRIFT_RELEASE_AUDIT_HEAD_HASH: "1".repeat(64),
           DRIFT_RELEASE_AUDIT_VERIFIED: "true"

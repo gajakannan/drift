@@ -1,3 +1,5 @@
+import { createContractParityLedger,type ContractParityLedger } from "./contract-ledger.js";
+
 export interface DriftCapabilities {
   read_only_cli: string[];
   human_confirmed_cli: string[];
@@ -12,6 +14,7 @@ export interface DriftCapabilities {
     source_mutation: false;
   };
   deferred: string[];
+  contract_parity: ContractParityLedger;
 }
 
 export interface DriftProductionClaimsManifest {
@@ -99,7 +102,8 @@ export function createDriftCapabilities(input: {
       storage: "sqlite",
       source_mutation: false
     },
-    deferred: ["desktop_ui", "cloud_sync", "python_adapter", "duplicate_helper_detection"]
+    deferred: ["desktop_ui", "cloud_sync", "python_adapter", "duplicate_helper_detection"],
+    contract_parity: createContractParityLedger()
   };
 }
 
