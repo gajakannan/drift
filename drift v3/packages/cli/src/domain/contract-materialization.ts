@@ -1,4 +1,4 @@
-import { type AcceptedConvention,DRIFT_CONTRACT_SCHEMA_VERSION,type RepoContract } from "@drift/core";
+import { type AcceptedConvention,DRIFT_CONTRACT_SCHEMA_VERSION,type LayerArchitectureContract,type RepoContract } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -258,6 +258,7 @@ export function materializeRepoContract(
     risky_areas: existing?.risky_areas.length
       ? existing.risky_areas
       : defaultRiskyAreasForConventions(acceptedConventions),
+    layer_architecture: existing?.layer_architecture ?? defaultLayerArchitectureForConventions(repoId, acceptedConventions),
     safe_commands: existing?.safe_commands.length
       ? existing.safe_commands
       : defaultSafeCommandsForRepo(repo?.root_path),
@@ -272,6 +273,42 @@ export function materializeRepoContract(
     },
     agent_permissions: existing?.agent_permissions ?? [],
     agent_contracts: existing?.agent_contracts ?? []
+  };
+}
+
+export function defaultLayerArchitectureForConventions(
+  repoId: string,
+  conventions: AcceptedConvention[]
+): LayerArchitectureContract | undefined {
+  if (!conventions.some((convention) => convention.kind === "api_route_no_direct_data_access")) {
+    return undefined;
+  }
+
+  return {
+    schema_version: "drift.layer_architecture.v1",
+    architecture_id: "architecture_typescript_api_route_layering",
+    repo_id: repoId,
+    version: 1,
+    layers: [
+      { id: "route", role: "route", position: "entrypoint" },
+      { id: "service", role: "service", position: "middle" },
+      { id: "data_access", role: "data_access", position: "terminal" }
+    ],
+    allowed_edges: [
+      { from_layer: "route", to_layer: "service", edge_kind: "imports" },
+      { from_layer: "service", to_layer: "data_access", edge_kind: "imports" }
+    ],
+    forbidden_edges: [
+      { from_layer: "route", to_layer: "data_access", edge_kind: "imports" }
+    ],
+    soft_edges: [
+      {
+        from_layer: "route",
+        to_layer: "auth",
+        edge_kind: "calls",
+        reason: "Auth-sensitive routes should authenticate before service delegation."
+      }
+    ]
   };
 }
 

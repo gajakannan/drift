@@ -29,6 +29,35 @@ export type FileRole =
   | "package_manifest"
   | "custom";
 
+export type CanonicalRole =
+  | "route"
+  | "controller"
+  | "service"
+  | "domain"
+  | "data_access"
+  | "schema"
+  | "model"
+  | "validation"
+  | "auth"
+  | "middleware"
+  | "queue_worker"
+  | "cron_job"
+  | "event_handler"
+  | "adapter"
+  | "client_sdk"
+  | "component"
+  | "hook"
+  | "test_unit"
+  | "test_integration"
+  | "test_e2e"
+  | "config"
+  | "script"
+  | "migration"
+  | "generated"
+  | "documentation"
+  | "unknown"
+  | "mixed_role";
+
 export type AgentContractKind =
   | "file_role"
   | "module_placement"
@@ -771,6 +800,21 @@ export interface AgentPermission {
   permissions: Array<"read_context" | "request_preflight" | "propose_resolution">;
 }
 
+export interface LayerArchitectureContract {
+  schema_version: "drift.layer_architecture.v1";
+  architecture_id: string;
+  repo_id: string;
+  version: number;
+  layers: Array<{
+    id: string;
+    role: CanonicalRole;
+    position: "entrypoint" | "middle" | "terminal" | "support";
+  }>;
+  allowed_edges: Array<{ from_layer: string; to_layer: string; edge_kind?: string }>;
+  forbidden_edges: Array<{ from_layer: string; to_layer: string; edge_kind?: string }>;
+  soft_edges: Array<{ from_layer: string; to_layer: string; reason: string; edge_kind?: string }>;
+}
+
 export interface RepoContract {
   id: string;
   repo_id: string;
@@ -783,6 +827,7 @@ export interface RepoContract {
   waivers: ConventionException[];
   risky_areas: RiskArea[];
   agent_contracts?: AgentContract[];
+  layer_architecture?: LayerArchitectureContract;
   safe_commands: SafeCommand[];
   required_checks: RequiredCheck[];
   context_egress: ContextEgressPolicy;

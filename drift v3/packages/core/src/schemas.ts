@@ -54,6 +54,36 @@ export const FileRoleSchema = z.enum([
   "custom"
 ]);
 
+export const CanonicalRoleSchema = z.enum([
+  "route",
+  "controller",
+  "service",
+  "domain",
+  "data_access",
+  "schema",
+  "model",
+  "validation",
+  "auth",
+  "middleware",
+  "queue_worker",
+  "cron_job",
+  "event_handler",
+  "adapter",
+  "client_sdk",
+  "component",
+  "hook",
+  "test_unit",
+  "test_integration",
+  "test_e2e",
+  "config",
+  "script",
+  "migration",
+  "generated",
+  "documentation",
+  "unknown",
+  "mixed_role"
+]);
+
 export const ConventionScopeSchema = z.object({
   path_globs: z.array(RepoRelativePatternSchema),
   package_names: z.array(z.string().min(1)).optional(),
@@ -876,6 +906,29 @@ export const AgentPermissionSchema = z.object({
   ]))
 });
 
+const LayerEdgeSchema = z.object({
+  from_layer: z.string().min(1),
+  to_layer: z.string().min(1),
+  edge_kind: z.string().min(1).optional()
+});
+
+export const LayerArchitectureContractSchema = z.object({
+  schema_version: z.literal("drift.layer_architecture.v1"),
+  architecture_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  version: z.number().int().positive(),
+  layers: z.array(z.object({
+    id: z.string().min(1),
+    role: CanonicalRoleSchema,
+    position: z.enum(["entrypoint", "middle", "terminal", "support"])
+  })).min(1),
+  allowed_edges: z.array(LayerEdgeSchema),
+  forbidden_edges: z.array(LayerEdgeSchema),
+  soft_edges: z.array(LayerEdgeSchema.extend({
+    reason: z.string().min(1)
+  }))
+});
+
 export const RepoContractSchema = z.object({
   id: z.string().min(1),
   repo_id: z.string().min(1),
@@ -888,6 +941,7 @@ export const RepoContractSchema = z.object({
   waivers: z.array(ConventionExceptionSchema),
   risky_areas: z.array(RiskAreaSchema),
   agent_contracts: z.array(AgentContractSchema).optional(),
+  layer_architecture: LayerArchitectureContractSchema.optional(),
   safe_commands: z.array(SafeCommandSchema),
   required_checks: z.array(RequiredCheckSchema),
   context_egress: ContextEgressPolicySchema,

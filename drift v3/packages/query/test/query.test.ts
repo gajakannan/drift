@@ -6,9 +6,11 @@ import { buildFactGraphArtifact, buildFactGraphArtifactFromParts } from "@drift/
 import { openDriftStorage } from "@drift/storage";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  buildLayerArchitectureProof,
   buildEntrypointFlowProof,
   buildRepoMapReadModel,
   createGraphQueryService,
+  evaluateRoleEdge,
   fallbackFactRepoMapFiles,
   scoreHelperSimilarity
 } from "../src/index.js";
@@ -20,6 +22,61 @@ afterEach(async () => {
 });
 
 describe("GraphQueryService", () => {
+  it("classifies route to data access as a forbidden role edge", () => {
+    const result = evaluateRoleEdge({
+      from_role: "route",
+      to_role: "data_access",
+      edge_kind: "imports"
+    });
+
+    expect(result).toMatchObject({
+      allowed: false,
+      severity: "blocking",
+      reason_code: "route_must_not_import_data_access"
+    });
+  });
+
+  it("classifies service to data access as allowed", () => {
+    expect(evaluateRoleEdge({
+      from_role: "service",
+      to_role: "data_access",
+      edge_kind: "imports"
+    })).toMatchObject({ allowed: true });
+  });
+
+  it("builds a route service data access architecture proof", () => {
+    const proof = buildLayerArchitectureProof({
+      entrypoint: "apps/web/app/api/users/route.ts",
+      graph_edges: [
+        { from_layer: "route", to_layer: "service", edge_kind: "imports" },
+        { from_layer: "service", to_layer: "data_access", edge_kind: "imports" }
+      ],
+      architecture: {
+        schema_version: "drift.layer_architecture.v1",
+        architecture_id: "architecture_api_layering",
+        repo_id: "repo_abc",
+        version: 1,
+        layers: [
+          { id: "route", role: "route", position: "entrypoint" },
+          { id: "service", role: "service", position: "middle" },
+          { id: "data_access", role: "data_access", position: "terminal" }
+        ],
+        allowed_edges: [
+          { from_layer: "route", to_layer: "service" },
+          { from_layer: "service", to_layer: "data_access" }
+        ],
+        forbidden_edges: [{ from_layer: "route", to_layer: "data_access" }],
+        soft_edges: []
+      }
+    });
+
+    expect(proof).toMatchObject({
+      entrypoint_layer: "route",
+      terminal_layers_reached: ["data_access"],
+      forbidden_edges_present: []
+    });
+  });
+
   it("scores renamed auth helper as high similarity to canonical helper", () => {
     const result = scoreHelperSimilarity({
       candidate: {

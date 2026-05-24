@@ -16,9 +16,17 @@ import type {
 } from "@drift/factgraph";
 import type { SqliteDriftStorage } from "@drift/storage";
 export { buildEntrypointFlowProof } from "./flow-proof.js";
+export { buildLayerArchitectureProof } from "./layer-architecture.js";
+export { evaluateRoleEdge } from "./role-ontology.js";
 export { scoreHelperSimilarity } from "./helper-similarity.js";
 export type { BuildEntrypointFlowProofInput } from "./flow-proof.js";
+export type {
+  BuildLayerArchitectureProofInput,
+  LayerArchitectureObservedEdge,
+  LayerArchitectureProof
+} from "./layer-architecture.js";
 export type { HelperFeatureProfile, ScoreHelperSimilarityInput } from "./helper-similarity.js";
+export type { RoleEdgeDecision, RoleEdgeInput, RoleEdgeKind } from "./role-ontology.js";
 
 export interface GraphRepoMapFile {
   path: string;

@@ -309,6 +309,23 @@ async function seedAcceptedDatabase(): Promise<{ databasePath: string; repoRoot:
     rejected_inferences: [],
     waivers: [],
     risky_areas: [],
+    layer_architecture: {
+      schema_version: "drift.layer_architecture.v1",
+      architecture_id: "architecture_typescript_api_route_layering",
+      repo_id: "repo_abc",
+      version: 1,
+      layers: [
+        { id: "route", role: "route", position: "entrypoint" },
+        { id: "service", role: "service", position: "middle" },
+        { id: "data_access", role: "data_access", position: "terminal" }
+      ],
+      allowed_edges: [
+        { from_layer: "route", to_layer: "service", edge_kind: "imports" },
+        { from_layer: "service", to_layer: "data_access", edge_kind: "imports" }
+      ],
+      forbidden_edges: [{ from_layer: "route", to_layer: "data_access", edge_kind: "imports" }],
+      soft_edges: []
+    },
     safe_commands: [],
     required_checks: [],
     context_egress: {
@@ -11748,6 +11765,30 @@ describe("drift CLI convention review", () => {
     });
     expect(JSON.parse(result.stdout).contract_fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.parse(result.stdout).contract.conventions[0].id).toBe("convention_no_direct_db");
+  });
+
+  it("materializes accepted architecture layers into the repo contract", async () => {
+    const { databasePath } = await seedAcceptedDatabase();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "contract", "show",
+      "--repo", "repo_abc",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).contract.layer_architecture).toMatchObject({
+      schema_version: "drift.layer_architecture.v1",
+      layers: expect.arrayContaining([
+        expect.objectContaining({ role: "route" }),
+        expect.objectContaining({ role: "service" }),
+        expect.objectContaining({ role: "data_access" })
+      ]),
+      forbidden_edges: expect.arrayContaining([
+        expect.objectContaining({ from_layer: "route", to_layer: "data_access" })
+      ])
+    });
   });
 
   it("shows agent contract counts in contract show and validate output", async () => {

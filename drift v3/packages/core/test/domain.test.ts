@@ -12,10 +12,11 @@ import {
   DRIFT_TYPESCRIPT_ADAPTER_VERSION,
   EntrypointFlowProofSchema,
   FactRecordSchema,
-  ParserGapSchema,
   FileRoleSchema,
   FindingSchema,
   HelperSimilarityEvidenceSchema,
+  LayerArchitectureContractSchema,
+  ParserGapSchema,
   RepoContractSchema,
   RequiredCheckExecutionSchema,
   authorizeContextExport,
@@ -99,6 +100,29 @@ describe("core domain", () => {
     })).toMatchObject({
       kind: "unresolved_import",
       confidence_impact: "lowers_flow"
+    });
+  });
+
+  it("validates layer architecture contracts", () => {
+    expect(LayerArchitectureContractSchema.parse({
+      schema_version: "drift.layer_architecture.v1",
+      architecture_id: "architecture_api_layering",
+      repo_id: "repo_abc",
+      version: 1,
+      layers: [
+        { id: "route", role: "route", position: "entrypoint" },
+        { id: "service", role: "service", position: "middle" },
+        { id: "data_access", role: "data_access", position: "terminal" }
+      ],
+      allowed_edges: [
+        { from_layer: "route", to_layer: "service" },
+        { from_layer: "service", to_layer: "data_access" }
+      ],
+      forbidden_edges: [{ from_layer: "route", to_layer: "data_access" }],
+      soft_edges: [{ from_layer: "route", to_layer: "auth", reason: "auth-sensitive routes should authenticate first" }]
+    })).toMatchObject({
+      schema_version: "drift.layer_architecture.v1",
+      layers: expect.arrayContaining([expect.objectContaining({ role: "route" })])
     });
   });
 
