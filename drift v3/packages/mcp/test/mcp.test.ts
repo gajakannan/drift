@@ -17,6 +17,22 @@ import {
 
 const tempDirs: string[] = [];
 
+function factQuality(scanId = "scan_abc") {
+  return {
+    source_span: { start_line: 1, start_column: 1, end_line: 1, end_column: 1 },
+    ast_node_kind: null,
+    extraction_method: "test_fixture",
+    extractor_version: "0.1.0",
+    parser_version: "0.1.0",
+    confidence: 1,
+    confidence_label: "certain" as const,
+    evidence_level: "text" as const,
+    resolution_status: "resolved" as const,
+    staleness_status: "fresh" as const,
+    last_seen_scan_id: scanId
+  };
+}
+
 async function seedMcpDatabase(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "drift-mcp-"));
   tempDirs.push(dir);
@@ -69,7 +85,8 @@ async function seedMcpDatabase(): Promise<string> {
       file_path: "apps/web/app/api/users/route.ts",
       name: "apps/web/app/api/users/route.ts",
       start_line: 1,
-      end_line: 1
+      end_line: 1,
+      ...factQuality()
     },
     {
       id: "fact_role_abc",
@@ -79,7 +96,8 @@ async function seedMcpDatabase(): Promise<string> {
       file_path: "apps/web/app/api/users/route.ts",
       name: "api_route",
       start_line: 1,
-      end_line: 1
+      end_line: 1,
+      ...factQuality()
     },
     {
       id: "fact_export_abc",
@@ -89,7 +107,8 @@ async function seedMcpDatabase(): Promise<string> {
       file_path: "apps/web/app/api/users/route.ts",
       name: "GET",
       start_line: 1,
-      end_line: 1
+      end_line: 1,
+      ...factQuality()
     },
     {
       id: "fact_call_abc",
@@ -99,7 +118,8 @@ async function seedMcpDatabase(): Promise<string> {
       file_path: "apps/web/app/api/users/route.ts",
       name: "Response.json",
       start_line: 1,
-      end_line: 1
+      end_line: 1,
+      ...factQuality()
     }
   ]);
   const convention = {
@@ -278,7 +298,8 @@ async function seedMcpNoContractDatabase(): Promise<{
       file_path: "apps/web/app/api/users/route.ts",
       name: "apps/web/app/api/users/route.ts",
       start_line: 1,
-      end_line: 1
+      end_line: 1,
+      ...factQuality("scan_no_contract")
     },
     {
       id: "fact_no_contract_role",
@@ -288,7 +309,8 @@ async function seedMcpNoContractDatabase(): Promise<{
       file_path: "apps/web/app/api/users/route.ts",
       name: "api_route",
       start_line: 1,
-      end_line: 1
+      end_line: 1,
+      ...factQuality("scan_no_contract")
     }
   ]);
   storage.upsertConventionCandidate({
@@ -1552,7 +1574,8 @@ describe("read-only MCP handlers", () => {
         file_path: "apps/web/app/api/admin/route.ts",
         name: "api_route",
         start_line: 1,
-        end_line: 1
+        end_line: 1,
+        ...factQuality()
       },
       {
         id: "fact_role_core_service",
@@ -1562,7 +1585,8 @@ describe("read-only MCP handlers", () => {
         file_path: "packages/core/src/service.ts",
         name: "service_module",
         start_line: 1,
-        end_line: 1
+        end_line: 1,
+        ...factQuality()
       }
     ]);
     storage.close();
@@ -2203,7 +2227,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 13,
+        supported_sqlite_schema_version: 14,
         storage_driver: "sqlite"
       },
       v1_scope: {

@@ -11,6 +11,7 @@ import {
   DRIFT_SCANNER_VERSION,
   DRIFT_TYPESCRIPT_ADAPTER_VERSION,
   EntrypointFlowProofSchema,
+  FactRecordSchema,
   FileRoleSchema,
   FindingSchema,
   HelperSimilarityEvidenceSchema,
@@ -36,6 +37,48 @@ describe("core domain", () => {
     expect(DRIFT_RULE_ENGINE_VERSION).toBe("0.1.0");
     expect(DRIFT_RESOLVER_VERSION).toBe("0.1.0");
     expect(DRIFT_CONTRACT_SCHEMA_VERSION).toBe(1);
+  });
+
+  it("validates fact quality provenance on parsed facts", () => {
+    expect(FactRecordSchema.parse({
+      id: "fact_route_users_get",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "route_declared",
+      file_path: "app/api/users/route.ts",
+      name: "GET /api/users",
+      value: "/api/users",
+      start_line: 1,
+      end_line: 3,
+      source_span: { start_line: 1, start_column: 1, end_line: 3, end_column: 2 },
+      ast_node_kind: "ExportedFunction",
+      extraction_method: "next_app_router_parser",
+      extractor_version: "0.1.0",
+      parser_version: "0.1.0",
+      confidence: 0.98,
+      confidence_label: "high",
+      evidence_level: "ast",
+      resolution_status: "resolved",
+      staleness_status: "fresh",
+      last_seen_scan_id: "scan_abc"
+    })).toMatchObject({
+      confidence_label: "high",
+      resolution_status: "resolved",
+      evidence_level: "ast"
+    });
+  });
+
+  it("rejects parsed facts without extraction provenance", () => {
+    expect(() => FactRecordSchema.parse({
+      id: "fact_missing_provenance",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "route_declared",
+      file_path: "app/api/users/route.ts",
+      name: "GET",
+      start_line: 1,
+      end_line: 1
+    })).toThrow();
   });
 
   it("creates deterministic agent envelope actions", () => {

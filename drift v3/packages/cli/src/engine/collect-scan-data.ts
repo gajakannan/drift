@@ -232,8 +232,60 @@ function engineFactRecord(input: ScanDataInput, fact: EngineScanResult["facts"][
     fact.name,
     fact.value ?? undefined,
     fact.start_line,
-    fact.end_line
+    fact.end_line,
+    {
+      source_span: {
+        start_line: fact.start_line,
+        start_column: 1,
+        end_line: fact.end_line,
+        end_column: 1
+      },
+      ast_node_kind: null,
+      extraction_method: rustExtractionMethodForKind(fact.kind),
+      extractor_version: "0.1.0",
+      parser_version: "0.1.0",
+      confidence: rustConfidenceForKind(fact.kind),
+      confidence_label: rustConfidenceLabelForKind(fact.kind),
+      evidence_level: rustEvidenceLevelForKind(fact.kind),
+      resolution_status: "resolved",
+      staleness_status: "fresh",
+      last_seen_scan_id: input.scanId
+    }
   );
+}
+
+function rustExtractionMethodForKind(kind: FactRecord["kind"]): string {
+  if (kind === "file_detected") {
+    return "rust_filesystem_scanner";
+  }
+  if (kind === "file_role_detected") {
+    return "rust_path_role_classifier";
+  }
+  if (kind === "route_declared") {
+    return "next_app_router_parser";
+  }
+  return "rust_typescript_parser";
+}
+
+function rustEvidenceLevelForKind(kind: FactRecord["kind"]): FactRecord["evidence_level"] {
+  if (kind === "file_detected" || kind === "file_role_detected") {
+    return "path";
+  }
+  return "ast";
+}
+
+function rustConfidenceForKind(kind: FactRecord["kind"]): number {
+  if (kind === "file_role_detected") {
+    return 0.9;
+  }
+  return 1;
+}
+
+function rustConfidenceLabelForKind(kind: FactRecord["kind"]): FactRecord["confidence_label"] {
+  if (kind === "file_role_detected") {
+    return "high";
+  }
+  return "certain";
 }
 
 function engineFileSnapshot(

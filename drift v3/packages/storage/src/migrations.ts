@@ -519,5 +519,22 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_required_check_executions_repo_contract
         ON required_check_executions(repo_id, repo_contract_id, scan_id);
     `
+  },
+  {
+    id: "014_fact_quality",
+    sql: `
+      ALTER TABLE facts ADD COLUMN source_span_json TEXT NOT NULL DEFAULT '{"start_line":1,"start_column":1,"end_line":1,"end_column":1}';
+      ALTER TABLE facts ADD COLUMN ast_node_kind TEXT;
+      ALTER TABLE facts ADD COLUMN extraction_method TEXT NOT NULL DEFAULT 'legacy_parser';
+      ALTER TABLE facts ADD COLUMN extractor_version TEXT NOT NULL DEFAULT '0.1.0';
+      ALTER TABLE facts ADD COLUMN parser_version TEXT NOT NULL DEFAULT '0.1.0';
+      ALTER TABLE facts ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0;
+      ALTER TABLE facts ADD COLUMN confidence_label TEXT NOT NULL DEFAULT 'certain';
+      ALTER TABLE facts ADD COLUMN evidence_level TEXT NOT NULL DEFAULT 'text';
+      ALTER TABLE facts ADD COLUMN resolution_status TEXT NOT NULL DEFAULT 'resolved';
+      ALTER TABLE facts ADD COLUMN staleness_status TEXT NOT NULL DEFAULT 'fresh';
+      ALTER TABLE facts ADD COLUMN last_seen_scan_id TEXT;
+      UPDATE facts SET last_seen_scan_id = scan_id WHERE last_seen_scan_id IS NULL;
+    `
   }
 ];

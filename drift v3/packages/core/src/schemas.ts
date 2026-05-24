@@ -230,6 +230,18 @@ export const FactKindSchema = z.enum([
   "test_declared"
 ]);
 
+export const FactEvidenceLevelSchema = z.enum(["path", "text", "ast", "graph", "heuristic"]);
+export const FactResolutionStatusSchema = z.enum(["resolved", "unresolved", "partial", "unsupported"]);
+export const FactStalenessStatusSchema = z.enum(["fresh", "stale", "unknown"]);
+export const ConfidenceLabelSchema = z.enum(["certain", "high", "medium", "low", "heuristic"]);
+
+export const SourceSpanSchema = z.object({
+  start_line: z.number().int().positive(),
+  start_column: z.number().int().positive(),
+  end_line: z.number().int().positive(),
+  end_column: z.number().int().positive()
+});
+
 export const FactRecordSchema = z.object({
   id: z.string().min(1),
   repo_id: z.string().min(1),
@@ -239,7 +251,18 @@ export const FactRecordSchema = z.object({
   name: z.string().min(1),
   value: z.string().optional(),
   start_line: z.number().int().positive(),
-  end_line: z.number().int().positive()
+  end_line: z.number().int().positive(),
+  source_span: SourceSpanSchema,
+  ast_node_kind: z.string().min(1).nullable(),
+  extraction_method: z.string().min(1),
+  extractor_version: z.string().min(1),
+  parser_version: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  confidence_label: ConfidenceLabelSchema,
+  evidence_level: FactEvidenceLevelSchema,
+  resolution_status: FactResolutionStatusSchema,
+  staleness_status: FactStalenessStatusSchema,
+  last_seen_scan_id: z.string().min(1)
 });
 
 export const GraphNodeRecordSchema = z.object({

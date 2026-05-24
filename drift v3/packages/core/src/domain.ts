@@ -211,6 +211,18 @@ export type FactKind =
   | "file_role_detected"
   | "test_declared";
 
+export type FactEvidenceLevel = "path" | "text" | "ast" | "graph" | "heuristic";
+export type FactResolutionStatus = "resolved" | "unresolved" | "partial" | "unsupported";
+export type FactStalenessStatus = "fresh" | "stale" | "unknown";
+export type ConfidenceLabel = "certain" | "high" | "medium" | "low" | "heuristic";
+
+export interface SourceSpan {
+  start_line: number;
+  start_column: number;
+  end_line: number;
+  end_column: number;
+}
+
 export interface FactRecord {
   id: string;
   repo_id: string;
@@ -221,6 +233,17 @@ export interface FactRecord {
   value?: string;
   start_line: number;
   end_line: number;
+  source_span: SourceSpan;
+  ast_node_kind: string | null;
+  extraction_method: string;
+  extractor_version: string;
+  parser_version: string;
+  confidence: number;
+  confidence_label: ConfidenceLabel;
+  evidence_level: FactEvidenceLevel;
+  resolution_status: FactResolutionStatus;
+  staleness_status: FactStalenessStatus;
+  last_seen_scan_id: string;
 }
 
 export interface GraphNodeRecord {

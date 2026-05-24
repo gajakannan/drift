@@ -136,7 +136,11 @@ describe("engine scan data bridge", () => {
       scan_id: "scan_abc",
       kind: "import_used",
       file_path: "app/api/users/route.ts",
-      name: "prisma"
+      name: "prisma",
+      extraction_method: "rust_typescript_parser",
+      evidence_level: "ast",
+      resolution_status: "resolved",
+      confidence_label: "certain"
     }]);
   });
 

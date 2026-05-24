@@ -381,10 +381,16 @@ export class SqliteDriftStorage {
     const parsedFacts = facts.map((fact) => FactRecordSchema.parse(fact));
     const insert = this.db.prepare(`
       INSERT INTO facts (
-        id, repo_id, scan_id, kind, file_path, name, value, start_line, end_line
+        id, repo_id, scan_id, kind, file_path, name, value, start_line, end_line,
+        source_span_json, ast_node_kind, extraction_method, extractor_version, parser_version,
+        confidence, confidence_label, evidence_level, resolution_status, staleness_status,
+        last_seen_scan_id
       )
       VALUES (
-        @id, @repo_id, @scan_id, @kind, @file_path, @name, @value, @start_line, @end_line
+        @id, @repo_id, @scan_id, @kind, @file_path, @name, @value, @start_line, @end_line,
+        @source_span_json, @ast_node_kind, @extraction_method, @extractor_version, @parser_version,
+        @confidence, @confidence_label, @evidence_level, @resolution_status, @staleness_status,
+        @last_seen_scan_id
       )
       ON CONFLICT(id) DO UPDATE SET
         kind = excluded.kind,
@@ -392,12 +398,28 @@ export class SqliteDriftStorage {
         name = excluded.name,
         value = excluded.value,
         start_line = excluded.start_line,
-        end_line = excluded.end_line
+        end_line = excluded.end_line,
+        source_span_json = excluded.source_span_json,
+        ast_node_kind = excluded.ast_node_kind,
+        extraction_method = excluded.extraction_method,
+        extractor_version = excluded.extractor_version,
+        parser_version = excluded.parser_version,
+        confidence = excluded.confidence,
+        confidence_label = excluded.confidence_label,
+        evidence_level = excluded.evidence_level,
+        resolution_status = excluded.resolution_status,
+        staleness_status = excluded.staleness_status,
+        last_seen_scan_id = excluded.last_seen_scan_id
     `);
 
     const transaction = this.db.transaction(() => {
       for (const fact of parsedFacts) {
-        insert.run({ ...fact, value: fact.value ?? null });
+        insert.run({
+          ...fact,
+          value: fact.value ?? null,
+          ast_node_kind: fact.ast_node_kind ?? null,
+          source_span_json: JSON.stringify(fact.source_span)
+        });
       }
     });
     transaction();
@@ -1291,7 +1313,12 @@ function factFromRow(row: unknown): FactRecord {
   const record = row as Record<string, unknown>;
   return FactRecordSchema.parse({
     ...record,
-    value: record.value ?? undefined
+    value: record.value ?? undefined,
+    ast_node_kind: record.ast_node_kind ?? null,
+    source_span: typeof record.source_span_json === "string"
+      ? JSON.parse(record.source_span_json) as unknown
+      : record.source_span,
+    last_seen_scan_id: record.last_seen_scan_id ?? record.scan_id
   });
 }
 

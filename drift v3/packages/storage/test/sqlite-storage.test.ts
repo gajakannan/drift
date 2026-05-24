@@ -8,6 +8,22 @@ import { openDriftStorage } from "../src/index.js";
 
 const tempDirs: string[] = [];
 
+function factQuality(scanId = "scan_abc") {
+  return {
+    source_span: { start_line: 1, start_column: 1, end_line: 1, end_column: 1 },
+    ast_node_kind: null,
+    extraction_method: "test_fixture",
+    extractor_version: "0.1.0",
+    parser_version: "0.1.0",
+    confidence: 1,
+    confidence_label: "certain" as const,
+    evidence_level: "text" as const,
+    resolution_status: "resolved" as const,
+    staleness_status: "fresh" as const,
+    last_seen_scan_id: scanId
+  };
+}
+
 async function tempDatabasePath(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "drift-storage-"));
   tempDirs.push(dir);
@@ -37,7 +53,8 @@ describe("SQLite Drift storage", () => {
       "010_audit_sequence",
       "011_check_runs_and_finding_context",
       "012_repo_identity",
-      "013_required_check_executions"
+      "013_required_check_executions",
+      "014_fact_quality"
     ]);
     storage.close();
   });
@@ -96,7 +113,8 @@ describe("SQLite Drift storage", () => {
       "010_audit_sequence",
       "011_check_runs_and_finding_context",
       "012_repo_identity",
-      "013_required_check_executions"
+      "013_required_check_executions",
+      "014_fact_quality"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -272,7 +290,8 @@ describe("SQLite Drift storage", () => {
         name: "prisma",
         value: "@/lib/prisma",
         start_line: 1,
-        end_line: 1
+        end_line: 1,
+        ...factQuality()
       },
       {
         id: "fact_api_role",
@@ -282,7 +301,8 @@ describe("SQLite Drift storage", () => {
         file_path: "apps/web/app/api/users/route.ts",
         name: "api_route",
         start_line: 1,
-        end_line: 1
+        end_line: 1,
+        ...factQuality()
       }
     ]);
 
@@ -307,7 +327,8 @@ describe("SQLite Drift storage", () => {
         name: "prisma",
         value: "@/lib/prisma",
         start_line: 1,
-        end_line: 1
+        end_line: 1,
+        ...factQuality()
       }
     ]);
     expect(storage.listFindings("repo_abc")).toEqual([
@@ -323,6 +344,67 @@ describe("SQLite Drift storage", () => {
       })
     ]);
     expect(storage.listBaselineViolations("repo_abc")).toHaveLength(1);
+    storage.close();
+  });
+
+  it("persists fact quality provenance fields", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_abc",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    storage.upsertFacts([{
+      id: "fact_route_users_get",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "route_declared",
+      file_path: "app/api/users/route.ts",
+      name: "GET /api/users",
+      value: "/api/users",
+      start_line: 1,
+      end_line: 3,
+      source_span: { start_line: 1, start_column: 1, end_line: 3, end_column: 2 },
+      ast_node_kind: "ExportedFunction",
+      extraction_method: "next_app_router_parser",
+      extractor_version: "0.1.0",
+      parser_version: "0.1.0",
+      confidence: 0.98,
+      confidence_label: "high",
+      evidence_level: "ast",
+      resolution_status: "resolved",
+      staleness_status: "fresh",
+      last_seen_scan_id: "scan_abc"
+    }]);
+
+    expect(storage.listFacts("scan_abc")[0]).toMatchObject({
+      extraction_method: "next_app_router_parser",
+      confidence_label: "high",
+      resolution_status: "resolved",
+      evidence_level: "ast",
+      source_span: { start_line: 1, start_column: 1, end_line: 3, end_column: 2 }
+    });
     storage.close();
   });
 
