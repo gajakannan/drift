@@ -13,6 +13,7 @@ import type {
   FileSnapshot,
   Finding,
   ModuleDependent,
+  ParserGap,
   RepoContract,
   RepoRecord,
   RequiredCheckExecution,
@@ -32,6 +33,7 @@ import {
   FileSnapshotSchema,
   FindingSchema,
   ModuleDependentSchema,
+  ParserGapSchema,
   RepoContractSchema,
   RepoRecordSchema,
   RequiredCheckExecutionSchema,
@@ -435,6 +437,54 @@ export class SqliteDriftStorage {
           .all(scanId);
 
     return rows.map(factFromRow);
+  }
+
+  upsertParserGaps(gaps: ParserGap[]): void {
+    const parsedGaps = gaps.map((gap) => ParserGapSchema.parse(gap));
+    const insert = this.db.prepare(`
+      INSERT INTO parser_gaps (
+        gap_id, schema_version, repo_id, scan_id, kind, file_path, start_line, end_line,
+        confidence_impact, message, evidence_refs_json, created_at
+      )
+      VALUES (
+        @gap_id, @schema_version, @repo_id, @scan_id, @kind, @file_path, @start_line, @end_line,
+        @confidence_impact, @message, @evidence_refs_json, @created_at
+      )
+      ON CONFLICT(gap_id) DO UPDATE SET
+        schema_version = excluded.schema_version,
+        repo_id = excluded.repo_id,
+        scan_id = excluded.scan_id,
+        kind = excluded.kind,
+        file_path = excluded.file_path,
+        start_line = excluded.start_line,
+        end_line = excluded.end_line,
+        confidence_impact = excluded.confidence_impact,
+        message = excluded.message,
+        evidence_refs_json = excluded.evidence_refs_json,
+        created_at = excluded.created_at
+    `);
+
+    const transaction = this.db.transaction(() => {
+      for (const gap of parsedGaps) {
+        insert.run({
+          ...gap,
+          evidence_refs_json: JSON.stringify(gap.evidence_refs)
+        });
+      }
+    });
+    transaction();
+  }
+
+  listParserGaps(repoId: string, scanId?: string): ParserGap[] {
+    const rows = scanId
+      ? this.db
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND scan_id = ? ORDER BY file_path, start_line, gap_id")
+          .all(repoId, scanId)
+      : this.db
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? ORDER BY scan_id, file_path, start_line, gap_id")
+          .all(repoId);
+
+    return rows.map(parserGapFromRow);
   }
 
   upsertFactGraphArtifact(artifact: FactGraphArtifact): void {
@@ -1319,6 +1369,16 @@ function factFromRow(row: unknown): FactRecord {
       ? JSON.parse(record.source_span_json) as unknown
       : record.source_span,
     last_seen_scan_id: record.last_seen_scan_id ?? record.scan_id
+  });
+}
+
+function parserGapFromRow(row: unknown): ParserGap {
+  const record = row as Record<string, unknown>;
+  return ParserGapSchema.parse({
+    ...record,
+    evidence_refs: typeof record.evidence_refs_json === "string"
+      ? JSON.parse(record.evidence_refs_json) as unknown
+      : []
   });
 }
 

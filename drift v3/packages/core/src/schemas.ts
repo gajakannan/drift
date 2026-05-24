@@ -265,6 +265,40 @@ export const FactRecordSchema = z.object({
   last_seen_scan_id: z.string().min(1)
 });
 
+export const ParserGapKindSchema = z.enum([
+  "unresolved_import",
+  "unresolved_symbol",
+  "unknown_file_role",
+  "mixed_file_role",
+  "unsupported_framework_pattern",
+  "parser_error",
+  "partial_parse",
+  "dynamic_import_unresolved",
+  "reflection_or_magic_detected"
+]);
+
+export const ParserGapConfidenceImpactSchema = z.enum([
+  "none",
+  "lowers_file",
+  "lowers_flow",
+  "blocks_enforcement"
+]);
+
+export const ParserGapSchema = z.object({
+  schema_version: z.literal("drift.parser_gap.v1"),
+  gap_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  kind: ParserGapKindSchema,
+  file_path: z.string().min(1),
+  start_line: z.number().int().positive(),
+  end_line: z.number().int().positive(),
+  confidence_impact: ParserGapConfidenceImpactSchema,
+  message: z.string().min(1),
+  evidence_refs: z.array(z.string().min(1)),
+  created_at: z.string().min(1)
+});
+
 export const GraphNodeRecordSchema = z.object({
   id: z.string().min(1),
   kind: z.enum(["file", "module", "symbol", "import", "route", "role", "data_store", "data_operation", "endpoint", "re_export"]),

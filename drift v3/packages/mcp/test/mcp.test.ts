@@ -493,6 +493,35 @@ describe("read-only MCP handlers", () => {
       .toThrow("Unknown repo repo_missing");
   });
 
+  it("reports parser gap summaries in scan status", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertParserGaps([{
+      schema_version: "drift.parser_gap.v1",
+      gap_id: "parser_gap_unresolved_users",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "unresolved_import",
+      file_path: "apps/web/app/api/users/route.ts",
+      start_line: 1,
+      end_line: 1,
+      confidence_impact: "lowers_flow",
+      message: "Could not resolve import @/missing/service.",
+      evidence_refs: ["diagnostic_unresolved_import"],
+      created_at: "2026-05-10T00:00:08.000Z"
+    }]);
+    storage.close();
+
+    expect(createReadOnlyMcpHandlers({ databasePath }).get_scan_status({ repo_id: "repo_abc" })).toMatchObject({
+      parser_gaps: {
+        total_count: 1,
+        by_kind: { unresolved_import: 1 },
+        confidence_impact: { lowers_flow: 1 }
+      }
+    });
+  });
+
   it("reports missing repo roots as stale in scan status", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-mcp-missing-root-"));
     tempDirs.push(dir);
@@ -2227,7 +2256,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 14,
+        supported_sqlite_schema_version: 15,
         storage_driver: "sqlite"
       },
       v1_scope: {

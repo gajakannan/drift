@@ -54,7 +54,8 @@ describe("SQLite Drift storage", () => {
       "011_check_runs_and_finding_context",
       "012_repo_identity",
       "013_required_check_executions",
-      "014_fact_quality"
+      "014_fact_quality",
+      "015_parser_gaps"
     ]);
     storage.close();
   });
@@ -114,7 +115,8 @@ describe("SQLite Drift storage", () => {
       "011_check_runs_and_finding_context",
       "012_repo_identity",
       "013_required_check_executions",
-      "014_fact_quality"
+      "014_fact_quality",
+      "015_parser_gaps"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -558,6 +560,67 @@ describe("SQLite Drift storage", () => {
         created_at: "2026-05-10T00:00:01.000Z"
       }
     ]);
+    storage.close();
+  });
+
+  it("persists parser gaps for scan confidence summaries", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_abc",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    storage.upsertParserGaps([{
+      schema_version: "drift.parser_gap.v1",
+      gap_id: "parser_gap_unresolved_users",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "unresolved_import",
+      file_path: "app/api/users/route.ts",
+      start_line: 2,
+      end_line: 2,
+      confidence_impact: "lowers_flow",
+      message: "Could not resolve import @/missing/service.",
+      evidence_refs: ["diagnostic_unresolved_import"],
+      created_at: "2026-05-10T00:00:02.000Z"
+    }]);
+
+    expect(storage.listParserGaps("repo_abc", "scan_abc")).toEqual([{
+      schema_version: "drift.parser_gap.v1",
+      gap_id: "parser_gap_unresolved_users",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "unresolved_import",
+      file_path: "app/api/users/route.ts",
+      start_line: 2,
+      end_line: 2,
+      confidence_impact: "lowers_flow",
+      message: "Could not resolve import @/missing/service.",
+      evidence_refs: ["diagnostic_unresolved_import"],
+      created_at: "2026-05-10T00:00:02.000Z"
+    }]);
+    expect(storage.listParserGaps("repo_abc")).toHaveLength(1);
     storage.close();
   });
 

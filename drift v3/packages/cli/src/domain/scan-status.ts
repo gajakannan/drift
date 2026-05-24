@@ -1,4 +1,4 @@
-import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type RepoRecord,type ScanFileChange,type ScanManifest } from "@drift/core";
+import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type ParserGap,type ParserGapConfidenceImpact,type ParserGapKind,type RepoRecord,type ScanFileChange,type ScanManifest } from "@drift/core";
 import { buildFactGraphArtifactFromParts } from "@drift/factgraph";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,readdirSync,statSync } from "node:fs";
@@ -178,6 +178,12 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
       }
       storage.upsertScanFileChanges(scanFileChanges);
       storage.upsertFacts(scanData.facts);
+      storage.upsertParserGaps(parserGapsFromDiagnostics({
+        repoId: repo.id,
+        scanId,
+        diagnostics: scanData.graph_diagnostics.length > 0 ? scanData.graph_diagnostics : scanData.diagnostics,
+        createdAt: now
+      }));
       storage.upsertFactGraphArtifact(graphArtifact);
       for (const candidate of candidates) {
         storage.upsertConventionCandidate(candidate);
@@ -414,6 +420,7 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
       stale: true,
       invalidation_reasons: ["scan_missing"],
       changes: { added: [], modified: [], deleted: [] },
+      parser_gaps: parserGapSummary([]),
       next_command: nextCommands[0],
       next_commands: nextCommands
     };
@@ -443,6 +450,7 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     invalidationReasons.length > 0;
   const sourceChangeCount = changes.added.length + changes.modified.length + changes.deleted.length;
   const nextCommands = scanStatusNextCommands(repoId, repo.root_path, stale);
+  const parserGaps = storage.listParserGaps(repoId, latestScan.id);
   const payload = {
     response_schema: "drift.scan.status.v1",
     repo_id: repoId,
@@ -468,10 +476,94 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     stale,
     invalidation_reasons: invalidationReasons,
     changes,
+    parser_gaps: parserGapSummary(parserGaps),
     next_command: nextCommands[0],
     next_commands: nextCommands
   };
   return payload;
+}
+
+export function parserGapsFromDiagnostics(input: {
+  repoId: string;
+  scanId: string;
+  diagnostics: Array<{ code: string; message: string; file_path?: string; evidence_id?: string }>;
+  createdAt: string;
+}): ParserGap[] {
+  return input.diagnostics
+    .map((diagnostic, index) => {
+      const kind = parserGapKindForDiagnostic(diagnostic.code);
+      if (!kind || !diagnostic.file_path) {
+        return null;
+      }
+      return {
+        schema_version: "drift.parser_gap.v1" as const,
+        gap_id: `parser_gap_${hashStable(`${input.scanId}:${diagnostic.code}:${diagnostic.file_path}:${index}`).slice(0, 16)}`,
+        repo_id: input.repoId,
+        scan_id: input.scanId,
+        kind,
+        file_path: diagnostic.file_path,
+        start_line: 1,
+        end_line: 1,
+        confidence_impact: parserGapImpact(kind),
+        message: diagnostic.message,
+        evidence_refs: diagnostic.evidence_id ? [diagnostic.evidence_id] : [],
+        created_at: input.createdAt
+      };
+    })
+    .filter((gap): gap is ParserGap => Boolean(gap));
+}
+
+export function parserGapSummary(gaps: ParserGap[]): {
+  total_count: number;
+  by_kind: Record<ParserGapKind, number>;
+  confidence_impact: Record<ParserGapConfidenceImpact, number>;
+} {
+  return {
+    total_count: gaps.length,
+    by_kind: countBy(gaps.map((gap) => gap.kind)) as Record<ParserGapKind, number>,
+    confidence_impact: countBy(gaps.map((gap) => gap.confidence_impact)) as Record<ParserGapConfidenceImpact, number>
+  };
+}
+
+function parserGapKindForDiagnostic(code: string): ParserGapKind | null {
+  switch (code) {
+    case "unresolved_import":
+      return "unresolved_import";
+    case "unresolved_import_symbol":
+      return "unresolved_symbol";
+    case "unsupported_namespace_import_symbol":
+      return "unsupported_framework_pattern";
+    case "typescript_fallback_used":
+    case "file_too_large":
+      return "partial_parse";
+    default:
+      return null;
+  }
+}
+
+function parserGapImpact(kind: ParserGapKind): ParserGapConfidenceImpact {
+  switch (kind) {
+    case "unresolved_import":
+    case "unresolved_symbol":
+    case "dynamic_import_unresolved":
+      return "lowers_flow";
+    case "parser_error":
+    case "partial_parse":
+      return "blocks_enforcement";
+    case "unknown_file_role":
+    case "mixed_file_role":
+      return "lowers_file";
+    default:
+      return "none";
+  }
+}
+
+function countBy<T extends string>(values: T[]): Partial<Record<T, number>> {
+  const counts: Partial<Record<T, number>> = {};
+  for (const value of values) {
+    counts[value] = (counts[value] ?? 0) + 1;
+  }
+  return Object.fromEntries(Object.entries(counts).sort(([left], [right]) => left.localeCompare(right))) as Partial<Record<T, number>>;
 }
 
 export function scanStatusSummary(options: {

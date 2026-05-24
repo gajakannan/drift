@@ -8,6 +8,9 @@ import type {
   Finding,
   FindingDiffStatus,
   FindingStatus,
+  ParserGap,
+  ParserGapConfidenceImpact,
+  ParserGapKind,
   PolicyDecision,
   RepoContract,
   RepoRecord,
@@ -962,6 +965,7 @@ function scanStatusPayload(
   ).length;
   const snapshots = latestScan ? storage.listFileSnapshots(repoId, latestScan.id) : [];
   const scanFileChanges = latestScan ? storage.listScanFileChanges(repoId, latestScan.id) : [];
+  const parserGaps = latestScan ? storage.listParserGaps(repoId, latestScan.id) : [];
   const repoRootMissing = !existsSync(repo.root_path);
   const currentBranch = repoRootMissing
     ? "unknown"
@@ -1018,8 +1022,21 @@ function scanStatusPayload(
     stale,
     invalidation_reasons: invalidationReasons,
     changes,
+    parser_gaps: parserGapSummary(parserGaps),
     next_command: nextCommands[0],
     next_commands: nextCommands
+  };
+}
+
+function parserGapSummary(gaps: ParserGap[]): {
+  total_count: number;
+  by_kind: Record<ParserGapKind, number>;
+  confidence_impact: Record<ParserGapConfidenceImpact, number>;
+} {
+  return {
+    total_count: gaps.length,
+    by_kind: countBy(gaps, (gap) => gap.kind) as Record<ParserGapKind, number>,
+    confidence_impact: countBy(gaps, (gap) => gap.confidence_impact) as Record<ParserGapConfidenceImpact, number>
   };
 }
 

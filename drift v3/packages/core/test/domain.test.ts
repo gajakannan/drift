@@ -12,6 +12,7 @@ import {
   DRIFT_TYPESCRIPT_ADAPTER_VERSION,
   EntrypointFlowProofSchema,
   FactRecordSchema,
+  ParserGapSchema,
   FileRoleSchema,
   FindingSchema,
   HelperSimilarityEvidenceSchema,
@@ -79,6 +80,26 @@ describe("core domain", () => {
       start_line: 1,
       end_line: 1
     })).toThrow();
+  });
+
+  it("validates parser gaps with confidence impact", () => {
+    expect(ParserGapSchema.parse({
+      schema_version: "drift.parser_gap.v1",
+      gap_id: "parser_gap_unresolved_users",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "unresolved_import",
+      file_path: "app/api/users/route.ts",
+      start_line: 2,
+      end_line: 2,
+      confidence_impact: "lowers_flow",
+      message: "Could not resolve import @/missing/service.",
+      evidence_refs: ["diagnostic_unresolved_import"],
+      created_at: "2026-05-10T00:00:00.000Z"
+    })).toMatchObject({
+      kind: "unresolved_import",
+      confidence_impact: "lowers_flow"
+    });
   });
 
   it("creates deterministic agent envelope actions", () => {

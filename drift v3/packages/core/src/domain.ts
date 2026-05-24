@@ -246,6 +246,34 @@ export interface FactRecord {
   last_seen_scan_id: string;
 }
 
+export type ParserGapKind =
+  | "unresolved_import"
+  | "unresolved_symbol"
+  | "unknown_file_role"
+  | "mixed_file_role"
+  | "unsupported_framework_pattern"
+  | "parser_error"
+  | "partial_parse"
+  | "dynamic_import_unresolved"
+  | "reflection_or_magic_detected";
+
+export type ParserGapConfidenceImpact = "none" | "lowers_file" | "lowers_flow" | "blocks_enforcement";
+
+export interface ParserGap {
+  schema_version: "drift.parser_gap.v1";
+  gap_id: string;
+  repo_id: string;
+  scan_id: string;
+  kind: ParserGapKind;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  confidence_impact: ParserGapConfidenceImpact;
+  message: string;
+  evidence_refs: string[];
+  created_at: string;
+}
+
 export interface GraphNodeRecord {
   id: string;
   kind: "file" | "module" | "symbol" | "import" | "route" | "role" | "data_store" | "data_operation" | "endpoint" | "re_export";

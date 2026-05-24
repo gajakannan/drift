@@ -536,5 +536,32 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE facts ADD COLUMN last_seen_scan_id TEXT;
       UPDATE facts SET last_seen_scan_id = scan_id WHERE last_seen_scan_id IS NULL;
     `
+  },
+  {
+    id: "015_parser_gaps",
+    sql: `
+      CREATE TABLE IF NOT EXISTS parser_gaps (
+        gap_id TEXT PRIMARY KEY,
+        schema_version TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        start_line INTEGER NOT NULL,
+        end_line INTEGER NOT NULL,
+        confidence_impact TEXT NOT NULL,
+        message TEXT NOT NULL,
+        evidence_refs_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_parser_gaps_repo_scan
+        ON parser_gaps(repo_id, scan_id);
+
+      CREATE INDEX IF NOT EXISTS idx_parser_gaps_repo_kind
+        ON parser_gaps(repo_id, kind);
+    `
   }
 ];
