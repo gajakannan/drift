@@ -122,6 +122,27 @@ describe("GraphQueryService", () => {
     })).toMatchObject({ allowed: true });
   });
 
+  it("normalizes scanner-emitted file roles before evaluating role edges", () => {
+    expect(evaluateRoleEdge({
+      from_role: "api_route",
+      to_role: "data_access_module",
+      edge_kind: "imports"
+    })).toMatchObject({
+      allowed: false,
+      severity: "blocking",
+      reason_code: "route_must_not_import_data_access"
+    });
+
+    expect(evaluateRoleEdge({
+      from_role: "service_module",
+      to_role: "data_access_module",
+      edge_kind: "imports"
+    })).toMatchObject({
+      allowed: true,
+      reason_code: "service_may_use_data_access"
+    });
+  });
+
   it("lets repo-contract role ontology rules override built-in role edge defaults", () => {
     expect(evaluateRoleEdge({
       from_role: "route",

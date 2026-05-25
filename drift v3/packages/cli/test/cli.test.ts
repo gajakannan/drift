@@ -216,6 +216,20 @@ function deleteBackupMigration(databasePath: string, migrationId: string): void 
   storage.close();
 }
 
+function removeResolverInputsFromScan(databasePath: string, scanId: string): void {
+  const storage = openDriftStorage({ databasePath });
+  storage.migrate();
+  const raw = storage as unknown as {
+    db: {
+      prepare: (sql: string) => { run: (...args: unknown[]) => void };
+    };
+  };
+  raw.db
+    .prepare("UPDATE scan_manifests SET adapter_versions_json = ? WHERE id = ?")
+    .run(JSON.stringify({ typescript: "0.1.0", resolver: "0.1.0" }), scanId);
+  storage.close();
+}
+
 function tamperFirstAuditEvent(databasePath: string): void {
   const storage = openDriftStorage({ databasePath });
   storage.migrate();
@@ -1522,6 +1536,114 @@ describe("drift CLI convention review", () => {
       reusable_file_count: 1,
       changed_file_count: 0,
       blocked_reasons: ["resolver_inputs_changed"]
+    });
+  });
+
+  it("blocks reuse when the previous scan lacks resolver input fingerprint evidence", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-incremental-resolver-missing-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(join(repoRoot, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { baseUrl: ".", paths: { "@/*": ["src/*"] } }
+    }));
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      "export async function GET() { return Response.json({ ok: true }); }\n"
+    );
+
+    const first = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:10.000Z",
+      "--json"
+    ]);
+    expect(first.exitCode).toBe(0);
+    const firstPayload = JSON.parse(first.stdout);
+    removeResolverInputsFromScan(firstPayload.database_path, firstPayload.scan.id);
+
+    await writeFile(join(repoRoot, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { baseUrl: ".", paths: { "@/*": ["app/*"] } }
+    }));
+    const second = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:20.000Z",
+      "--json"
+    ]);
+
+    expect(second.exitCode).toBe(0);
+    const secondPayload = JSON.parse(second.stdout);
+    expect(secondPayload.summary.incremental_plan).toMatchObject({
+      previous_scan_id: firstPayload.scan.id,
+      execution_mode: "full_scan",
+      reuse_applied: false,
+      reusable_file_count: 1,
+      changed_file_count: 0,
+      blocked_reasons: ["resolver_inputs_missing"]
+    });
+  });
+
+  it("blocks reuse after a degraded TypeScript fallback scan", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-incremental-fallback-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      "export async function GET() { return Response.json({ ok: true }); }\n"
+    );
+
+    const previousBin = process.env.DRIFT_ENGINE_BIN;
+    const previousFallback = process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK;
+    let firstPayload: any;
+    try {
+      process.env.DRIFT_ENGINE_BIN = join(repoRoot, "..", "missing-engine");
+      process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK = "1";
+      const first = await runCli([
+        "scan",
+        "--repo-root", repoRoot,
+        "--state-root", stateRoot,
+        "--now", "2026-05-10T00:00:10.000Z",
+        "--json"
+      ]);
+      expect(first.exitCode).toBe(0);
+      firstPayload = JSON.parse(first.stdout);
+      expect(firstPayload.summary.engine_source).toBe("typescript");
+    } finally {
+      if (previousBin === undefined) {
+        delete process.env.DRIFT_ENGINE_BIN;
+      } else {
+        process.env.DRIFT_ENGINE_BIN = previousBin;
+      }
+      if (previousFallback === undefined) {
+        delete process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK;
+      } else {
+        process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK = previousFallback;
+      }
+    }
+
+    const second = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:20.000Z",
+      "--json"
+    ]);
+
+    expect(second.exitCode).toBe(0);
+    const secondPayload = JSON.parse(second.stdout);
+    expect(secondPayload.summary.incremental_plan).toMatchObject({
+      previous_scan_id: firstPayload.scan.id,
+      execution_mode: "full_scan",
+      reuse_applied: false,
+      reusable_file_count: 1,
+      changed_file_count: 0,
+      blocked_reasons: ["previous_scan_degraded"]
     });
   });
 

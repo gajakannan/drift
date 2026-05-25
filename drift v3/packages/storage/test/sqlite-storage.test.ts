@@ -859,6 +859,42 @@ describe("SQLite Drift storage", () => {
       imported_as: [{ file_path: "app/api/users/route.ts", local_name: "loadUser" }]
     });
     expect(storage.listSymbolIdentities("repo_abc")).toHaveLength(1);
+    storage.upsertScanManifest({
+      id: "scan_def",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "def456",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      previous_scan_id: "scan_abc",
+      started_at: "2026-05-10T00:00:02.000Z",
+      completed_at: "2026-05-10T00:00:03.000Z"
+    });
+    storage.upsertSymbolIdentities([{
+      schema_version: "drift.symbol_identity.v1",
+      symbol_id: "symbol_get_user",
+      repo_id: "repo_abc",
+      scan_id: "scan_def",
+      symbol_name: "getUserById",
+      kind: "function",
+      declared_in: "server/services/users.ts",
+      exported_from: ["server/services/users.ts"],
+      imported_as: [],
+      re_export_chain: [],
+      canonical_definition: "server/services/users.ts#getUserById",
+      call_sites: [],
+      references: [],
+      visibility: "exported"
+    }]);
+    expect(storage.listSymbolIdentities("repo_abc", "scan_abc")).toHaveLength(1);
+    expect(storage.listSymbolIdentities("repo_abc", "scan_def")).toHaveLength(1);
+    expect(storage.listSymbolIdentities("repo_abc")).toHaveLength(2);
     storage.close();
   });
 
@@ -1527,6 +1563,43 @@ describe("SQLite Drift storage", () => {
       event_count: 3,
       verified_count: 1,
       broken_at_event_id: "audit_event_b",
+      reasons: ["event_hash_mismatch"]
+    });
+    tampered.close();
+  });
+
+  it("detects tampering with audited object hashes", async () => {
+    const databasePath = await tempDatabasePath();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+
+    storage.appendAuditEvent({
+      id: "audit_event_object_hash",
+      repo_id: "repo_abc",
+      actor: "local-user",
+      action: "policy_changed",
+      target_type: "repo_contract",
+      target_id: "contract_abc",
+      metadata: {},
+      before_hash: "0".repeat(64),
+      after_hash: "1".repeat(64),
+      object_schema_version: "drift.repo_contract.v1",
+      created_at: "2026-05-10T00:00:02.000Z"
+    });
+    expect(storage.verifyAuditChain("repo_abc")).toMatchObject({ valid: true });
+    storage.close();
+
+    const db = new Database(databasePath);
+    db.prepare("UPDATE audit_events SET after_hash = ? WHERE id = ?")
+      .run("2".repeat(64), "audit_event_object_hash");
+    db.close();
+
+    const tampered = openDriftStorage({ databasePath });
+    expect(tampered.verifyAuditChain("repo_abc")).toMatchObject({
+      valid: false,
+      event_count: 1,
+      verified_count: 0,
+      broken_at_event_id: "audit_event_object_hash",
       reasons: ["event_hash_mismatch"]
     });
     tampered.close();

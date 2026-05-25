@@ -31,9 +31,11 @@ export interface RoleOntologyRule {
 }
 
 export function evaluateRoleEdge(input: RoleEdgeInput): RoleEdgeDecision {
+  const fromRole = normalizeRole(input.from_role);
+  const toRole = normalizeRole(input.to_role);
   const configuredRule = input.rules?.find((rule) =>
-    rule.from_role === input.from_role &&
-    rule.to_role === input.to_role &&
+    normalizeRole(rule.from_role) === fromRole &&
+    normalizeRole(rule.to_role) === toRole &&
     (!rule.edge_kind || rule.edge_kind === input.edge_kind)
   );
   if (configuredRule) {
@@ -47,7 +49,7 @@ export function evaluateRoleEdge(input: RoleEdgeInput): RoleEdgeDecision {
     };
   }
 
-  if (input.from_role === "route" && input.to_role === "data_access") {
+  if (fromRole === "route" && toRole === "data_access") {
     return {
       allowed: false,
       severity: "blocking",
@@ -57,15 +59,15 @@ export function evaluateRoleEdge(input: RoleEdgeInput): RoleEdgeDecision {
     };
   }
 
-  if (input.from_role === "service" && input.to_role === "data_access") {
+  if (fromRole === "service" && toRole === "data_access") {
     return allowed("service_may_use_data_access", "Services may own data-access orchestration.");
   }
 
-  if (input.from_role === "route" && input.to_role === "service") {
+  if (fromRole === "route" && toRole === "service") {
     return allowed("route_may_delegate_to_service", "Routes may delegate work to services.");
   }
 
-  if (input.from_role === "component" && input.to_role === "data_access") {
+  if (fromRole === "component" && toRole === "data_access") {
     return {
       allowed: false,
       severity: "blocking",
@@ -75,15 +77,15 @@ export function evaluateRoleEdge(input: RoleEdgeInput): RoleEdgeDecision {
     };
   }
 
-  if (input.from_role.startsWith("test_")) {
+  if (fromRole.startsWith("test_")) {
     return allowed("test_dependency_allowed_by_scope", "Tests may depend on scoped subjects.");
   }
 
-  if (input.from_role === "migration" && input.to_role === "data_access") {
+  if (fromRole === "migration" && toRole === "data_access") {
     return allowed("migration_may_use_data_access", "Migrations may use data-access primitives.");
   }
 
-  if (input.from_role === "script" && input.to_role === "data_access") {
+  if (fromRole === "script" && toRole === "data_access") {
     return {
       allowed: true,
       severity: "warning",
@@ -93,7 +95,7 @@ export function evaluateRoleEdge(input: RoleEdgeInput): RoleEdgeDecision {
     };
   }
 
-  if (input.from_role === "generated" || input.to_role === "generated") {
+  if (fromRole === "generated" || toRole === "generated") {
     return {
       allowed: true,
       severity: "advisory",
@@ -103,7 +105,7 @@ export function evaluateRoleEdge(input: RoleEdgeInput): RoleEdgeDecision {
     };
   }
 
-  if (input.from_role === "unknown" || input.to_role === "unknown") {
+  if (fromRole === "unknown" || toRole === "unknown") {
     return {
       allowed: true,
       severity: "advisory",
@@ -114,6 +116,29 @@ export function evaluateRoleEdge(input: RoleEdgeInput): RoleEdgeDecision {
   }
 
   return allowed("role_edge_unspecified_allowed", "No canonical role rule forbids this edge.");
+}
+
+function normalizeRole(role: CanonicalRole | string): CanonicalRole | string {
+  switch (role) {
+    case "api_route":
+      return "route";
+    case "service_module":
+      return "service";
+    case "data_access_module":
+    case "repository_module":
+    case "storage_module":
+      return "data_access";
+    case "ui_component":
+      return "component";
+    case "hook_module":
+      return "hook";
+    case "schema_module":
+      return "schema";
+    case "adapter_module":
+      return "adapter";
+    default:
+      return role;
+  }
 }
 
 function allowed(reasonCode: string, reason: string): RoleEdgeDecision {

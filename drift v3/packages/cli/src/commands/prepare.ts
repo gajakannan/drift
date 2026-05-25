@@ -93,11 +93,15 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
         .filter((snapshot) => /(\.test|\.spec)\.[tj]sx?$/.test(snapshot.file_path))
         .map((snapshot) => snapshot.file_path)
     : [];
+  const symbolIdentities = scanStatus.latest_scan
+    ? storage.listSymbolIdentities(repoId, scanStatus.latest_scan.id)
+    : [];
   const changeImpact = buildChangeImpact({
     repo_id: repoId,
     scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
     changed_files: relevantFiles.map((file) => file.path),
     route_flows: changeImpactRouteFlows,
+    symbol_identities: symbolIdentities,
     test_files: testFiles
   });
   const testSelection = selectRelevantTests({

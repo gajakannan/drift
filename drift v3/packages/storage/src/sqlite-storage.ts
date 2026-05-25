@@ -559,10 +559,8 @@ export class SqliteDriftStorage {
         @exported_from_json, @imported_as_json, @re_export_chain_json, @canonical_definition,
         @call_sites_json, @references_json, @visibility
       )
-      ON CONFLICT(symbol_id) DO UPDATE SET
+      ON CONFLICT(repo_id, scan_id, symbol_id) DO UPDATE SET
         schema_version = excluded.schema_version,
-        repo_id = excluded.repo_id,
-        scan_id = excluded.scan_id,
         symbol_name = excluded.symbol_name,
         kind = excluded.kind,
         declared_in = excluded.declared_in,

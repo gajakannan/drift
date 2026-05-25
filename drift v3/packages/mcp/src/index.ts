@@ -14,6 +14,7 @@ import type {
   PolicyDecision,
   RepoContract,
   RepoRecord,
+  RequiredCheckExecution,
   ScanFileChange,
   ScanManifest,
   Severity
@@ -207,11 +208,15 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
             .filter((snapshot) => /(\.test|\.spec)\.[tj]sx?$/.test(snapshot.file_path))
             .map((snapshot) => snapshot.file_path)
         : [];
+      const symbolIdentities = scanStatus.latest_scan
+        ? storage.listSymbolIdentities(requestedRepoId, scanStatus.latest_scan.id)
+        : [];
       const changeImpact = buildChangeImpact({
         repo_id: requestedRepoId,
         scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
         changed_files: relevantFiles.map((file) => file.path),
         route_flows: changeImpactRouteFlows,
+        symbol_identities: symbolIdentities,
         test_files: testFiles
       });
       const testSelection = selectRelevantTests({
@@ -436,7 +441,8 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         scan_id: requestedScanId,
         repo_contract_id: requestedRepoContractId
       });
-      const page = executions.slice(requestedOffset, requestedOffset + requestedLimit);
+      const page = executions.slice(requestedOffset, requestedOffset + requestedLimit)
+        .map(redactRequiredCheckExecution);
       const latestByCommand = new Map<string, (typeof executions)[number]>();
       for (const execution of executions) {
         if (!latestByCommand.has(execution.command)) {
@@ -444,6 +450,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         }
       }
       const latestExecutions = [...latestByCommand.values()];
+      const redactedLatestExecutions = latestExecutions.map(redactRequiredCheckExecution);
       return {
         response_schema: "drift.required_check_executions.v1",
         repo_id: requestedRepoId,
@@ -463,7 +470,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
           latest_passed_count: latestExecutions.filter((execution) => execution.status === "passed").length,
           latest_failed_count: latestExecutions.filter((execution) => execution.status !== "passed").length
         },
-        latest_by_command: latestExecutions,
+        latest_by_command: redactedLatestExecutions,
         executions: page
       };
     }),
@@ -723,12 +730,30 @@ function mcpHelpText(): string {
 
 function withStorage<T>(options: DriftMcpOptions, fn: (storage: ReturnType<typeof openDriftStorage>) => T): T {
   const storage = openDriftStorage({ databasePath: options.databasePath });
-  storage.migrate();
   try {
+    assertMcpReadOnlySchemaReady(storage);
     return fn(storage);
   } finally {
     storage.close();
   }
+}
+
+function assertMcpReadOnlySchemaReady(storage: ReturnType<typeof openDriftStorage>): void {
+  const applied = storage.getAppliedMigrations();
+  const expected = MIGRATIONS.map((migration) => migration.id);
+  const unknown = applied.filter((migrationId) => !expected.includes(migrationId));
+  if (unknown.length > 0) {
+    throw new Error(`Drift read-only MCP database has unsupported migrations: ${unknown.join(", ")}.`);
+  }
+  const missing = expected.filter((migrationId) => !applied.includes(migrationId));
+  if (missing.length > 0) {
+    throw new Error(`Drift read-only MCP database is not migrated; run the Drift CLI migration/scan path first. Missing migrations: ${missing.join(", ")}.`);
+  }
+}
+
+function redactRequiredCheckExecution(execution: RequiredCheckExecution): Omit<RequiredCheckExecution, "stdout_preview" | "stderr_preview"> {
+  const { stdout_preview: _stdoutPreview, stderr_preview: _stderrPreview, ...redacted } = execution;
+  return redacted;
 }
 
 function response(id: JsonRpcRequest["id"], result: unknown): JsonRpcResponse {
@@ -1085,7 +1110,7 @@ function scanStatusPayload(
         ...(repoRootMissing ? ["repo_root_missing"] : []),
         ...scanInvalidationReasons(latestScan, { currentBranch, currentResolverInputFingerprint })
       ]
-    : [];
+    : ["scan_missing"];
   const changes = latestScan
     ? repoRootMissing
       ? {
@@ -1173,6 +1198,10 @@ function readinessForStoredScan(
   parserGaps: ParserGap[] = scanId ? storage.listParserGaps(repoId, scanId) : []
 ) {
   const graphAvailable = Boolean(scanId && storage.getFactGraphArtifact(repoId, scanId));
+  const requiredCapabilities = scanId ? ["fact_graph"] : ["fact_graph", "scan_manifest"];
+  const missingCapabilities = graphAvailable
+    ? []
+    : requiredCapabilities;
   return buildReadiness({
     repo_id: repoId,
     scan_id: scanId,
@@ -1180,9 +1209,9 @@ function readinessForStoredScan(
     graph_available: graphAvailable,
     graph_complete: graphAvailable,
     parser_gaps: parserGaps,
-    completeness_reasons: graphAvailable ? [] : ["graph_missing"],
-    required_capabilities: ["fact_graph"],
-    missing_capabilities: graphAvailable ? [] : ["fact_graph"]
+    completeness_reasons: graphAvailable ? [] : scanId ? ["graph_missing"] : ["scan_missing", "graph_missing"],
+    required_capabilities: requiredCapabilities,
+    missing_capabilities: missingCapabilities
   });
 }
 

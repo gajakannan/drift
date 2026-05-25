@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildFactGraphArtifactFromParts } from "@drift/factgraph";
-import { openDriftStorage } from "@drift/storage";
+import { MIGRATIONS, openDriftStorage } from "@drift/storage";
 import {
   DRIFT_READ_ONLY_MCP_TOOLS,
   createReadOnlyMcpHandlers,
@@ -241,6 +241,19 @@ async function seedMcpDatabase(): Promise<string> {
   });
   storage.close();
   return databasePath;
+}
+
+function deleteAppliedMigration(databasePath: string, migrationId: string): void {
+  const storage = openDriftStorage({ databasePath });
+  const raw = storage as unknown as {
+    db: {
+      prepare: (sql: string) => { run: (...args: unknown[]) => void };
+    };
+  };
+  raw.db
+    .prepare("DELETE FROM schema_migrations WHERE id = ?")
+    .run(migrationId);
+  storage.close();
 }
 
 async function seedMcpNoContractDatabase(): Promise<{
@@ -491,6 +504,46 @@ describe("read-only MCP handlers", () => {
 
     expect(() => handlers.get_scan_status({ repo_id: "repo_missing" }))
       .toThrow("Unknown repo repo_missing");
+  });
+
+  it("does not run migrations from read-only MCP handlers", async () => {
+    const databasePath = await seedMcpDatabase();
+    const lastMigration = MIGRATIONS.at(-1)!.id;
+    deleteAppliedMigration(databasePath, lastMigration);
+
+    expect(() => createReadOnlyMcpHandlers({ databasePath }).get_scan_status({ repo_id: "repo_abc" }))
+      .toThrow(/read-only MCP database is not migrated/i);
+
+    const storage = openDriftStorage({ databasePath });
+    expect(storage.getAppliedMigrations()).not.toContain(lastMigration);
+    storage.close();
+  });
+
+  it("matches CLI missing-scan status and readiness semantics", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-mcp-no-scan-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    await mkdir(repoRoot, { recursive: true });
+    const databasePath = join(dir, "drift.sqlite");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: repoRoot,
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.close();
+
+    expect(createReadOnlyMcpHandlers({ databasePath }).get_scan_status({ repo_id: "repo_abc" })).toMatchObject({
+      stale: true,
+      invalidation_reasons: ["scan_missing"],
+      readiness: {
+        missing_capabilities: ["fact_graph", "scan_manifest"],
+        required_capabilities: ["fact_graph", "scan_manifest"]
+      }
+    });
   });
 
   it("reports parser gap summaries in scan status", async () => {
@@ -1455,7 +1508,8 @@ describe("read-only MCP handlers", () => {
         execution_id: "required_check_execution_abc",
         command,
         status: "passed",
-        stdout_preview: "ok"
+        stdout_hash: createHash("sha256").update("ok").digest("hex"),
+        stderr_hash: createHash("sha256").update("").digest("hex")
       }],
       executions: [{
         execution_id: "required_check_execution_abc",
@@ -1464,6 +1518,43 @@ describe("read-only MCP handlers", () => {
         argv: ["node", "-e", "process.stdout.write('ok')"]
       }]
     });
+    expect(proof.latest_by_command[0]).not.toHaveProperty("stdout_preview");
+    expect(proof.latest_by_command[0]).not.toHaveProperty("stderr_preview");
+    expect(proof.executions[0]).not.toHaveProperty("stdout_preview");
+    expect(proof.executions[0]).not.toHaveProperty("stderr_preview");
+  });
+
+  it("includes scan symbol identities in MCP change impact", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertSymbolIdentities([{
+      schema_version: "drift.symbol_identity.v1",
+      symbol_id: "symbol_route_get",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      symbol_name: "GET",
+      kind: "function",
+      declared_in: "apps/web/app/api/users/route.ts",
+      exported_from: ["apps/web/app/api/users/route.ts"],
+      imported_as: [],
+      re_export_chain: [],
+      canonical_definition: "apps/web/app/api/users/route.ts#GET",
+      call_sites: [],
+      references: [],
+      visibility: "exported"
+    }]);
+    storage.close();
+
+    const preflight = createReadOnlyMcpHandlers({ databasePath }).get_task_preflight({
+      repo_id: "repo_abc",
+      task: "change users api route",
+      path: "apps/web/app/api/users/route.ts"
+    }) as { change_impact: { changed_symbols: string[] } };
+
+    expect(preflight.change_impact.changed_symbols).toEqual([
+      "apps/web/app/api/users/route.ts#GET"
+    ]);
   });
 
   it("returns a stale MCP preflight when the repo root is missing", async () => {

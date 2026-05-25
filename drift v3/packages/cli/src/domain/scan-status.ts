@@ -188,7 +188,10 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
       filesReused: scanData.stats?.files_reused ?? 0,
       reuseBlockedReasons: reuseManifest?.blocked_reasons ?? scanReuseBlockedReasons({
         previousScan,
-        currentResolverInputFingerprint
+        currentResolverInputFingerprint,
+        previousCapabilityReport: previousScan
+          ? storage.getScanCapabilityReport(repo.id, previousScan.id) ?? null
+          : null
       })
     });
     const parserGaps = parserGapsFromDiagnostics({
@@ -323,7 +326,10 @@ function createScanReuseManifest(input: {
 }): { path: string; dir: string; blocked_reasons: string[] } | null {
   const blockedReasons = scanReuseBlockedReasons({
     previousScan: input.previousScan,
-    currentResolverInputFingerprint: input.currentResolverInputFingerprint
+    currentResolverInputFingerprint: input.currentResolverInputFingerprint,
+    previousCapabilityReport: input.previousScan
+      ? input.storage.getScanCapabilityReport(input.repoId, input.previousScan.id) ?? null
+      : null
   });
   if (!input.previousScan || blockedReasons.length > 0) {
     return null;
@@ -365,11 +371,21 @@ function cleanupScanReuseManifest(manifest: { dir: string } | null): void {
 function scanReuseBlockedReasons(input: {
   previousScan?: ScanManifest;
   currentResolverInputFingerprint?: string;
+  previousCapabilityReport?: ScanCapabilityReport | null;
 }): string[] {
   if (!input.previousScan) {
     return ["previous_scan_missing"];
   }
   const reasons: string[] = [];
+  if ("previousCapabilityReport" in input && !input.previousCapabilityReport) {
+    reasons.push("previous_scan_capability_report_missing");
+  } else if (input.previousCapabilityReport && (
+    input.previousCapabilityReport.engine_source !== "rust" ||
+    input.previousCapabilityReport.fallback_used ||
+    input.previousCapabilityReport.enforcement_degraded
+  )) {
+    reasons.push("previous_scan_degraded");
+  }
   if (input.previousScan.scanner_version !== DRIFT_SCANNER_VERSION) {
     reasons.push("scanner_version_changed");
   }
@@ -388,6 +404,14 @@ function scanReuseBlockedReasons(input: {
     input.previousScan.adapter_versions.resolver_inputs !== input.currentResolverInputFingerprint
   ) {
     reasons.push("resolver_inputs_changed");
+  }
+  if (
+    input.previousScan.adapter_versions.resolver &&
+    input.previousScan.adapter_versions.resolver === DRIFT_RESOLVER_VERSION &&
+    input.currentResolverInputFingerprint &&
+    !input.previousScan.adapter_versions.resolver_inputs
+  ) {
+    reasons.push("resolver_inputs_missing");
   }
   return reasons.sort((left, right) => left.localeCompare(right));
 }
@@ -465,7 +489,8 @@ export function incrementalScanPlan(input: {
   const summary = scanFileChangeSummary(input.changes);
   const reuseBlockedReasons = input.reuseBlockedReasons ?? scanReuseBlockedReasons({
     previousScan: input.previousScan,
-    currentResolverInputFingerprint: input.currentScan.adapter_versions.resolver_inputs
+    currentResolverInputFingerprint: input.currentScan.adapter_versions.resolver_inputs,
+    previousCapabilityReport: undefined
   });
   const changedFileCount = summary.added + summary.modified + summary.deleted;
   const filesReused = input.filesReused ?? 0;
@@ -916,6 +941,14 @@ export function scanInvalidationReasons(
     scan.adapter_versions.resolver_inputs !== input.currentResolverInputFingerprint
   ) {
     reasons.push("resolver_inputs_changed");
+  }
+  if (
+    scan.adapter_versions.resolver &&
+    scan.adapter_versions.resolver === DRIFT_RESOLVER_VERSION &&
+    input.currentResolverInputFingerprint &&
+    !scan.adapter_versions.resolver_inputs
+  ) {
+    reasons.push("resolver_inputs_missing");
   }
   if (scan.rule_engine_version !== DRIFT_RULE_ENGINE_VERSION) {
     reasons.push("rule_engine_version_changed");

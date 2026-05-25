@@ -208,6 +208,27 @@ export async function GET() {
 }
 
 #[test]
+fn extracts_next_route_handlers_declared_as_exported_constants() {
+    let source = r#"
+export const GET = async () => Response.json({ ok: true });
+"#;
+
+    let facts =
+        extract_typescript_facts("app/api/users/route.ts", source).expect("typescript facts");
+
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::ExportedSymbol && fact.name == "GET")
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::RouteDeclared && fact.name == "GET")
+    );
+}
+
+#[test]
 fn detects_package_and_module_roles_from_paths() {
     let source = "export function run() { return true; }\n";
     let cases = [

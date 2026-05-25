@@ -592,7 +592,29 @@ fn first_named_declaration_identifier(node: Node<'_>, source: &[u8]) -> Option<S
         {
             return Some(name);
         }
+        if matches!(child.kind(), "lexical_declaration" | "variable_declaration")
+            && let Some(name) = first_variable_declaration_identifier(child, source)
+        {
+            return Some(name);
+        }
         if let Some(name) = first_named_declaration_identifier(child, source) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn first_variable_declaration_identifier(node: Node<'_>, source: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "variable_declarator"
+            && let Some(name) = child
+                .child_by_field_name("name")
+                .and_then(|name| node_text(name, source))
+        {
+            return Some(name);
+        }
+        if let Some(name) = first_variable_declaration_identifier(child, source) {
             return Some(name);
         }
     }

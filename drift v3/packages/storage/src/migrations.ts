@@ -568,7 +568,7 @@ export const MIGRATIONS: Migration[] = [
     id: "016_symbol_identities",
     sql: `
       CREATE TABLE IF NOT EXISTS symbol_identities (
-        symbol_id TEXT PRIMARY KEY,
+        symbol_id TEXT NOT NULL,
         schema_version TEXT NOT NULL,
         repo_id TEXT NOT NULL,
         scan_id TEXT NOT NULL,
@@ -582,6 +582,7 @@ export const MIGRATIONS: Migration[] = [
         call_sites_json TEXT NOT NULL,
         references_json TEXT NOT NULL,
         visibility TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id, symbol_id),
         FOREIGN KEY (repo_id) REFERENCES repos(id),
         FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
       );
