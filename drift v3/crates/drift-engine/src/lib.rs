@@ -3,6 +3,12 @@ pub const DRIFT_ENGINE_VERSION: &str = "0.1.0";
 mod diff;
 mod facts;
 mod rules;
+mod security_capabilities;
+mod security_control_flow;
+mod security_facts;
+mod security_patterns;
+mod security_proof;
+mod security_rules;
 
 use std::{
     fs::File,
@@ -22,6 +28,19 @@ pub use rules::{
     DirectDataAccessViolation, EnforcementMode, EnforcementResult, FindingStatus, RuleFinding,
     Severity, classify_findings_against_baseline, detect_direct_data_access_imports,
     materialize_direct_data_access_findings,
+};
+pub use security_capabilities::{
+    SecurityCapabilityStatus, SecurityScanCapability, security_capabilities,
+};
+pub use security_facts::extract_security_facts;
+pub use security_patterns::{AcceptedAuthHelper, AuthGuardBehavior};
+pub use security_proof::{
+    AuthBoundaryProof, SecurityBoundaryProof, SecurityParserGap, SecurityProofResult,
+    SecurityProofStatus, build_auth_boundary_proof,
+};
+pub use security_rules::{
+    SecurityAuthContract, SecurityEnforcementMode, SecurityFinding, SecurityFindingResult,
+    evaluate_api_route_requires_auth_helper,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

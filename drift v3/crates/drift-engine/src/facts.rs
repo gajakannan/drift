@@ -13,6 +13,9 @@ pub enum FactKind {
     RouteDeclared,
     FileRoleDetected,
     TestDeclared,
+    AuthGuardCalled,
+    RouteReturnsResponse,
+    CallbackBoundaryDetected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

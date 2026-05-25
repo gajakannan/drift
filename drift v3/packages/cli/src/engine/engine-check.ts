@@ -58,6 +58,7 @@ export function engineCheckRequest(input: EngineCheckInput): EngineCheckRequest 
         file_path: fact.file_path,
         name: fact.name,
         value: fact.value,
+        imported_name: fact.imported_name,
         start_line: fact.start_line,
         end_line: fact.end_line
       }))

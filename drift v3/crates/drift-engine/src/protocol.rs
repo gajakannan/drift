@@ -325,6 +325,8 @@ pub struct CheckConvention {
 pub struct CheckMatcher {
     pub forbidden_imports: Option<Vec<String>>,
     pub allowed_delegate_imports: Option<Vec<String>>,
+    pub required_calls: Option<Vec<String>>,
+    pub applies_to_file_roles: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -356,6 +358,8 @@ pub struct CheckResult {
     pub adapter_versions: BTreeMap<String, String>,
     pub diff_mode: String,
     pub findings: Vec<CheckFinding>,
+    #[serde(default)]
+    pub security_boundary_proofs: Vec<Value>,
     pub diagnostics: Vec<EngineDiagnostic>,
     pub stats: EngineStats,
     pub completeness: Vec<EngineCompleteness>,

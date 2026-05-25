@@ -8,6 +8,7 @@ use drift_engine::{
     Fact, FactKind, FindingStatus, ParsedDiff, RuleFinding, Severity,
     classify_findings_against_diff, materialize_direct_data_access_findings,
 };
+use serde_json::json;
 
 use crate::protocol::{
     CheckBaselineViolation, CheckEvidence, CheckFact, CheckFinding, CheckGraphData, CheckRequest,
@@ -50,6 +51,7 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
     };
 
     let mut findings = Vec::new();
+    let mut security_boundary_proofs = Vec::new();
     for convention in request.contract.conventions {
         if convention.enforcement_capability != "deterministic_check"
             || convention.enforcement_mode == "off"
@@ -98,6 +100,17 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
                 enforcement_mode,
                 &allowed_delegate_imports,
             )
+        } else if convention.kind == "api_route_requires_auth_helper" {
+            let auth_result = security_auth_findings_and_proofs(
+                &facts,
+                &parsed_diff,
+                diff_scope,
+                &convention,
+                severity,
+                enforcement_mode,
+            );
+            security_boundary_proofs.extend(auth_result.proofs);
+            auth_result.findings
         } else {
             continue;
         };
@@ -180,6 +193,7 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
         diff_mode: request.diff.mode,
         stats,
         findings,
+        security_boundary_proofs,
         diagnostics,
         completeness: vec![EngineCompleteness {
             scope: "repo".to_string(),
@@ -445,6 +459,235 @@ fn graph_direct_data_access_findings(
         });
     }
     findings
+}
+
+struct SecurityAuthEvaluation {
+    findings: Vec<PendingFinding>,
+    proofs: Vec<serde_json::Value>,
+}
+
+fn security_auth_findings_and_proofs(
+    facts: &[Fact],
+    parsed_diff: &ParsedDiff,
+    diff_scope: DiffScope,
+    convention: &crate::protocol::CheckConvention,
+    severity: Severity,
+    enforcement_mode: EnforcementMode,
+) -> SecurityAuthEvaluation {
+    let required_calls = convention
+        .matcher
+        .required_calls
+        .clone()
+        .unwrap_or_default();
+    if required_calls.is_empty() {
+        return SecurityAuthEvaluation {
+            findings: Vec::new(),
+            proofs: Vec::new(),
+        };
+    }
+    if convention
+        .matcher
+        .applies_to_file_roles
+        .as_ref()
+        .is_some_and(|roles| !roles.iter().any(|role| role == "api_route"))
+    {
+        return SecurityAuthEvaluation {
+            findings: Vec::new(),
+            proofs: Vec::new(),
+        };
+    }
+    let files = security_auth_files(facts, parsed_diff, diff_scope);
+    let mut findings = Vec::new();
+    let mut proofs = Vec::new();
+
+    for file_path in files {
+        let file_facts = facts
+            .iter()
+            .filter(|fact| fact.file_path == file_path)
+            .collect::<Vec<_>>();
+        let route = file_facts
+            .iter()
+            .find(|fact| fact.kind == FactKind::RouteDeclared)
+            .map(|fact| fact.name.as_str())
+            .unwrap_or("unknown");
+        let route_id = format!("route:{file_path}:{route}");
+        let guard_calls = file_facts
+            .iter()
+            .filter(|fact| {
+                fact.kind == FactKind::AuthGuardCalled
+                    || (fact.kind == FactKind::SymbolCalled && required_calls.contains(&fact.name))
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        let sinks = file_facts
+            .iter()
+            .filter(|fact| {
+                matches!(
+                    fact.kind,
+                    FactKind::DataOperationDetected | FactKind::RouteReturnsResponse
+                )
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        if sinks.is_empty() {
+            continue;
+        }
+
+        let first_guard_line = guard_calls.iter().map(|fact| fact.start_line).min();
+        let mut dominated_sinks = Vec::new();
+        let mut undominated_sinks = Vec::new();
+        for sink in &sinks {
+            let sink_kind = security_sink_kind(sink.kind);
+            let sink_id = format!("sink:{file_path}:{}:{}", sink.start_line, sink.name);
+            if first_guard_line.is_some_and(|line| line < sink.start_line) {
+                dominated_sinks.push(json!({
+                    "sink_id": sink_id,
+                    "sink_kind": sink_kind,
+                    "edge_id": format!("edge:auth-dominates:{file_path}:{}", sink.start_line)
+                }));
+            } else {
+                undominated_sinks.push(json!({
+                    "sink_id": sink_id,
+                    "sink_kind": sink_kind,
+                    "reason": match first_guard_line {
+                        Some(line) if line > sink.start_line => "guard_after_sink",
+                        _ => "no_guard_call",
+                    },
+                    "fact_ids": [security_fact_id(sink)]
+                }));
+            }
+        }
+
+        let proven = !sinks.is_empty() && undominated_sinks.is_empty();
+        let missing_proof_ids = if proven {
+            Vec::new()
+        } else {
+            vec![format!("missing_proof:{route_id}:auth")]
+        };
+        let proof_id = format!("proof:{route_id}:auth");
+        let finding_fingerprint = stable_hash(&format!(
+            "{}:{}:missing_auth_guard:{}",
+            convention.id, route_id, sinks[0].start_line
+        ));
+        let finding_id = format!("finding_{}", &finding_fingerprint[..16]);
+        proofs.push(json!({
+            "proof_id": proof_id,
+            "proof_version": "security-boundary-proof/v1",
+            "route": {
+                "route_id": route_id,
+                "file_path": file_path,
+                "file_role": "api_route",
+                "handler_symbol": route
+            },
+            "contracts": [{
+                "contract_id": convention.id,
+                "kind": "api_route_requires_auth_helper",
+                "enforcement_mode": convention.enforcement_mode,
+                "capability": convention.enforcement_capability,
+                "matched": true
+            }],
+            "capability_status": [{
+                "name": "control_flow_guard_dominance",
+                "status": "partial",
+                "can_block": true,
+                "parser_gap_ids": [],
+                "missing_proof_ids": missing_proof_ids
+            }],
+            "auth": {
+                "required": true,
+                "proven": proven,
+                "proof_kind": if proven { "handler_guard" } else { "none" },
+                "trusted_guard_calls": guard_calls.iter().map(|guard| json!({
+                    "fact_id": security_fact_id(guard),
+                    "guard_id": guard.name,
+                    "symbol": guard.name,
+                    "start_line": guard.start_line,
+                    "end_line": guard.end_line
+                })).collect::<Vec<_>>(),
+                "dominated_sinks": dominated_sinks,
+                "undominated_sinks": undominated_sinks
+            },
+            "missing_proof": if proven {
+                Vec::<serde_json::Value>::new()
+            } else {
+                vec![json!({
+                    "id": missing_proof_ids[0],
+                    "capability": "control_flow_guard_dominance",
+                    "code": "missing_auth_guard",
+                    "blocks_enforcement": true,
+                    "fact_ids": [security_fact_id(sinks[0])],
+                    "graph_edge_ids": []
+                })]
+            },
+            "parser_gaps": [],
+            "result": {
+                "proof_status": if proven { "proven" } else { "missing_proof" },
+                "enforcement_result": if proven { "pass" } else { convention.enforcement_mode.as_str() },
+                "can_block": !proven,
+                "finding_ids": if proven { Vec::<String>::new() } else { vec![finding_id.clone()] }
+            }
+        }));
+
+        if !proven {
+            findings.push(PendingFinding {
+                fingerprint: finding_fingerprint,
+                convention_id: convention.id.clone(),
+                rule_id: "api_route_requires_auth_helper".to_string(),
+                title: "API route missing required auth proof".to_string(),
+                message: "Accepted auth helper must dominate protected route sinks.".to_string(),
+                severity,
+                enforcement_result: enforcement_result_for_mode(enforcement_mode),
+                file_path: file_path.clone(),
+                import_name: "auth_guard".to_string(),
+                import_source: "missing_auth_guard".to_string(),
+                line: sinks[0].start_line,
+                evidence_id: format!("evidence_{}", &finding_id["finding_".len()..]),
+                legacy_fingerprints: Vec::new(),
+                related_node_ids: Vec::new(),
+            });
+        }
+    }
+
+    SecurityAuthEvaluation { findings, proofs }
+}
+
+fn security_auth_files(
+    facts: &[Fact],
+    parsed_diff: &ParsedDiff,
+    diff_scope: DiffScope,
+) -> BTreeSet<String> {
+    let api_route_files = facts
+        .iter()
+        .filter(|fact| fact.kind == FactKind::FileRoleDetected && fact.name == "api_route")
+        .map(|fact| fact.file_path.clone())
+        .collect::<BTreeSet<_>>();
+    if matches!(diff_scope, DiffScope::Full) {
+        return api_route_files;
+    }
+    let changed_files = parsed_diff
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<BTreeSet<_>>();
+    api_route_files
+        .into_iter()
+        .filter(|file| changed_files.contains(file))
+        .collect()
+}
+
+fn security_sink_kind(kind: FactKind) -> &'static str {
+    match kind {
+        FactKind::DataOperationDetected => "data_operation",
+        FactKind::RouteReturnsResponse => "response",
+        _ => "unknown",
+    }
+}
+
+fn security_fact_id(fact: &Fact) -> String {
+    format!(
+        "fact:{}:{}:{}",
+        fact.file_path, fact.kind as u8, fact.start_line
+    )
 }
 
 fn graph_service_delegation_findings(
@@ -751,6 +994,9 @@ fn fact_kind_from_str(kind: &str) -> Option<FactKind> {
         "route_declared" => Some(FactKind::RouteDeclared),
         "file_role_detected" => Some(FactKind::FileRoleDetected),
         "test_declared" => Some(FactKind::TestDeclared),
+        "auth_guard_called" => Some(FactKind::AuthGuardCalled),
+        "route_returns_response" => Some(FactKind::RouteReturnsResponse),
+        "callback_boundary_detected" => Some(FactKind::CallbackBoundaryDetected),
         _ => None,
     }
 }

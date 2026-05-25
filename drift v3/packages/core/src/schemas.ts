@@ -276,7 +276,10 @@ export const FactKindSchema = z.enum([
   "data_operation_detected",
   "route_declared",
   "file_role_detected",
-  "test_declared"
+  "test_declared",
+  "auth_guard_called",
+  "route_returns_response",
+  "callback_boundary_detected"
 ]);
 
 export const FactEvidenceLevelSchema = z.enum(["path", "text", "ast", "graph", "heuristic"]);
