@@ -518,6 +518,22 @@ describe("read-only MCP handlers", () => {
         total_count: 1,
         by_kind: { unresolved_import: 1 },
         confidence_impact: { lowers_flow: 1 }
+      },
+      readiness: {
+        schema_version: "drift.readiness.v1",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        surface: "scan_status",
+        parser_gap_count: 1,
+        parser_gaps_by_kind: { unresolved_import: 1 },
+        decision: "refuse",
+        reasons: [
+          "graph_incomplete",
+          "graph_missing",
+          "graph_unavailable",
+          "missing_capability:fact_graph",
+          "parser_gaps_present"
+        ]
       }
     });
   });
@@ -744,6 +760,11 @@ describe("read-only MCP handlers", () => {
     expect(handlers.get_repo_map({ repo_id: "repo_abc" })).toMatchObject({
       repo_id: "repo_abc",
       policy: { allowed: true, surface: "cli-preflight" },
+      readiness: {
+        schema_version: "drift.readiness.v1",
+        surface: "repo_map",
+        repo_id: "repo_abc"
+      },
       governance: {
         read_only: true,
         agent_can_mutate: false
@@ -875,6 +896,11 @@ describe("read-only MCP handlers", () => {
         schema_version: 1
       },
       policy: { allowed: true, surface: "cli-preflight" },
+      readiness: {
+        schema_version: "drift.readiness.v1",
+        surface: "prepare",
+        repo_id: "repo_abc"
+      },
       conventions: [{
         id: "convention_no_direct_db",
         severity: "error",

@@ -9,6 +9,7 @@ import {
   buildLayerArchitectureProof,
   buildEntrypointFlowProof,
   buildChangeImpact,
+  buildReadiness,
   buildRepoMapReadModel,
   buildRepoTopology,
   buildSymbolIdentity,
@@ -1142,6 +1143,97 @@ describe("GraphQueryService", () => {
     expect(incomplete.reasons).toContain("resolver_dependencies_missing");
     expect(diagnostic.complete).toBe(false);
     expect(diagnostic.reasons).toContain("import_resolution_incomplete");
+  });
+
+  it("builds advisory readiness when parser gaps lower flow confidence", () => {
+    const readiness = buildReadiness({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      surface: "prepare",
+      graph_available: true,
+      graph_complete: true,
+      parser_gaps: [{
+        schema_version: "drift.parser_gap.v1",
+        gap_id: "parser_gap_missing_service",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        kind: "unresolved_import",
+        file_path: "apps/web/app/api/users/route.ts",
+        start_line: 1,
+        end_line: 1,
+        confidence_impact: "lowers_flow",
+        message: "Could not resolve import @/services/users.",
+        evidence_refs: ["diagnostic_unresolved_import"],
+        created_at: "2026-05-25T00:00:00.000Z"
+      }],
+      completeness_reasons: [],
+      required_capabilities: ["route_flow_graph"],
+      missing_capabilities: []
+    });
+
+    expect(readiness).toMatchObject({
+      schema_version: "drift.readiness.v1",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      surface: "prepare",
+      graph_available: true,
+      graph_complete: true,
+      parser_gap_count: 1,
+      parser_gaps_by_kind: { unresolved_import: 1 },
+      confidence: 0.82,
+      decision: "advisory_only",
+      reasons: ["parser_gaps_present"],
+      required_capabilities: ["route_flow_graph"],
+      missing_capabilities: []
+    });
+  });
+
+  it("allows blocking readiness when graph and parser evidence are complete", () => {
+    const readiness = buildReadiness({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      surface: "check",
+      graph_available: true,
+      graph_complete: true,
+      parser_gaps: [],
+      completeness_reasons: [],
+      required_capabilities: ["direct_data_access_check"],
+      missing_capabilities: []
+    });
+
+    expect(readiness).toMatchObject({
+      confidence: 1,
+      decision: "blocking_allowed",
+      reasons: [],
+      parser_gap_count: 0,
+      parser_gaps_by_kind: {}
+    });
+  });
+
+  it("refuses blocking readiness when graph evidence is missing", () => {
+    const readiness = buildReadiness({
+      repo_id: "repo_abc",
+      scan_id: null,
+      surface: "check",
+      graph_available: false,
+      graph_complete: false,
+      parser_gaps: [],
+      completeness_reasons: ["graph_missing"],
+      required_capabilities: ["direct_data_access_check"],
+      missing_capabilities: ["graph"]
+    });
+
+    expect(readiness).toMatchObject({
+      confidence: 0,
+      decision: "refuse",
+      reasons: [
+        "graph_incomplete",
+        "graph_missing",
+        "graph_unavailable",
+        "missing_capability:graph"
+      ],
+      missing_capabilities: ["graph"]
+    });
   });
 
   it("groups graph diagnostics into bounded deterministic summaries", async () => {

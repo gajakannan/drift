@@ -1,5 +1,6 @@
 import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type ParserGap,type ParserGapConfidenceImpact,type ParserGapKind,type RepoRecord,type ScanFileChange,type ScanManifest } from "@drift/core";
 import { buildFactGraphArtifactFromParts } from "@drift/factgraph";
+import { buildReadiness,type DriftReadinessSurface } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,readdirSync,statSync } from "node:fs";
 import { readFileSync } from "node:fs";
@@ -421,6 +422,17 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
       invalidation_reasons: ["scan_missing"],
       changes: { added: [], modified: [], deleted: [] },
       parser_gaps: parserGapSummary([]),
+      readiness: buildReadiness({
+        repo_id: repoId,
+        scan_id: null,
+        surface: "scan_status",
+        graph_available: false,
+        graph_complete: false,
+        parser_gaps: [],
+        completeness_reasons: ["scan_missing"],
+        required_capabilities: ["scan_manifest", "fact_graph"],
+        missing_capabilities: ["scan_manifest", "fact_graph"]
+      }),
       next_command: nextCommands[0],
       next_commands: nextCommands
     };
@@ -451,6 +463,7 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
   const sourceChangeCount = changes.added.length + changes.modified.length + changes.deleted.length;
   const nextCommands = scanStatusNextCommands(repoId, repo.root_path, stale);
   const parserGaps = storage.listParserGaps(repoId, latestScan.id);
+  const readiness = readinessForStoredScan(storage, repoId, latestScan.id, "scan_status", parserGaps);
   const payload = {
     response_schema: "drift.scan.status.v1",
     repo_id: repoId,
@@ -477,10 +490,32 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     invalidation_reasons: invalidationReasons,
     changes,
     parser_gaps: parserGapSummary(parserGaps),
+    readiness,
     next_command: nextCommands[0],
     next_commands: nextCommands
   };
   return payload;
+}
+
+export function readinessForStoredScan(
+  storage: SqliteDriftStorage,
+  repoId: string,
+  scanId: string | null,
+  surface: DriftReadinessSurface,
+  parserGaps: ParserGap[] = scanId ? storage.listParserGaps(repoId, scanId) : []
+) {
+  const graphAvailable = Boolean(scanId && storage.getFactGraphArtifact(repoId, scanId));
+  return buildReadiness({
+    repo_id: repoId,
+    scan_id: scanId,
+    surface,
+    graph_available: graphAvailable,
+    graph_complete: graphAvailable,
+    parser_gaps: parserGaps,
+    completeness_reasons: graphAvailable ? [] : ["graph_missing"],
+    required_capabilities: ["fact_graph"],
+    missing_capabilities: graphAvailable ? [] : ["fact_graph"]
+  });
 }
 
 export function parserGapsFromDiagnostics(input: {

@@ -7,7 +7,7 @@ import { auditEvent,preflightGovernance } from "../domain/governance.js";
 import { MAX_POLICY_SNIPPET_CHARS,guardedSurfaces,policyContextNextCommands,policyContextSummary,policyShowNextCommands,policyShowSummary,policySurface } from "../domain/policy-context.js";
 import { policyFileContext } from "../domain/repo-map.js";
 import { requiredRepoContract } from "../domain/repo-paths.js";
-import { assertFreshScanIfRequired,freshnessRequirement,scanStatusPayload } from "../domain/scan-status.js";
+import { assertFreshScanIfRequired,freshnessRequirement,readinessForStoredScan,scanStatusPayload } from "../domain/scan-status.js";
 import { formatPolicyDecisionText,formatPolicyShowText } from "../formatters/policy.js";
 
 export function showPolicy(storage: SqliteDriftStorage, parsed: ParsedArgs): CommandPayload {
@@ -44,6 +44,7 @@ export function checkPolicyContext(storage: SqliteDriftStorage, parsed: ParsedAr
   const contract = requiredRepoContract(storage, repoId);
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, requireFresh);
+  const readiness = readinessForStoredScan(storage, repoId, scanStatus.latest_scan?.id ?? null, "allowed_context");
   const freshness = freshnessRequirement(requireFresh, scanStatus);
   const fileContext = policyFileContext(storage, repoId, contextPath, contract);
   const decision = authorizeContextExport(contract, surface, {
@@ -68,6 +69,7 @@ export function checkPolicyContext(storage: SqliteDriftStorage, parsed: ParsedAr
       id: contract.id,
       source: "accepted_contract"
     },
+    readiness,
     governance: preflightGovernance(),
     scan_status: scanStatus,
     freshness_requirement: freshness,

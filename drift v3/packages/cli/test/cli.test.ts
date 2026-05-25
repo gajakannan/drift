@@ -1248,6 +1248,13 @@ describe("drift CLI convention review", () => {
       reasons: []
     });
     expect(freshPayload.audit_integrity.head_event_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(freshPayload.readiness).toMatchObject({
+      schema_version: "drift.readiness.v1",
+      repo_id: scanPayload.repo.id,
+      scan_id: scanPayload.scan.id,
+      surface: "scan_status",
+      parser_gap_count: 0
+    });
     expect(freshPayload.next_command).toBe(`drift prepare "task" --repo ${scanPayload.repo.id} --json`);
     expect(freshPayload.next_commands).toEqual([
       `drift prepare "task" --repo ${scanPayload.repo.id} --json`,
@@ -1355,10 +1362,21 @@ describe("drift CLI convention review", () => {
     ]);
 
     expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout).parser_gaps).toMatchObject({
+    const payload = JSON.parse(result.stdout);
+    expect(payload.parser_gaps).toMatchObject({
       total_count: 1,
       by_kind: { unresolved_import: 1 },
       confidence_impact: { lowers_flow: 1 }
+    });
+    expect(payload.readiness).toMatchObject({
+      schema_version: "drift.readiness.v1",
+      repo_id: repoId,
+      scan_id: scanId,
+      surface: "scan_status",
+      parser_gap_count: 1,
+      parser_gaps_by_kind: { unresolved_import: 1 },
+      decision: "advisory_only",
+      reasons: ["parser_gaps_present"]
     });
   });
 
@@ -2824,6 +2842,13 @@ describe("drift CLI convention review", () => {
       capability_completeness: {
         complete: true
       }
+    });
+    expect(payload.readiness).toMatchObject({
+      schema_version: "drift.readiness.v1",
+      repo_id: "repo_abc",
+      scan_id: expect.stringMatching(/^scan_check_/),
+      surface: "check",
+      decision: "blocking_allowed"
     });
     expect(payload.summary.engine_source).toBe("rust");
     expect(payload.summary.blocking_count).toBe(1);
@@ -9579,6 +9604,11 @@ describe("drift CLI convention review", () => {
     expect(payload).toMatchObject({
       repo_id: repoId,
       policy: { allowed: true, surface: "cli-preflight" },
+      readiness: {
+        schema_version: "drift.readiness.v1",
+        surface: "repo_map",
+        repo_id: repoId
+      },
       governance: {
         read_only: true,
         agent_can_mutate: false
@@ -11219,6 +11249,11 @@ describe("drift CLI convention review", () => {
         ready: false,
         id: null,
         source: "default_local_policy"
+      },
+      readiness: {
+        schema_version: "drift.readiness.v1",
+        repo_id: "repo_abc",
+        surface: "prepare"
       },
       summary: {
         contract_ready: false,

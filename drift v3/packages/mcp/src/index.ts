@@ -40,6 +40,7 @@ import {
 } from "@drift/core";
 import {
   buildChangeImpact,
+  buildReadiness,
   classifyAgentTask,
   buildRepoMapReadModel,
   createGraphQueryService,
@@ -48,7 +49,8 @@ import {
   repoMapOpenFindingIds,
   repoMapRiskyAreaIds,
   selectRelevantTests,
-  type ChangeImpactRouteFlow
+  type ChangeImpactRouteFlow,
+  type DriftReadinessSurface
 } from "@drift/query";
 import { MIGRATIONS, openDriftStorage } from "@drift/storage";
 import { execFileSync } from "node:child_process";
@@ -221,6 +223,17 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const parserGaps = scanStatus.latest_scan
         ? storage.listParserGaps(requestedRepoId, scanStatus.latest_scan.id)
         : [];
+      const readiness = buildReadiness({
+        repo_id: requestedRepoId,
+        scan_id: scanStatus.latest_scan?.id ?? null,
+        surface: "prepare",
+        graph_available: graphContext.available,
+        graph_complete: graphContext.completeness?.complete ?? false,
+        parser_gaps: parserGaps,
+        completeness_reasons: graphContext.completeness?.reasons ?? graphContext.diagnostics,
+        required_capabilities: ["route_flow_graph"],
+        missing_capabilities: graphContext.available ? [] : ["fact_graph"]
+      });
       const contextPolicy = createContextPolicyMatrix(contract, policy);
       const taskPreflightPacket = AgentPreflightPacketV2Schema.parse({
         schema_version: "drift.agent_preflight.v2",
@@ -242,8 +255,8 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         forbidden_actions: taskModel.forbidden_actions,
         context_policy: contextPolicy,
         confidence: {
-          graph_confidence: graphConfidence(graphContext.available, parserGaps.length),
-          reasons: graphConfidenceReasons(graphContext.available, parserGaps.length)
+          graph_confidence: readiness.confidence,
+          reasons: readiness.reasons
         },
         legacy_packet: agentContractPacket
       });
@@ -261,6 +274,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
           diagnostics: graphContext.diagnostics
         }),
         policy,
+        readiness,
         contract: {
           id: contractReady ? contract.id : null,
           schema_version: contract.contract_schema_version,
@@ -473,6 +487,12 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         };
         const scanStatus = scanStatusPayload(storage, requestedRepoId);
         assertFreshScanIfRequired(requestedRepoId, scanStatus, Boolean(require_fresh));
+        const readiness = readinessForStoredScan(
+          storage,
+          requestedRepoId,
+          scanStatus.latest_scan?.id ?? null,
+          "allowed_context"
+        );
         const freshness = freshnessRequirement(Boolean(require_fresh), scanStatus);
         const fileContext = policyFileContext(storage, requestedRepoId, requestedPath, contract);
         const decision = authorizeContextExport(contract, requestedSurface, {
@@ -491,6 +511,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
             id: contractReady ? contract.id : null,
             source: contractReady ? "accepted_contract" : "default_local_policy"
           },
+          readiness,
           governance: preflightGovernance(),
           scan_status: scanStatus,
           freshness_requirement: freshness,
@@ -1042,6 +1063,7 @@ function scanStatusPayload(
   const snapshots = latestScan ? storage.listFileSnapshots(repoId, latestScan.id) : [];
   const scanFileChanges = latestScan ? storage.listScanFileChanges(repoId, latestScan.id) : [];
   const parserGaps = latestScan ? storage.listParserGaps(repoId, latestScan.id) : [];
+  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "scan_status", parserGaps);
   const repoRootMissing = !existsSync(repo.root_path);
   const currentBranch = repoRootMissing
     ? "unknown"
@@ -1099,9 +1121,31 @@ function scanStatusPayload(
     invalidation_reasons: invalidationReasons,
     changes,
     parser_gaps: parserGapSummary(parserGaps),
+    readiness,
     next_command: nextCommands[0],
     next_commands: nextCommands
   };
+}
+
+function readinessForStoredScan(
+  storage: ReturnType<typeof openDriftStorage>,
+  repoId: string,
+  scanId: string | null,
+  surface: DriftReadinessSurface,
+  parserGaps: ParserGap[] = scanId ? storage.listParserGaps(repoId, scanId) : []
+) {
+  const graphAvailable = Boolean(scanId && storage.getFactGraphArtifact(repoId, scanId));
+  return buildReadiness({
+    repo_id: repoId,
+    scan_id: scanId,
+    surface,
+    graph_available: graphAvailable,
+    graph_complete: graphAvailable,
+    parser_gaps: parserGaps,
+    completeness_reasons: graphAvailable ? [] : ["graph_missing"],
+    required_capabilities: ["fact_graph"],
+    missing_capabilities: graphAvailable ? [] : ["fact_graph"]
+  });
 }
 
 function parserGapSummary(gaps: ParserGap[]): {
@@ -1367,6 +1411,7 @@ function repoMapPayload(
   });
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
+  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "repo_map");
   return {
     response_schema: "drift.repo.map.v1",
     repo_id: repoId,
@@ -1379,6 +1424,7 @@ function repoMapPayload(
       requireFresh: Boolean(options.requireFresh)
     }),
     policy,
+    readiness,
     governance: preflightGovernance(),
     latest_scan: latestScan ?? null,
     scan_fingerprint: latestScan ? scanFingerprint(latestScan, snapshots) : null,

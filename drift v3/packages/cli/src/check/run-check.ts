@@ -8,7 +8,7 @@ import {
   type RequiredCheckExecution,
   type RepoContract
 } from "@drift/core";
-import { buildEntrypointFlowProof, scoreHelperSimilarity } from "@drift/query";
+import { buildEntrypointFlowProof,buildReadiness, scoreHelperSimilarity } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -20,6 +20,7 @@ import { auditEvent,preflightGovernance } from "../domain/governance.js";
 import { contractFingerprint,hashStable } from "../domain/identifiers.js";
 import { WaivedFinding } from "../domain/preflight.js";
 import { isApiRoutePath,matchesGlob } from "../domain/repo-paths.js";
+import { parserGapsFromDiagnostics } from "../domain/scan-status.js";
 import { collectScanData,type ScanData } from "../engine/collect-scan-data.js";
 import { runEngineCheck } from "../engine/engine-check.js";
 import { extractImports,importFactsForFile } from "../engine/fact-extraction.js";
@@ -78,6 +79,13 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
   if (checkData.fallbackStatus.fallback_used) {
     const fallbackStatus = fallbackStatusForCheck(checkData);
     const capabilityCompleteness = capabilityCompletenessForCheck(checkData);
+    const readiness = readinessForCheck({
+      repoId,
+      checkScanId,
+      checkData,
+      capabilityCompleteness,
+      now
+    });
     const check = checkEnvelope({
       checkId,
       repoId,
@@ -109,6 +117,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     const payload = {
       response_schema: "drift.check.result.v1",
       check,
+      readiness,
       policy,
       governance: preflightGovernance(),
       audit_integrity: storage.verifyAuditChain(repoId),
@@ -408,6 +417,13 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
   const checkStatus: CheckRun["status"] = blockingCount > 0 ? "fail" : "pass";
   const fallbackStatus = fallbackStatusForCheck(checkData);
   const capabilityCompleteness = capabilityCompletenessForCheck(checkData);
+  const readiness = readinessForCheck({
+    repoId,
+    checkScanId,
+    checkData,
+    capabilityCompleteness,
+    now
+  });
   const check = checkEnvelope({
     checkId,
     repoId,
@@ -445,6 +461,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
   const payload = {
     response_schema: "drift.check.result.v1",
     check,
+    readiness,
     policy,
     governance: preflightGovernance(),
     audit_integrity: storage.verifyAuditChain(repoId),
@@ -492,6 +509,35 @@ function capabilityCompletenessForCheck(checkData: ScanData): {
       : [],
     can_block: checkData.engineSource === "rust" && !checkData.fallbackStatus.enforcement_degraded
   };
+}
+
+function readinessForCheck(input: {
+  repoId: string;
+  checkScanId: string;
+  checkData: ScanData;
+  capabilityCompleteness: ReturnType<typeof capabilityCompletenessForCheck>;
+  now: string;
+}) {
+  const parserGaps = parserGapsFromDiagnostics({
+    repoId: input.repoId,
+    scanId: input.checkScanId,
+    diagnostics: input.checkData.graph_diagnostics.length > 0
+      ? input.checkData.graph_diagnostics
+      : input.checkData.diagnostics,
+    createdAt: input.now
+  });
+  const graphAvailable = input.checkData.graph_nodes.length > 0;
+  return buildReadiness({
+    repo_id: input.repoId,
+    scan_id: input.checkScanId,
+    surface: "check",
+    graph_available: graphAvailable,
+    graph_complete: input.capabilityCompleteness.complete && input.capabilityCompleteness.can_block,
+    parser_gaps: parserGaps,
+    completeness_reasons: graphAvailable ? [] : ["graph_missing"],
+    required_capabilities: ["direct_data_access_check"],
+    missing_capabilities: input.capabilityCompleteness.missing_capabilities
+  });
 }
 
 function checkEnvelope(input: {

@@ -6,7 +6,7 @@ import {
   createContextPolicyMatrix,
   type FileRole
 } from "@drift/core";
-import { buildChangeImpact,classifyAgentTask,selectRelevantTests,type ChangeImpactRouteFlow } from "@drift/query";
+import { buildChangeImpact,buildReadiness,classifyAgentTask,selectRelevantTests,type ChangeImpactRouteFlow } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { optionalRepoRelativeFlag,requiredValue,stringFlag } from "../args/flag-readers.js";
@@ -118,6 +118,17 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
   const parserGaps = scanStatus.latest_scan
     ? storage.listParserGaps(repoId, scanStatus.latest_scan.id)
     : [];
+  const readiness = buildReadiness({
+    repo_id: repoId,
+    scan_id: scanStatus.latest_scan?.id ?? null,
+    surface: "prepare",
+    graph_available: graphContext.available,
+    graph_complete: graphContext.completeness?.complete ?? false,
+    parser_gaps: parserGaps,
+    completeness_reasons: graphContext.completeness?.reasons ?? graphContext.diagnostics,
+    required_capabilities: ["route_flow_graph"],
+    missing_capabilities: graphContext.available ? [] : ["fact_graph"]
+  });
   const contextPolicy = createContextPolicyMatrix(contract, policy);
   const taskPreflightPacket = AgentPreflightPacketV2Schema.parse({
     schema_version: "drift.agent_preflight.v2",
@@ -139,8 +150,8 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     forbidden_actions: taskModel.forbidden_actions,
     context_policy: contextPolicy,
     confidence: {
-      graph_confidence: graphConfidence(graphContext.available, parserGaps.length),
-      reasons: graphConfidenceReasons(graphContext.available, parserGaps.length)
+      graph_confidence: readiness.confidence,
+      reasons: readiness.reasons
     },
     legacy_packet: agentContractPacket
   });
@@ -167,6 +178,7 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
       diagnostics: graphContext.diagnostics
     }),
     policy,
+    readiness,
     contract: {
       id: storedContract?.id ?? null,
       schema_version: contract.contract_schema_version,
