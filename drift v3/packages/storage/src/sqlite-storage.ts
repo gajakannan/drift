@@ -18,6 +18,7 @@ import type {
   RepoRecord,
   RequiredCheckExecution,
   ResolverDependency,
+  ScanCapabilityReport,
   ScanFileChange,
   ScanManifest,
   SymbolIdentity,
@@ -39,6 +40,7 @@ import {
   RepoRecordSchema,
   RequiredCheckExecutionSchema,
   ResolverDependencySchema,
+  ScanCapabilityReportSchema,
   ScanFileChangeSchema,
   ScanManifestSchema,
   SymbolIdentitySchema,
@@ -385,13 +387,13 @@ export class SqliteDriftStorage {
     const parsedFacts = facts.map((fact) => FactRecordSchema.parse(fact));
     const insert = this.db.prepare(`
       INSERT INTO facts (
-        id, repo_id, scan_id, kind, file_path, name, value, start_line, end_line,
+        id, repo_id, scan_id, kind, file_path, name, value, imported_name, start_line, end_line,
         source_span_json, ast_node_kind, extraction_method, extractor_version, parser_version,
         confidence, confidence_label, evidence_level, resolution_status, staleness_status,
         last_seen_scan_id
       )
       VALUES (
-        @id, @repo_id, @scan_id, @kind, @file_path, @name, @value, @start_line, @end_line,
+        @id, @repo_id, @scan_id, @kind, @file_path, @name, @value, @imported_name, @start_line, @end_line,
         @source_span_json, @ast_node_kind, @extraction_method, @extractor_version, @parser_version,
         @confidence, @confidence_label, @evidence_level, @resolution_status, @staleness_status,
         @last_seen_scan_id
@@ -401,6 +403,7 @@ export class SqliteDriftStorage {
         file_path = excluded.file_path,
         name = excluded.name,
         value = excluded.value,
+        imported_name = excluded.imported_name,
         start_line = excluded.start_line,
         end_line = excluded.end_line,
         source_span_json = excluded.source_span_json,
@@ -421,6 +424,7 @@ export class SqliteDriftStorage {
         insert.run({
           ...fact,
           value: fact.value ?? null,
+          imported_name: fact.imported_name ?? null,
           ast_node_kind: fact.ast_node_kind ?? null,
           source_span_json: JSON.stringify(fact.source_span)
         });
@@ -487,6 +491,59 @@ export class SqliteDriftStorage {
           .all(repoId);
 
     return rows.map(parserGapFromRow);
+  }
+
+  upsertScanCapabilityReport(report: ScanCapabilityReport): void {
+    const parsed = ScanCapabilityReportSchema.parse(report);
+    this.db
+      .prepare(`
+        INSERT INTO scan_capability_reports (
+          repo_id, scan_id, schema_version, engine_source, engine_version, scanner_version,
+          adapter_versions_json, certified_capabilities_json, required_capabilities_json,
+          missing_capabilities_json, completeness_json, parser_gap_count, parser_gap_kinds_json,
+          fallback_used, enforcement_degraded, created_at
+        )
+        VALUES (
+          @repo_id, @scan_id, @schema_version, @engine_source, @engine_version, @scanner_version,
+          @adapter_versions_json, @certified_capabilities_json, @required_capabilities_json,
+          @missing_capabilities_json, @completeness_json, @parser_gap_count, @parser_gap_kinds_json,
+          @fallback_used, @enforcement_degraded, @created_at
+        )
+        ON CONFLICT(repo_id, scan_id) DO UPDATE SET
+          schema_version = excluded.schema_version,
+          engine_source = excluded.engine_source,
+          engine_version = excluded.engine_version,
+          scanner_version = excluded.scanner_version,
+          adapter_versions_json = excluded.adapter_versions_json,
+          certified_capabilities_json = excluded.certified_capabilities_json,
+          required_capabilities_json = excluded.required_capabilities_json,
+          missing_capabilities_json = excluded.missing_capabilities_json,
+          completeness_json = excluded.completeness_json,
+          parser_gap_count = excluded.parser_gap_count,
+          parser_gap_kinds_json = excluded.parser_gap_kinds_json,
+          fallback_used = excluded.fallback_used,
+          enforcement_degraded = excluded.enforcement_degraded,
+          created_at = excluded.created_at
+      `)
+      .run({
+        ...parsed,
+        engine_version: parsed.engine_version ?? null,
+        adapter_versions_json: stringifyJson(parsed.adapter_versions),
+        certified_capabilities_json: stringifyJson(parsed.certified_capabilities),
+        required_capabilities_json: stringifyJson(parsed.required_capabilities),
+        missing_capabilities_json: stringifyJson(parsed.missing_capabilities),
+        completeness_json: stringifyJson(parsed.completeness),
+        parser_gap_kinds_json: stringifyJson(parsed.parser_gap_kinds),
+        fallback_used: parsed.fallback_used ? 1 : 0,
+        enforcement_degraded: parsed.enforcement_degraded ? 1 : 0
+      });
+  }
+
+  getScanCapabilityReport(repoId: string, scanId: string): ScanCapabilityReport | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM scan_capability_reports WHERE repo_id = ? AND scan_id = ?")
+      .get(repoId, scanId);
+    return row ? scanCapabilityReportFromRow(row) : undefined;
   }
 
   upsertSymbolIdentities(identities: SymbolIdentity[]): void {
@@ -616,11 +673,13 @@ export class SqliteDriftStorage {
     const insertEvidence = this.db.prepare(`
       INSERT INTO graph_evidence (
         repo_id, scan_id, id, artifact_id, file_path, file_hash, start_line, end_line,
-        start_column, end_column, adapter_id, adapter_version, fact_ids_json, redaction_state
+        start_column, end_column, adapter_id, adapter_version, fact_ids_json, confidence_kind,
+        extractor, snippet_hash, redaction_state
       )
       VALUES (
         @repo_id, @scan_id, @id, @artifact_id, @file_path, @file_hash, @start_line, @end_line,
-        @start_column, @end_column, @adapter_id, @adapter_version, @fact_ids_json, @redaction_state
+        @start_column, @end_column, @adapter_id, @adapter_version, @fact_ids_json, @confidence_kind,
+        @extractor, @snippet_hash, @redaction_state
       )
     `);
     const insertDiagnostic = this.db.prepare(`
@@ -725,7 +784,10 @@ export class SqliteDriftStorage {
           ...evidence,
           start_column: evidence.start_column ?? null,
           end_column: evidence.end_column ?? null,
-          fact_ids_json: stringifyJson(evidence.fact_ids)
+          fact_ids_json: stringifyJson(evidence.fact_ids),
+          confidence_kind: evidence.confidence_kind ?? "deterministic",
+          extractor: evidence.extractor ?? "unknown",
+          snippet_hash: evidence.snippet_hash ?? null
         });
       }
       for (const diagnostic of graphDiagnostics) {
@@ -831,12 +893,12 @@ export class SqliteDriftStorage {
         INSERT INTO check_runs (
           id, repo_id, repo_contract_id, contract_fingerprint, scan_id, status, scope,
           engine_source, fallback_used, stale_scan, capability_complete, findings_count,
-          blocking_count, started_at, completed_at
+          blocking_count, machine_contract_versions_json, started_at, completed_at
         )
         VALUES (
           @id, @repo_id, @repo_contract_id, @contract_fingerprint, @scan_id, @status, @scope,
           @engine_source, @fallback_used, @stale_scan, @capability_complete, @findings_count,
-          @blocking_count, @started_at, @completed_at
+          @blocking_count, @machine_contract_versions_json, @started_at, @completed_at
         )
         ON CONFLICT(id) DO UPDATE SET
           repo_contract_id = excluded.repo_contract_id,
@@ -850,13 +912,17 @@ export class SqliteDriftStorage {
           capability_complete = excluded.capability_complete,
           findings_count = excluded.findings_count,
           blocking_count = excluded.blocking_count,
+          machine_contract_versions_json = excluded.machine_contract_versions_json,
           completed_at = excluded.completed_at
       `)
       .run({
         ...parsed,
         fallback_used: parsed.fallback_used ? 1 : 0,
         stale_scan: parsed.stale_scan ? 1 : 0,
-        capability_complete: parsed.capability_complete ? 1 : 0
+        capability_complete: parsed.capability_complete ? 1 : 0,
+        machine_contract_versions_json: parsed.machine_contract_versions
+          ? stringifyJson(parsed.machine_contract_versions)
+          : null
       });
   }
 
@@ -875,13 +941,15 @@ export class SqliteDriftStorage {
           id, repo_id, convention_id, fingerprint, title, message, severity,
           enforcement_result, status, diff_status, evidence_refs_json, check_id,
           repo_contract_id, expected_layer, actual_layer, graph_path_json,
-          suggested_fix, related_node_ids_json, created_at
+          suggested_fix, related_node_ids_json, created_by_engine_version,
+          created_by_rule_engine_version, contract_schema_version, created_at
         )
         VALUES (
           @id, @repo_id, @convention_id, @fingerprint, @title, @message, @severity,
           @enforcement_result, @status, @diff_status, @evidence_refs_json, @check_id,
           @repo_contract_id, @expected_layer, @actual_layer, @graph_path_json,
-          @suggested_fix, @related_node_ids_json, @created_at
+          @suggested_fix, @related_node_ids_json, @created_by_engine_version,
+          @created_by_rule_engine_version, @contract_schema_version, @created_at
         )
         ON CONFLICT(repo_id, fingerprint) DO UPDATE SET
           title = excluded.title,
@@ -897,7 +965,10 @@ export class SqliteDriftStorage {
           actual_layer = excluded.actual_layer,
           graph_path_json = excluded.graph_path_json,
           suggested_fix = excluded.suggested_fix,
-          related_node_ids_json = excluded.related_node_ids_json
+          related_node_ids_json = excluded.related_node_ids_json,
+          created_by_engine_version = excluded.created_by_engine_version,
+          created_by_rule_engine_version = excluded.created_by_rule_engine_version,
+          contract_schema_version = excluded.contract_schema_version
       `)
       .run({
         ...parsed,
@@ -908,7 +979,10 @@ export class SqliteDriftStorage {
         actual_layer: parsed.actual_layer ?? null,
         graph_path_json: stringifyJson(parsed.graph_path ?? []),
         suggested_fix: parsed.suggested_fix ?? null,
-        related_node_ids_json: stringifyJson(parsed.related_node_ids ?? [])
+        related_node_ids_json: stringifyJson(parsed.related_node_ids ?? []),
+        created_by_engine_version: parsed.created_by_engine_version ?? null,
+        created_by_rule_engine_version: parsed.created_by_rule_engine_version ?? null,
+        contract_schema_version: parsed.contract_schema_version ?? null
       });
   }
 
@@ -1422,7 +1496,10 @@ function findingFromRow(row: unknown): Finding {
     actual_layer: record.actual_layer ?? undefined,
     graph_path: parseJsonArray(record.graph_path_json ?? "[]"),
     suggested_fix: record.suggested_fix ?? undefined,
-    related_node_ids: parseJsonArray(record.related_node_ids_json ?? "[]")
+    related_node_ids: parseJsonArray(record.related_node_ids_json ?? "[]"),
+    created_by_engine_version: record.created_by_engine_version ?? undefined,
+    created_by_rule_engine_version: record.created_by_rule_engine_version ?? undefined,
+    contract_schema_version: record.contract_schema_version ?? undefined
   });
 }
 
@@ -1432,7 +1509,10 @@ function checkRunFromRow(row: unknown): CheckRun {
     ...record,
     fallback_used: record.fallback_used === 1,
     stale_scan: record.stale_scan === 1,
-    capability_complete: record.capability_complete === 1
+    capability_complete: record.capability_complete === 1,
+    machine_contract_versions: typeof record.machine_contract_versions_json === "string"
+      ? parseJsonObject(record.machine_contract_versions_json)
+      : undefined
   });
 }
 
@@ -1441,6 +1521,7 @@ function factFromRow(row: unknown): FactRecord {
   return FactRecordSchema.parse({
     ...record,
     value: record.value ?? undefined,
+    imported_name: record.imported_name ?? undefined,
     ast_node_kind: record.ast_node_kind ?? null,
     source_span: typeof record.source_span_json === "string"
       ? JSON.parse(record.source_span_json) as unknown
@@ -1456,6 +1537,22 @@ function parserGapFromRow(row: unknown): ParserGap {
     evidence_refs: typeof record.evidence_refs_json === "string"
       ? JSON.parse(record.evidence_refs_json) as unknown
       : []
+  });
+}
+
+function scanCapabilityReportFromRow(row: unknown): ScanCapabilityReport {
+  const record = row as Record<string, unknown>;
+  return ScanCapabilityReportSchema.parse({
+    ...record,
+    engine_version: record.engine_version ?? null,
+    adapter_versions: parseJsonObject(record.adapter_versions_json),
+    certified_capabilities: parseJsonArray(record.certified_capabilities_json),
+    required_capabilities: parseJsonArray(record.required_capabilities_json),
+    missing_capabilities: parseJsonArray(record.missing_capabilities_json),
+    completeness: parseJsonArray(record.completeness_json),
+    parser_gap_kinds: parseJsonObject(record.parser_gap_kinds_json),
+    fallback_used: record.fallback_used === 1,
+    enforcement_degraded: record.enforcement_degraded === 1
   });
 }
 
@@ -1551,6 +1648,7 @@ function graphEvidenceFromRow(row: unknown): GraphEvidence {
     ...record,
     start_column: record.start_column ?? undefined,
     end_column: record.end_column ?? undefined,
+    snippet_hash: record.snippet_hash ?? undefined,
     fact_ids: parseJsonArray(record.fact_ids_json)
   });
 }

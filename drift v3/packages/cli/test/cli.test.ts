@@ -440,7 +440,7 @@ describe("drift CLI convention review", () => {
     expect(payload.runtime).toMatchObject({
       cli_version: "0.1.0",
       core_version: "0.1.0",
-      supported_sqlite_schema_version: 18,
+      supported_sqlite_schema_version: 22,
       storage_driver: "sqlite"
     });
     expect(payload.v1_scope).toMatchObject({
@@ -490,9 +490,10 @@ describe("drift CLI convention review", () => {
     });
     expect(payload.claims_manifest).toMatchObject({
       schema_version: "drift.production.claims.v1",
-      allowed_claims: expect.arrayContaining(["local_first_cli", "typescript_api_route_layering"]),
-      blocked_claims: expect.arrayContaining(["incremental_reuse", "cloud_sync", "mutation_capable_mcp"])
+      allowed_claims: expect.arrayContaining(["local_first_cli", "typescript_api_route_layering", "incremental_reuse"]),
+      blocked_claims: expect.arrayContaining(["cloud_sync", "mutation_capable_mcp"])
     });
+    expect(payload.claims_manifest.blocked_claims).not.toContain("incremental_reuse");
   });
 
   it("persists repo identity fields used by beta and production release gates", async () => {
@@ -1255,6 +1256,20 @@ describe("drift CLI convention review", () => {
       surface: "scan_status",
       parser_gap_count: 0
     });
+    expect(freshPayload.capability_report).toMatchObject({
+      schema_version: "drift.scan_capability_report.v1",
+      repo_id: scanPayload.repo.id,
+      scan_id: scanPayload.scan.id,
+      engine_source: expect.stringMatching(/^(rust|typescript)$/),
+      scanner_version: "0.1.0",
+      certified_capabilities: expect.arrayContaining(["file_discovery", "syntax_facts"]),
+      required_capabilities: expect.arrayContaining(["file_discovery", "syntax_facts"]),
+      missing_capabilities: [],
+      parser_gap_count: 0,
+      parser_gap_kinds: {},
+      fallback_used: false,
+      enforcement_degraded: false
+    });
     expect(freshPayload.next_command).toBe(`drift prepare "task" --repo ${scanPayload.repo.id} --json`);
     expect(freshPayload.next_commands).toEqual([
       `drift prepare "task" --repo ${scanPayload.repo.id} --json`,
@@ -1412,12 +1427,150 @@ describe("drift CLI convention review", () => {
     expect(secondPayload.scan.previous_scan_id).toBe(firstPayload.scan.id);
     expect(secondPayload.summary.incremental_plan).toMatchObject({
       previous_scan_id: firstPayload.scan.id,
+      execution_mode: "incremental_reuse",
+      reuse_applied: true,
+      reusable_file_count: 1,
+      changed_file_count: 0,
+      blocked_reasons: []
+    });
+  });
+
+  it("reuses unchanged files while reparsing modified files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-incremental-partial-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await mkdir(join(repoRoot, "src/services"), { recursive: true });
+    const routePath = join(repoRoot, "apps/web/app/api/users/route.ts");
+    const servicePath = join(repoRoot, "src/services/users.ts");
+    await writeFile(routePath, "export async function GET() { return Response.json({ ok: true }); }\n");
+    await writeFile(servicePath, "export function listUsers() { return []; }\n");
+
+    const first = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:10.000Z",
+      "--json"
+    ]);
+    expect(first.exitCode).toBe(0);
+    const firstPayload = JSON.parse(first.stdout);
+
+    await writeFile(routePath, "export async function GET() { return Response.json({ changed: true }); }\n");
+    const second = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:20.000Z",
+      "--json"
+    ]);
+
+    expect(second.exitCode).toBe(0);
+    const secondPayload = JSON.parse(second.stdout);
+    expect(secondPayload.summary.incremental_plan).toMatchObject({
+      previous_scan_id: firstPayload.scan.id,
+      execution_mode: "incremental_reuse",
+      reuse_applied: true,
+      reusable_file_count: 1,
+      changed_file_count: 1,
+      blocked_reasons: []
+    });
+  });
+
+  it("blocks reuse when resolver input files change", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-incremental-resolver-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(join(repoRoot, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { baseUrl: ".", paths: { "@/*": ["src/*"] } }
+    }));
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      "export async function GET() { return Response.json({ ok: true }); }\n"
+    );
+
+    const first = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:10.000Z",
+      "--json"
+    ]);
+    expect(first.exitCode).toBe(0);
+    const firstPayload = JSON.parse(first.stdout);
+
+    await writeFile(join(repoRoot, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { baseUrl: ".", paths: { "@/*": ["app/*"] } }
+    }));
+    const second = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:20.000Z",
+      "--json"
+    ]);
+
+    expect(second.exitCode).toBe(0);
+    const secondPayload = JSON.parse(second.stdout);
+    expect(secondPayload.summary.incremental_plan).toMatchObject({
+      previous_scan_id: firstPayload.scan.id,
       execution_mode: "full_scan",
       reuse_applied: false,
       reusable_file_count: 1,
       changed_file_count: 0,
-      blocked_reasons: ["engine_reuse_not_enabled"]
+      blocked_reasons: ["resolver_inputs_changed"]
     });
+  });
+
+  it("reuses surviving files and excludes deleted files from the new scan", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-incremental-delete-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await mkdir(join(repoRoot, "src/services"), { recursive: true });
+    const routePath = join(repoRoot, "apps/web/app/api/users/route.ts");
+    const servicePath = join(repoRoot, "src/services/users.ts");
+    await writeFile(routePath, "export async function GET() { return Response.json({ ok: true }); }\n");
+    await writeFile(servicePath, "export function listUsers() { return []; }\n");
+
+    const first = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:10.000Z",
+      "--json"
+    ]);
+    expect(first.exitCode).toBe(0);
+    const firstPayload = JSON.parse(first.stdout);
+
+    await rm(servicePath);
+    const second = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:20.000Z",
+      "--json"
+    ]);
+
+    expect(second.exitCode).toBe(0);
+    const secondPayload = JSON.parse(second.stdout);
+    expect(secondPayload.summary.incremental_plan).toMatchObject({
+      previous_scan_id: firstPayload.scan.id,
+      execution_mode: "incremental_reuse",
+      reuse_applied: true,
+      reusable_file_count: 1,
+      changed_file_count: 1,
+      blocked_reasons: []
+    });
+    const storage = openDriftStorage({ databasePath: secondPayload.database_path });
+    storage.migrate();
+    expect(storage.listFileSnapshots(secondPayload.repo.id, secondPayload.scan.id).map((snapshot) => snapshot.file_path))
+      .toEqual(["apps/web/app/api/users/route.ts"]);
+    storage.close();
   });
 
   it("persists scan file changes across repeated scans", async () => {
@@ -2170,7 +2323,7 @@ describe("drift CLI convention review", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("Drift doctor");
-    expect(result.stdout).toContain("Runtime: Drift CLI 0.1.0, SQLite schema 18");
+    expect(result.stdout).toContain("Runtime: Drift CLI 0.1.0, SQLite schema 22");
     expect(result.stdout).toContain("V1 scope: local-first CLI, TypeScript API route layering");
     expect(result.stdout).toContain("TS/JS files: 1 indexable file");
     expect(result.stdout).toContain("API routes: 1 API route file");
@@ -2251,7 +2404,7 @@ describe("drift CLI convention review", () => {
       typescript_adapter_version: "0.1.0",
       rule_engine_version: "0.1.0",
       contract_schema_version: 1,
-      supported_sqlite_schema_version: 18,
+      supported_sqlite_schema_version: 22,
       storage_driver: "sqlite"
     });
     expect(payload.engine).toMatchObject({
@@ -2269,7 +2422,7 @@ describe("drift CLI convention review", () => {
       deferred: ["desktop_ui", "cloud_sync", "python_adapter", "duplicate_helper_detection"]
     });
     expect(payload.state_summary).toMatchObject({
-      supported_schema_version: 18
+      supported_schema_version: 22
     });
     expect(payload.state_summary).toMatchObject({
       exists: true,
@@ -2607,7 +2760,7 @@ describe("drift CLI convention review", () => {
       typescript_adapter_version: "0.1.0",
       rule_engine_version: "0.1.0",
       contract_schema_version: 1,
-      supported_sqlite_schema_version: 18,
+      supported_sqlite_schema_version: 22,
       storage_driver: "sqlite"
     });
     expect(payload.engine).toMatchObject({
@@ -2841,7 +2994,21 @@ describe("drift CLI convention review", () => {
       },
       capability_completeness: {
         complete: true
+      },
+      machine_contract_versions: {
+        schema_version: "drift.machine_contract_versions.v1",
+        cli_version: "0.1.0",
+        storage_schema_version: 22,
+        factgraph_schema_version: "factgraph.v2"
       }
+    });
+    expect(payload.machine_contract_versions).toMatchObject({
+      schema_version: "drift.machine_contract_versions.v1",
+      engine_contract_versions: {
+        check_result: "engine.check.result.v1"
+      },
+      scanner_version: "0.1.0",
+      rule_engine_version: "0.1.0"
     });
     expect(payload.readiness).toMatchObject({
       schema_version: "drift.readiness.v1",
@@ -2891,6 +3058,9 @@ describe("drift CLI convention review", () => {
     expect(payload.findings[0]).toMatchObject({
       check_id: payload.check.id,
       repo_contract_id: "contract_abc",
+      created_by_engine_version: "0.1.0",
+      created_by_rule_engine_version: "0.1.0",
+      contract_schema_version: 1,
       expected_layer: "service",
       actual_layer: "data_access",
       suggested_fix: "Move data access behind a service layer before returning from the route.",
@@ -2915,12 +3085,19 @@ describe("drift CLI convention review", () => {
       id: payload.check.id,
       repo_contract_id: "contract_abc",
       status: "fail",
-      blocking_count: 1
+      blocking_count: 1,
+      machine_contract_versions: expect.objectContaining({
+        schema_version: "drift.machine_contract_versions.v1",
+        storage_schema_version: 22
+      })
     });
     expect(storage.listFindings("repo_abc")[0]?.title).toBe("API route imports data access directly");
     expect(storage.listFindings("repo_abc")[0]).toMatchObject({
       check_id: payload.check.id,
       repo_contract_id: "contract_abc",
+      created_by_engine_version: "0.1.0",
+      created_by_rule_engine_version: "0.1.0",
+      contract_schema_version: 1,
       expected_layer: "service",
       actual_layer: "data_access"
     });
@@ -7112,7 +7289,7 @@ describe("drift CLI convention review", () => {
     expect(payload.summary).toMatchObject({
       write_intent: true,
       artifact_exists: true,
-      schema_version: 18
+      schema_version: 22
     });
     expect(payload.review_item).toMatchObject({
       id: payload.manifest.id,
@@ -7122,7 +7299,7 @@ describe("drift CLI convention review", () => {
     });
     expect(payload.manifest).toMatchObject({
       repo_id: "repo_abc",
-      schema_version: 18,
+      schema_version: 22,
       created_at: "2026-05-10T00:00:04.000Z"
     });
     expect(payload.manifest.backup_path).toContain(backupDir);
@@ -7347,7 +7524,7 @@ describe("drift CLI convention review", () => {
         id: backup[0],
         repo_id: "repo_abc",
         repo_fingerprint: "repo-fp",
-        schema_version: 18,
+        schema_version: 22,
         source_database_path: databasePath,
         backup_path: `/tmp/${backup[0]}.sqlite`,
         checksum_sha256: "a".repeat(64),
@@ -7399,7 +7576,7 @@ describe("drift CLI convention review", () => {
       id: "backup_valid",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 18,
+      schema_version: 22,
       source_database_path: databasePath,
       backup_path: validPath,
       checksum_sha256: validChecksum,
@@ -7410,7 +7587,7 @@ describe("drift CLI convention review", () => {
       id: "backup_missing",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 18,
+      schema_version: 22,
       source_database_path: databasePath,
       backup_path: join(dir, "missing.sqlite"),
       checksum_sha256: "b".repeat(64),
@@ -7421,7 +7598,7 @@ describe("drift CLI convention review", () => {
       id: "backup_mismatch",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 18,
+      schema_version: 22,
       source_database_path: databasePath,
       backup_path: mismatchPath,
       checksum_sha256: mismatchChecksum,
@@ -7682,7 +7859,7 @@ describe("drift CLI convention review", () => {
         surface: "artifact"
       },
       checksum_matches: true,
-      schema_version: 18
+      schema_version: 22
     });
     expect(JSON.parse(verified.stdout).summary).toMatchObject({
       valid: true,
@@ -7863,7 +8040,7 @@ describe("drift CLI convention review", () => {
       valid: false,
       repo_id: "repo_abc",
       schema_supported: false,
-      schema_version: 18,
+      schema_version: 22,
       unsupported_migrations: ["004_unknown_future_schema"]
     });
   });
@@ -8092,7 +8269,7 @@ describe("drift CLI convention review", () => {
       repo_id: "repo_abc",
       backup_path: backupPath,
       restored_database_path: targetDatabasePath,
-      schema_version: 18
+      schema_version: 22
     });
     expect(payload.governance).toMatchObject({
       read_only: false,
@@ -8133,7 +8310,7 @@ describe("drift CLI convention review", () => {
         backup_path: backupPath,
         checksum_sha256: payload.restore.checksum_sha256,
         checksum_matches: true,
-        schema_version: 18,
+        schema_version: 22,
         graph_stale: payload.restore.graph_stale,
         requires_rescan: payload.restore.requires_rescan,
         staleness_reason: payload.restore.staleness_reason
@@ -8303,7 +8480,7 @@ describe("drift CLI convention review", () => {
         deleted: []
       }
     });
-  });
+  }, 15000);
 
   it("validates restore dry-runs and refuses accidental overwrites", async () => {
     const { databasePath: sourceDatabasePath } = await seedAcceptedDatabase();
@@ -8558,7 +8735,7 @@ describe("drift CLI convention review", () => {
     ]);
 
     expect(restored.exitCode).toBe(1);
-    expect(restored.stderr).toContain("Backup schema version 19 is not supported");
+    expect(restored.stderr).toContain(`Backup schema version ${MIGRATIONS.length + 1} is not supported`);
     await expect(stat(targetDatabasePath)).rejects.toThrow();
   });
 
@@ -9105,7 +9282,20 @@ describe("drift CLI convention review", () => {
         includes_source_text: false,
         includes_sqlite_database: false,
         includes_backup_files: false,
-        includes_environment: false
+        includes_environment: false,
+        includes_contract_json: false,
+        includes_finding_evidence: false
+      },
+      redaction_policy: {
+        schema_version: "drift.support.redaction.v1",
+        included_metadata: expect.arrayContaining(["runtime_versions", "audit_integrity"]),
+        excluded_data_classes: expect.arrayContaining([
+          "source_text",
+          "sqlite_database",
+          "contract_json",
+          "finding_evidence_refs",
+          "graph_evidence"
+        ])
       },
       manifest: {
         runtime: expect.any(Object),

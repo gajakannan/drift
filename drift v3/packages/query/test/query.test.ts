@@ -9,7 +9,9 @@ import {
   buildLayerArchitectureProof,
   buildEntrypointFlowProof,
   buildChangeImpact,
+  buildFindingsReadModel,
   buildReadiness,
+  buildRepoContractReadModel,
   buildRepoMapReadModel,
   buildRepoTopology,
   buildSymbolIdentity,
@@ -27,6 +29,75 @@ const tempDirs: string[] = [];
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
+
+function findingFixture(input: {
+  id: string;
+  severity: Finding["severity"];
+  status: Finding["status"];
+  diff_status: Finding["diff_status"];
+  convention_id: string;
+  file_path: string;
+  created_at: string;
+}): Finding {
+  return {
+    id: input.id,
+    repo_id: "repo_abc",
+    convention_id: input.convention_id,
+    fingerprint: `${input.id}_fingerprint`,
+    title: "Finding",
+    message: "Finding message.",
+    severity: input.severity,
+    enforcement_result: input.severity === "error" ? "block" : "warn",
+    status: input.status,
+    diff_status: input.diff_status,
+    evidence_refs: [{
+      id: `${input.id}_evidence`,
+      kind: "violation",
+      file_path: input.file_path,
+      start_line: 1,
+      end_line: 1,
+      symbol: "runCli",
+      import_source: "@drift/cli",
+      fact_ids: [],
+      scan_id: "scan_abc",
+      file_hash: "a".repeat(64),
+      redaction_state: "none"
+    }],
+    created_at: input.created_at
+  };
+}
+
+function contractFixture(): RepoContract {
+  return {
+    id: "contract_abc",
+    repo_id: "repo_abc",
+    contract_schema_version: 1,
+    repo_fingerprint: "repo-fp",
+    created_at: "2026-05-10T00:00:00.000Z",
+    updated_at: "2026-05-10T00:00:00.000Z",
+    conventions: [],
+    rejected_inferences: [],
+    waivers: [],
+    risky_areas: [],
+    safe_commands: [],
+    required_checks: [],
+    context_egress: {
+      default_mode: "local_only",
+      denied_globs: [".env*", "**/*.pem"],
+      max_snippet_chars: 1200,
+      allow_full_file_content: false
+    },
+    agent_permissions: [],
+    agent_contracts: [{
+      kind: "import_boundary",
+      id: "agent_contract_abc",
+      version: 1,
+      source_roles: ["mcp_module"],
+      forbidden_imports: ["@drift/cli"],
+      enforcement: "blocking"
+    }]
+  };
+}
 
 describe("GraphQueryService", () => {
   it("classifies route to data access as a forbidden role edge", () => {
@@ -49,6 +120,31 @@ describe("GraphQueryService", () => {
       to_role: "data_access",
       edge_kind: "imports"
     })).toMatchObject({ allowed: true });
+  });
+
+  it("lets repo-contract role ontology rules override built-in role edge defaults", () => {
+    expect(evaluateRoleEdge({
+      from_role: "route",
+      to_role: "data_access",
+      edge_kind: "imports",
+      rules: [{
+        rule_id: "role_rule_data_migration_route",
+        from_role: "route",
+        to_role: "data_access",
+        edge_kind: "imports",
+        allowed: true,
+        severity: "warning",
+        reason_code: "repo_contract_allows_migration_route_data_access",
+        reason: "This repo has an explicit migration endpoint exception.",
+        source: "repo_contract"
+      }]
+    })).toMatchObject({
+      allowed: true,
+      severity: "warning",
+      reason_code: "repo_contract_allows_migration_route_data_access",
+      source: "repo_contract",
+      rule_id: "role_rule_data_migration_route"
+    });
   });
 
   it("builds a route service data access architecture proof", () => {
@@ -132,15 +228,134 @@ describe("GraphQueryService", () => {
         data_access_file: "server/repositories/users.ts",
         data_operation: "prisma.user.findMany"
       }],
+      symbol_identities: [{
+        schema_version: "drift.symbol_identity.v1",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        symbol_name: "findUsers",
+        kind: "function",
+        declared_in: "server/repositories/users.ts",
+        exported_from: ["server/repositories/index.ts"],
+        imported_as: [{ file_path: "server/services/users.ts", local_name: "findUsers" }],
+        re_export_chain: ["server/repositories/index.ts"],
+        canonical_definition: "server/repositories/users.ts#findUsers",
+        call_sites: [{ file_path: "server/services/users.ts", start_line: 4, end_line: 4 }],
+        references: [{ file_path: "server/services/users.ts", start_line: 4, end_line: 4 }],
+        visibility: "exported"
+      }],
       test_files: ["server/services/users.test.ts"]
     });
 
     expect(impact).toMatchObject({
+      changed_symbols: ["server/repositories/users.ts#findUsers"],
       affected_routes: expect.arrayContaining(["GET /api/users"]),
       affected_services: expect.arrayContaining(["server/services/users.ts"]),
       affected_data_ops: expect.arrayContaining(["data_operation:read"]),
       affected_tests: expect.arrayContaining(["server/services/users.test.ts"])
     });
+  });
+
+  it("builds shared findings review models for CLI and MCP transports", () => {
+    const findings: Finding[] = [
+      findingFixture({
+        id: "finding_b",
+        severity: "warning",
+        status: "pre_existing",
+        diff_status: "pre_existing",
+        convention_id: "convention_docs",
+        file_path: "docs/readme.md",
+        created_at: "2026-05-10T00:00:02.000Z"
+      }),
+      findingFixture({
+        id: "finding_a",
+        severity: "error",
+        status: "new",
+        diff_status: "new_in_diff",
+        convention_id: "convention_api",
+        file_path: "apps/web/app/api/users/route.ts",
+        created_at: "2026-05-10T00:00:01.000Z"
+      })
+    ];
+
+    const readModel = buildFindingsReadModel({
+      findings,
+      filters: { severity: "error", path: "apps/web/app/api/**/route.ts" },
+      limit: 1,
+      offset: 0
+    });
+
+    expect(readModel).toMatchObject({
+      filters: {
+        status: null,
+        severity: "error",
+        diff_status: null,
+        convention_id: null,
+        path: "apps/web/app/api/**/route.ts"
+      },
+      summary: {
+        total_count: 2,
+        filtered_count: 1,
+        by_status: { new: 1, pre_existing: 1 },
+        by_severity: { error: 1, warning: 1 },
+        by_diff_status: { new_in_diff: 1, pre_existing: 1 }
+      },
+      pagination: {
+        limit: 1,
+        offset: 0,
+        returned_count: 1,
+        has_more: false,
+        next_offset: null
+      },
+      review_items: [{
+        id: "finding_a",
+        convention_id: "convention_api",
+        first_evidence: {
+          file_path: "apps/web/app/api/users/route.ts",
+          start_line: 1,
+          import_source: "@drift/cli",
+          symbol: "runCli"
+        }
+      }]
+    });
+    expect(readModel.findings.map((finding) => finding.id)).toEqual(["finding_a"]);
+  });
+
+  it("builds shared repo contract read models for CLI and MCP transports", () => {
+    const contract = contractFixture();
+    const readModel = buildRepoContractReadModel({
+      repo_id: "repo_abc",
+      contract,
+      policy: {
+        allowed: true,
+        reason: "local_only_allowed",
+        mode: "local_only",
+        surface: "contract-export",
+        redacted: false
+      },
+      governance: {
+        read_only: true,
+        agent_can_mutate: false
+      }
+    });
+
+    expect(readModel).toMatchObject({
+      response_schema: "drift.repo.contract.v1",
+      repo_id: "repo_abc",
+      summary: {
+        convention_count: 0,
+        agent_contract_count: 1,
+        risky_area_count: 0,
+        required_check_count: 0,
+        safe_command_count: 0,
+        waiver_count: 0,
+        rejected_inference_count: 0
+      },
+      contract: {
+        id: "contract_abc",
+        agent_contracts: [expect.objectContaining({ id: "agent_contract_abc" })]
+      }
+    });
+    expect(readModel.contract_fingerprint).toHaveLength(64);
   });
 
   it("selects route and service tests relevant to a changed route flow", () => {

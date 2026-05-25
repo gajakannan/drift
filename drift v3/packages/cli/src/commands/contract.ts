@@ -1,4 +1,5 @@
 import { authorizeContextExport,DRIFT_CONTRACT_SCHEMA_VERSION,type RepoContract,RepoContractSchema } from "@drift/core";
+import { buildRepoContractReadModel } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,mkdirSync,statSync,writeFileSync } from "node:fs";
 import { dirname,extname,join } from "node:path";
@@ -20,15 +21,12 @@ export function showContract(storage: SqliteDriftStorage, parsed: ParsedArgs): C
   if (!policy.allowed) {
     throw new Error(`Policy denied contract show: ${policy.reason}`);
   }
-  const payload = {
-    response_schema: "drift.repo.contract.v1",
+  const payload = buildRepoContractReadModel({
     repo_id: repoId,
     contract,
-    contract_fingerprint: contractFingerprint(contract),
     policy,
-    governance: preflightGovernance(),
-    summary: contractSummary(contract)
-  };
+    governance: preflightGovernance()
+  });
   return {
     payload: parsed.flags.has("json") ? payload : formatContractShowText(payload)
   };

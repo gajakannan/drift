@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -22,10 +22,10 @@ const requiredAllowed = [
   "sqlite_local_state",
   "human_confirmed_governance",
   "read_only_mcp",
-  "accepted_contract_blocks_direct_data_access"
+  "accepted_contract_blocks_direct_data_access",
+  "incremental_reuse"
 ];
 const requiredBlocked = [
-  "incremental_reuse",
   "cloud_sync",
   "desktop_ui",
   "python_adapter",
@@ -114,13 +114,21 @@ for (const [claim, support] of Object.entries(claims.claim_support ?? {})) {
 
 const docsToCheck = [
   "README.md",
-  join("docs", "architecture", "canonical-contracts.md")
-];
+  ...docsUnder(join("docs", "architecture")),
+  ...docsUnder(join("docs", "dogfood")),
+  ...docsUnder("docs").filter((docPath) =>
+    /(^|\/)(.*spec.*|.*release.*|.*inventory.*)\.md$/i.test(docPath)
+  )
+].filter(unique);
 const forbiddenPhrases = new Map([
-  ["incremental_reuse", /incremental scan performance is supported|incremental reuse is implemented/i],
+  ["incremental_reuse", /incremental scan performance is supported/i],
   ["cloud_sync", /cloud sync is supported|cloud-backed enforcement is supported/i],
+  ["desktop_ui", /desktop UI is supported|desktop app is supported/i],
+  ["python_adapter", /Python adapter is supported|Python support is implemented/i],
   ["mutation_capable_mcp", /MCP mutation tools are supported|mutation-capable MCP is supported/i],
-  ["broad_language_support", /all languages are supported|broad language support is supported/i]
+  ["general_ai_code_review", /general AI code review is supported|broad AI code review is supported/i],
+  ["broad_language_support", /all languages are supported|broad language support is supported/i],
+  ["semantic_typescript", /full semantic TypeScript analysis is supported|complete semantic TypeScript analysis/i]
 ]);
 for (const docPath of docsToCheck) {
   const text = readFileSync(join(repoRoot, docPath), "utf8");
@@ -128,6 +136,13 @@ for (const docPath of docsToCheck) {
     if (pattern.test(text)) {
       failures.push(`${docPath} appears to overclaim blocked capability ${claim}`);
     }
+  }
+  if (
+    docPath.startsWith(join("docs", "dogfood")) &&
+    !/historical/i.test(text) &&
+    (!/^Verified on:\s*\d{4}-\d{2}-\d{2}/m.test(text) || !/^Commit:\s*`?[a-f0-9]{12,40}`?/m.test(text))
+  ) {
+    failures.push(`${docPath} must include Verified on and Commit metadata or be marked historical`);
   }
 }
 
@@ -145,6 +160,28 @@ function deferredCapabilityClaim(capability) {
     ["python_adapter", "python_adapter"],
     ["duplicate_helper_detection", "duplicate_helper_detection"]
   ]).get(capability);
+}
+
+function docsUnder(relativeDir) {
+  const absoluteDir = join(repoRoot, relativeDir);
+  try {
+    return readdirSync(absoluteDir, { withFileTypes: true }).flatMap((entry) => {
+      const relativePath = join(relativeDir, entry.name);
+      const absolutePath = join(repoRoot, relativePath);
+      if (entry.isDirectory()) {
+        return docsUnder(relativePath);
+      }
+      return entry.isFile() && statSync(absolutePath).isFile() && entry.name.endsWith(".md")
+        ? [relativePath]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function unique(value, index, values) {
+  return values.indexOf(value) === index;
 }
 
 function requireCompleteContract(contractName, claim) {

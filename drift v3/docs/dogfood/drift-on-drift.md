@@ -18,7 +18,7 @@ This run checks Drift against its own repo using the graph-backed Rust engine an
 - Metadata/preflight proof: scan, status, repo map, prepare, and audit verification work without inventing a contract.
 - Enforcement proof: contract-backed commands refuse with `missing_contract` until a human accepts or imports a repo contract.
 
-This dogfood run does not claim accepted-contract enforcement against Drift itself.
+This clean-repo dogfood run does not claim accepted-contract enforcement against the full Drift repo. A separate deterministic Drift-shaped fixture now proves contract-backed enforcement for one real Drift package boundary: MCP modules must not import CLI.
 
 ## Commands Run
 
@@ -69,14 +69,12 @@ node /Users/geoffreyfernald/Downloads/driftv3/drift\ v3/packages/cli/dist/main.j
   "engine_source": "rust",
   "reuse_applied": false,
   "blocked_reasons": [
-    "engine_reuse_not_enabled",
-    "previous_scan_missing",
-    "source_files_changed"
+    "previous_scan_missing"
   ]
 }
 ```
 
-Correct behavior: Drift did not infer a repo contract from its own packages and fixtures.
+Correct behavior: Drift did not infer a repo contract from its own packages and fixtures. This first scan has no previous scan to reuse; repeated scans may reuse unchanged file facts when resolver inputs match.
 
 ## Scan Status
 
@@ -194,7 +192,31 @@ Prepare returned a no-contract local packet instead of inventing conventions.
 }
 ```
 
-This is the expected boundary: dogfood currently proves local metadata, parser-gap visibility, preflight usefulness, audit integrity, and honest refusal. It does not prove contract-backed enforcement against Drift itself.
+This is the expected boundary for the full Drift repo: dogfood proves local metadata, parser-gap visibility, preflight usefulness, audit integrity, and honest refusal when no accepted contract exists.
+
+## Drift-Shaped Enforcement Proof
+
+Accepted-contract enforcement is covered by `test/e2e/dogfood-enforcement-proof.test.ts` against `test/fixtures/drift-package-boundary`.
+
+The fixture models one narrow Drift package rule:
+
+```json
+{
+  "contract_id": "contract_drift_package_boundary",
+  "agent_contract_id": "agent_contract_mcp_no_cli_imports",
+  "kind": "import_boundary",
+  "source_roles": ["mcp_module"],
+  "forbidden_imports": ["@drift/cli"],
+  "enforcement": "blocking"
+}
+```
+
+Proof behavior:
+
+- A good MCP change that imports from `@drift/query` passes.
+- A bad MCP change that imports from `@drift/cli` fails.
+- The blocking finding includes repo contract id, agent contract id, check id, evidence refs, file hash, graph path, and suggested fix.
+- MCP read-only `get_repo_contract` and `get_findings` agree with the CLI check output.
 
 ## Product Notes
 
@@ -206,13 +228,14 @@ What this proves:
 - Drift builds repo map/topology and preflight context without source snippets.
 - Drift verifies the local audit chain in strict mode.
 - CLI contract-backed enforcement refuses without an accepted contract.
+- Drift-shaped accepted-contract enforcement blocks a deterministic MCP-to-CLI package-boundary violation in the fixture proof.
 
 What this does not prove:
 
-- Accepted-contract enforcement against Drift itself.
+- Accepted-contract enforcement against the full Drift repo.
 - Broad parser completeness.
 - Production-scale performance.
 - Incremental reuse.
 - Release artifact completeness.
 
-Before this dogfood run can support a broader beta claim, Drift needs a deterministic accepted-contract dogfood fixture or imported Drift package-boundary contract. Until then, the public claim should stay narrow: local TS/JS route-layering evidence, read-only agent context, and contract-backed enforcement only after human-confirmed contracts.
+The public claim should stay narrow: local TS/JS route-layering evidence, read-only agent context, honest no-contract refusal, and contract-backed enforcement only after human-confirmed or imported contracts.

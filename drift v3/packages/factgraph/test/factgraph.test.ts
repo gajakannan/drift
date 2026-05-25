@@ -151,6 +151,9 @@ describe("FactGraph V1", () => {
     expect(artifact.graph.evidence).toContainEqual(expect.objectContaining({
       id: "evidence:typescript:apps/web/app/api/users/route.ts:aaaaaaaaaaaa:1-1",
       fact_ids: ["fact_import"],
+      confidence_kind: "deterministic",
+      extractor: "typescript_ast",
+      snippet_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
       redaction_state: "none"
     }));
 

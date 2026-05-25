@@ -299,6 +299,7 @@ export const FactRecordSchema = z.object({
   file_path: z.string().min(1),
   name: z.string().min(1),
   value: z.string().optional(),
+  imported_name: z.string().optional(),
   start_line: z.number().int().positive(),
   end_line: z.number().int().positive(),
   source_span: SourceSpanSchema,
@@ -346,6 +347,61 @@ export const ParserGapSchema = z.object({
   message: z.string().min(1),
   evidence_refs: z.array(z.string().min(1)),
   created_at: z.string().min(1)
+});
+
+export const ScanCapabilityReportScopeSchema = z.enum([
+  "repo",
+  "changed-files",
+  "changed-hunks",
+  "route-flow",
+  "file"
+]);
+
+export const ScanCapabilityCompletenessSchema = z.object({
+  scope: ScanCapabilityReportScopeSchema,
+  rule_id: z.string().min(1).optional(),
+  complete: z.boolean(),
+  can_block: z.boolean(),
+  reasons: z.array(z.string().min(1))
+});
+
+export const ScanCapabilityReportSchema = z.object({
+  schema_version: z.literal("drift.scan_capability_report.v1"),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  engine_source: z.enum(["rust", "typescript"]),
+  engine_version: z.string().min(1).nullable(),
+  scanner_version: z.string().min(1),
+  adapter_versions: z.record(z.string().min(1)),
+  certified_capabilities: z.array(z.string().min(1)),
+  required_capabilities: z.array(z.string().min(1)),
+  missing_capabilities: z.array(z.string().min(1)),
+  completeness: z.array(ScanCapabilityCompletenessSchema),
+  parser_gap_count: z.number().int().nonnegative(),
+  parser_gap_kinds: z.record(z.number().int().nonnegative()),
+  fallback_used: z.boolean(),
+  enforcement_degraded: z.boolean(),
+  created_at: z.string().datetime()
+});
+
+export const MachineContractVersionsSchema = z.object({
+  schema_version: z.literal("drift.machine_contract_versions.v1"),
+  cli_version: z.string().min(1),
+  core_version: z.string().min(1),
+  storage_schema_version: z.number().int().positive(),
+  contract_schema_version: z.number().int().positive(),
+  engine_contract_versions: z.object({
+    scan_request: z.literal("engine.scan.request.v1"),
+    scan_result: z.literal("engine.scan.result.v1"),
+    check_request: z.literal("engine.check.request.v1"),
+    check_result: z.literal("engine.check.result.v1"),
+    candidates_result: z.literal("engine.candidates.result.v1"),
+    stream_event: z.literal("engine.stream.event.v1")
+  }),
+  factgraph_schema_version: z.enum(["factgraph.v1", "factgraph.v2"]),
+  scanner_version: z.string().min(1),
+  rule_engine_version: z.string().min(1),
+  adapter_versions: z.record(z.string().min(1))
 });
 
 export const EntrypointKindSchema = z.enum([
@@ -678,6 +734,7 @@ export const CheckRunSchema = z.object({
   capability_complete: z.boolean(),
   findings_count: z.number().int().nonnegative(),
   blocking_count: z.number().int().nonnegative(),
+  machine_contract_versions: MachineContractVersionsSchema.optional(),
   started_at: z.string().datetime(),
   completed_at: z.string().datetime()
 });
@@ -705,6 +762,9 @@ export const FindingSchema = z.object({
   drift_category: FindingDriftCategorySchema.optional(),
   introduced_by_diff: z.boolean().optional(),
   affected_contract: z.string().min(1).optional(),
+  created_by_engine_version: z.string().min(1).optional(),
+  created_by_rule_engine_version: z.string().min(1).optional(),
+  contract_schema_version: z.number().int().positive().optional(),
   created_at: z.string().datetime()
 });
 

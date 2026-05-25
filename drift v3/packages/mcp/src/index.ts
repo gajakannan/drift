@@ -22,7 +22,6 @@ import {
   AgentPreflightPacketV2Schema,
   FileRoleSchema,
   authorizeContextExport,
-  canonicalRepoContractJson,
   canonicalScanStateJson,
   createAgentEnvelopeV2,
   createAgentPreflightPacket,
@@ -36,10 +35,22 @@ import {
   DRIFT_RESOLVER_VERSION,
   DRIFT_RULE_ENGINE_VERSION,
   DRIFT_SCANNER_VERSION,
-  DRIFT_TYPESCRIPT_ADAPTER_VERSION
+  DRIFT_TYPESCRIPT_ADAPTER_VERSION,
+  type MachineContractVersions
 } from "@drift/core";
 import {
+  ENGINE_CANDIDATES_RESULT_SCHEMA_VERSION,
+  ENGINE_CHECK_REQUEST_SCHEMA_VERSION,
+  ENGINE_CHECK_RESULT_SCHEMA_VERSION,
+  ENGINE_SCAN_REQUEST_SCHEMA_VERSION,
+  ENGINE_SCAN_RESULT_SCHEMA_VERSION,
+  ENGINE_STREAM_EVENT_SCHEMA_VERSION
+} from "@drift/engine-contract";
+import { FACTGRAPH_SCHEMA_VERSION } from "@drift/factgraph";
+import {
   buildChangeImpact,
+  buildFindingsReadModel,
+  buildRepoContractReadModel,
   buildReadiness,
   classifyAgentTask,
   buildRepoMapReadModel,
@@ -81,6 +92,8 @@ export type {
   McpCliResult
 } from "./types.js";
 
+const DRIFT_CLI_VERSION = "0.1.0";
+
 export const DRIFT_MCP_PROTOCOL_VERSION = "2024-11-05";
 export const DRIFT_MCP_VERSION = "0.1.0";
 
@@ -121,15 +134,12 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
     get_repo_contract: ({ repo_id }) => withStorage(options, (storage) => {
       const requestedRepoId = requiredMcpString(repo_id, "repo_id");
       const { contract, policy } = requiredAuthorizedMcpContract(storage, requestedRepoId, "contract-export");
-      return {
-        response_schema: "drift.repo.contract.v1",
+      return buildRepoContractReadModel({
         repo_id: requestedRepoId,
+        contract,
         policy,
-        governance: preflightGovernance(),
-        summary: contractSummary(contract),
-        contract_fingerprint: contractFingerprint(contract),
-        contract
-      };
+        governance: preflightGovernance()
+      });
     }),
 
     get_repo_map: ({ repo_id, role, path, require_fresh, limit, offset }) => withStorage(options, (storage) => {
@@ -380,16 +390,18 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const requestedOffset = optionalMcpNonNegativeInteger(offset, "offset") ?? 0;
       const scanStatus = scanStatusPayload(storage, requestedRepoId);
       assertFreshScanIfRequired(requestedRepoId, scanStatus, Boolean(require_fresh));
-      const allFindings = storage.listFindings(requestedRepoId);
-      const filteredFindings = allFindings.filter((finding) =>
-        (!requestedStatus || finding.status === requestedStatus) &&
-        (!requestedSeverity || finding.severity === requestedSeverity) &&
-        (!requestedDiffStatus || finding.diff_status === requestedDiffStatus) &&
-        (!requestedConventionId || finding.convention_id === requestedConventionId) &&
-        (!requestedPath || findingMatchesPath(finding, requestedPath))
-      );
-      const orderedFindings = orderFindingsForReview(filteredFindings);
-      const findings = paginateFindings(orderedFindings, requestedLimit, requestedOffset);
+      const readModel = buildFindingsReadModel({
+        findings: storage.listFindings(requestedRepoId),
+        filters: {
+          status: requestedStatus,
+          severity: requestedSeverity,
+          diff_status: requestedDiffStatus,
+          convention_id: requestedConventionId,
+          path: requestedPath
+        },
+        limit: requestedLimit,
+        offset: requestedOffset
+      });
       return {
         response_schema: "drift.findings.list.v1",
         repo_id: requestedRepoId,
@@ -401,19 +413,13 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         }),
         policy,
         governance: preflightGovernance(),
-        filters: {
-          status: requestedStatus ?? null,
-          severity: requestedSeverity ?? null,
-          diff_status: requestedDiffStatus ?? null,
-          convention_id: requestedConventionId ?? null,
-          path: requestedPath ?? null
-        },
+        filters: readModel.filters,
         scan_status: scanStatus,
         freshness_requirement: freshnessRequirement(Boolean(require_fresh), scanStatus),
-        summary: findingsSummary(allFindings, filteredFindings),
-        pagination: paginationSummary(filteredFindings.length, findings.length, requestedLimit, requestedOffset),
-        review_items: findings.map(preflightFinding),
-        findings
+        summary: readModel.summary,
+        pagination: readModel.pagination,
+        review_items: readModel.review_items,
+        findings: readModel.findings
       };
     }),
 
@@ -1063,6 +1069,9 @@ function scanStatusPayload(
   const snapshots = latestScan ? storage.listFileSnapshots(repoId, latestScan.id) : [];
   const scanFileChanges = latestScan ? storage.listScanFileChanges(repoId, latestScan.id) : [];
   const parserGaps = latestScan ? storage.listParserGaps(repoId, latestScan.id) : [];
+  const capabilityReport = latestScan
+    ? storage.getScanCapabilityReport(repoId, latestScan.id) ?? null
+    : null;
   const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "scan_status", parserGaps);
   const repoRootMissing = !existsSync(repo.root_path);
   const currentBranch = repoRootMissing
@@ -1122,8 +1131,37 @@ function scanStatusPayload(
     changes,
     parser_gaps: parserGapSummary(parserGaps),
     readiness,
+    capability_report: capabilityReport,
+    machine_contract_versions: currentMachineContractVersions(latestScan?.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands
+  };
+}
+
+function currentMachineContractVersions(
+  adapterVersions: Record<string, string> = {
+    typescript: DRIFT_TYPESCRIPT_ADAPTER_VERSION,
+    resolver: DRIFT_RESOLVER_VERSION
+  }
+): MachineContractVersions {
+  return {
+    schema_version: "drift.machine_contract_versions.v1",
+    cli_version: DRIFT_CLI_VERSION,
+    core_version: DRIFT_CORE_VERSION,
+    storage_schema_version: MIGRATIONS.length,
+    contract_schema_version: DRIFT_CONTRACT_SCHEMA_VERSION,
+    engine_contract_versions: {
+      scan_request: ENGINE_SCAN_REQUEST_SCHEMA_VERSION,
+      scan_result: ENGINE_SCAN_RESULT_SCHEMA_VERSION,
+      check_request: ENGINE_CHECK_REQUEST_SCHEMA_VERSION,
+      check_result: ENGINE_CHECK_RESULT_SCHEMA_VERSION,
+      candidates_result: ENGINE_CANDIDATES_RESULT_SCHEMA_VERSION,
+      stream_event: ENGINE_STREAM_EVENT_SCHEMA_VERSION
+    },
+    factgraph_schema_version: FACTGRAPH_SCHEMA_VERSION,
+    scanner_version: DRIFT_SCANNER_VERSION,
+    rule_engine_version: DRIFT_RULE_ENGINE_VERSION,
+    adapter_versions: adapterVersions
   };
 }
 
@@ -1453,26 +1491,6 @@ function repoMapPayload(
   };
 }
 
-function findingMatchesPath(finding: Finding, path: string): boolean {
-  return finding.evidence_refs.some((ref) =>
-    ref.file_path === path ||
-    matchesPolicyGlob(ref.file_path, path)
-  );
-}
-
-function orderFindingsForReview(findings: Finding[]): Finding[] {
-  return [...findings].sort((left, right) =>
-    left.created_at.localeCompare(right.created_at) ||
-    left.id.localeCompare(right.id)
-  );
-}
-
-function paginateFindings(findings: Finding[], limit: number | undefined, offset: number): Finding[] {
-  return limit === undefined
-    ? findings.slice(offset)
-    : findings.slice(offset, offset + limit);
-}
-
 function orderAcceptedConventionsForReview(conventions: AcceptedConvention[]): AcceptedConvention[] {
   return [...conventions].sort((left, right) =>
     left.accepted_at.localeCompare(right.accepted_at) ||
@@ -1759,10 +1777,6 @@ function isTypescriptPath(filePath: string): boolean {
 
 function fileContentHash(absolutePath: string): string {
   return createHash("sha256").update(readFileSync(absolutePath)).digest("hex");
-}
-
-function contractFingerprint(contract: RepoContract): string {
-  return createHash("sha256").update(canonicalRepoContractJson(contract)).digest("hex");
 }
 
 function scanFingerprint(manifest: ScanManifest, snapshots: FileSnapshot[]): string {
@@ -2172,26 +2186,6 @@ function scopeMatchesFile(
   return pathMatches && roleMatches;
 }
 
-function contractSummary(contract: RepoContract): {
-  convention_count: number;
-  agent_contract_count: number;
-  risky_area_count: number;
-  required_check_count: number;
-  safe_command_count: number;
-  waiver_count: number;
-  rejected_inference_count: number;
-} {
-  return {
-    convention_count: contract.conventions.length,
-    agent_contract_count: contract.agent_contracts?.length ?? 0,
-    risky_area_count: contract.risky_areas.length,
-    required_check_count: contract.required_checks.length,
-    safe_command_count: contract.safe_commands.length,
-    waiver_count: contract.waivers.length,
-    rejected_inference_count: contract.rejected_inferences.length
-  };
-}
-
 function conventionSummary(
   allConventions: AcceptedConvention[],
   filteredConventions: AcceptedConvention[],
@@ -2364,34 +2358,6 @@ function instructionForConvention(convention: AcceptedConvention): string {
   return `${convention.statement} Follow its scope, matcher, and exceptions.`;
 }
 
-function preflightFinding(finding: Finding): Pick<
-  Finding,
-  "id" | "convention_id" | "title" | "severity" | "status" | "diff_status" | "enforcement_result"
-> & {
-  evidence_ref_count: number;
-  first_evidence: Pick<Finding["evidence_refs"][number], "file_path" | "start_line" | "import_source" | "symbol"> | null;
-} {
-  const firstEvidence = finding.evidence_refs[0] ?? null;
-  return {
-    id: finding.id,
-    convention_id: finding.convention_id,
-    title: finding.title,
-    severity: finding.severity,
-    status: finding.status,
-    diff_status: finding.diff_status,
-    enforcement_result: finding.enforcement_result,
-    evidence_ref_count: finding.evidence_refs.length,
-    first_evidence: firstEvidence
-      ? {
-          file_path: firstEvidence.file_path,
-          start_line: firstEvidence.start_line,
-          import_source: firstEvidence.import_source,
-          symbol: firstEvidence.symbol
-        }
-      : null
-  };
-}
-
 function tokenizeTask(task: string): Set<string> {
   return new Set(
     task
@@ -2437,22 +2403,6 @@ function mcpAgentEnvelope(input: {
 function isApiRoutePath(filePath: string): boolean {
   return /(^|\/)(app|pages)\/api\/.+\.(ts|tsx|js|jsx)$/.test(filePath) ||
     /(^|\/)route\.(ts|tsx|js|jsx)$/.test(filePath);
-}
-
-function findingsSummary(allFindings: Finding[], filteredFindings: Finding[]): {
-  total_count: number;
-  filtered_count: number;
-  by_status: Partial<Record<FindingStatus, number>>;
-  by_severity: Partial<Record<Severity, number>>;
-  by_diff_status: Partial<Record<FindingDiffStatus, number>>;
-} {
-  return {
-    total_count: allFindings.length,
-    filtered_count: filteredFindings.length,
-    by_status: countBy(allFindings, (finding) => finding.status),
-    by_severity: countBy(allFindings, (finding) => finding.severity),
-    by_diff_status: countBy(allFindings, (finding) => finding.diff_status)
-  };
 }
 
 function validateFindingStatus(status: FindingStatus | undefined): FindingStatus | undefined {

@@ -19,6 +19,8 @@ import type { SqliteDriftStorage } from "@drift/storage";
 import { buildRepoTopology } from "./repo-topology.js";
 export { buildEntrypointFlowProof } from "./flow-proof.js";
 export { buildChangeImpact } from "./change-impact.js";
+export { buildRepoContractReadModel, contractFingerprint, contractSummary } from "./contract-read-model.js";
+export { buildFindingsReadModel, findingMatchesPath, reviewFinding } from "./findings-read-model.js";
 export { classifyDataOperationRisk } from "./data-operation-risk.js";
 export { buildLayerArchitectureProof } from "./layer-architecture.js";
 export { buildSymbolIdentity } from "./symbol-identity.js";

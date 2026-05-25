@@ -254,4 +254,42 @@ describe("fixture matrix", () => {
       storage.close();
     }
   });
+
+  it("indexes CommonJS require and dynamic import route dependencies", async () => {
+    const { scanPayload } = await scanFixture("commonjs-dynamic-imports");
+    const storage = openDriftStorage({ databasePath: scanPayload.database_path });
+
+    try {
+      const nodes = storage.listGraphNodes(scanPayload.repo.id, scanPayload.scan.id);
+      const edges = storage.listGraphEdges(scanPayload.repo.id, scanPayload.scan.id);
+
+      expect(scanPayload.summary.files_indexed).toBe(3);
+      expect(nodes).toContainEqual(expect.objectContaining({
+        kind: "import_decl",
+        label: "prisma from ../../../lib/prisma",
+        metadata: expect.objectContaining({
+          source: "../../../lib/prisma",
+          imported_name: "prisma"
+        })
+      }));
+      expect(nodes).toContainEqual(expect.objectContaining({
+        kind: "import_decl",
+        label: "auth from ../../../server/auth",
+        metadata: expect.objectContaining({
+          source: "../../../server/auth",
+          imported_name: "default"
+        })
+      }));
+      expect(edges).toContainEqual(expect.objectContaining({
+        kind: "IMPORT_RESOLVES_TO_MODULE",
+        to: "module:apps/web/lib/prisma.ts"
+      }));
+      expect(edges).toContainEqual(expect.objectContaining({
+        kind: "IMPORT_RESOLVES_TO_MODULE",
+        to: "module:apps/web/server/auth.ts"
+      }));
+    } finally {
+      storage.close();
+    }
+  });
 });

@@ -33,6 +33,7 @@ interface ScanDataInput {
   repoId: string;
   scanId: string;
   repoRoot: string;
+  reuseManifestPath?: string;
 }
 
 export async function collectScanData(input: ScanDataInput): Promise<ScanData> {
@@ -109,7 +110,8 @@ export async function collectScanDataFromRust(input: ScanDataInput): Promise<Sca
     "--repo-id",
     input.repoId,
     "--scan-id",
-    input.scanId
+    input.scanId,
+    ...(input.reuseManifestPath ? ["--reuse-manifest", input.reuseManifestPath] : [])
   ], (line) => {
     events.push(parseEngineStreamLine(line, events.length));
   });
@@ -164,7 +166,7 @@ export function scanDataFromEngineStreamEvents(events: EngineStreamEvent[], inpu
         graphEdges.push(...event.graph_edges);
         break;
       case "graph_evidence_batch":
-        graphEvidence.push(...event.graph_evidence);
+        graphEvidence.push(...event.graph_evidence.map(engineGraphEvidence));
         break;
       case "scan_completed":
         completed = true;
@@ -225,6 +227,16 @@ function parseEngineStreamLine(line: string, index: number): EngineStreamEvent {
   }
 }
 
+function engineGraphEvidence(
+  evidence: Extract<EngineStreamEvent, { event: "graph_evidence_batch" }>["graph_evidence"][number]
+): GraphEvidence {
+  return {
+    ...evidence,
+    confidence_kind: evidence.confidence_kind ?? "deterministic",
+    extractor: evidence.extractor ?? "drift-engine"
+  };
+}
+
 function engineFactRecord(input: ScanDataInput, fact: EngineScanResult["facts"][number]): FactRecord {
   return factRecord(
     { repoId: input.repoId, scanId: input.scanId, filePath: fact.file_path },
@@ -242,6 +254,7 @@ function engineFactRecord(input: ScanDataInput, fact: EngineScanResult["facts"][
       },
       ast_node_kind: null,
       extraction_method: rustExtractionMethodForKind(fact.kind),
+      imported_name: fact.imported_name,
       extractor_version: "0.1.0",
       parser_version: "0.1.0",
       confidence: rustConfidenceForKind(fact.kind),

@@ -29,11 +29,12 @@
   },
   "dependencies": {
     "@drift/core": "workspace:*",
+    "@drift/engine-contract": "workspace:*",
+    "@drift/factgraph": "workspace:*",
     "@drift/query": "workspace:*",
     "@drift/storage": "workspace:*"
   },
   "devDependencies": {
-    "@drift/factgraph": "workspace:*",
     "typescript": "^5.8.0",
     "vitest": "^3.1.0"
   }

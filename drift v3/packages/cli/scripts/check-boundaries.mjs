@@ -8,6 +8,8 @@ const packageSrcRoots = {
   cli: srcRoot,
   adapters: join(repoRoot, "packages/adapters/src"),
   core: join(repoRoot, "packages/core/src"),
+  query: join(repoRoot, "packages/query/src"),
+  factgraph: join(repoRoot, "packages/factgraph/src"),
   storage: join(repoRoot, "packages/storage/src"),
   mcp: join(repoRoot, "packages/mcp/src"),
   engineContract: join(repoRoot, "packages/engine-contract/src")
@@ -116,7 +118,7 @@ for (const { pkg, root, file } of packageFiles) {
     failures.push(`${repoRel} imports another Drift package; adapters must stay manifest-only`);
   }
 
-  if (pkg === "core" && /@drift\/(cli|storage|mcp|engine-contract)/.test(source)) {
+  if (pkg === "core" && /@drift\/(cli|storage|mcp|query|factgraph|engine-contract)/.test(source)) {
     failures.push(`${repoRel} imports another Drift package; core must stay dependency-light`);
   }
 
@@ -124,8 +126,28 @@ for (const { pkg, root, file } of packageFiles) {
     failures.push(`${repoRel} imports another Drift package; engine-contract must stay standalone`);
   }
 
-  if (pkg === "storage" && /@drift\/(cli|mcp)/.test(source)) {
+  if (pkg === "factgraph" && /@drift\/(cli|storage|mcp|query|engine-contract)/.test(source)) {
+    failures.push(`${repoRel} imports a product package; factgraph must stay schema-only`);
+  }
+
+  if (pkg === "storage" && /@drift\/(cli|mcp|query)/.test(source)) {
     failures.push(`${repoRel} imports product surfaces; storage must stay below CLI/MCP`);
+  }
+
+  if (
+    pkg === "query" &&
+    (
+      /@drift\/(cli|mcp|engine-contract)/.test(source) ||
+      source.includes("better-sqlite3") ||
+      source.includes("new Database(") ||
+      source.includes("node:child_process") ||
+      source.includes("../engine/") ||
+      source.includes("writeFile") ||
+      source.includes("mkdir(") ||
+      source.includes("rm(")
+    )
+  ) {
+    failures.push(`${repoRel} imports mutation or execution behavior; query must stay read-model only`);
   }
 
   if (pkg === "mcp" && /@drift\/cli/.test(source)) {

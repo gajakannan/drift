@@ -10,7 +10,7 @@ import { engineProvenance,type EngineProvenance } from "../domain/engine-provena
 import { contractFingerprint,repoIdForRoot } from "../domain/identifiers.js";
 import { detectPackageManager,detectWorkspace,isApiRoutePath } from "../domain/repo-paths.js";
 import { scanStatusPayload } from "../domain/scan-status.js";
-import { SUPPORTED_SQLITE_SCHEMA_VERSION,doctorRuntime,doctorV1Scope,sqliteSchemaCompatibility } from "../domain/versions.js";
+import { SUPPORTED_SQLITE_SCHEMA_VERSION,currentMachineContractVersions,doctorRuntime,doctorV1Scope,sqliteSchemaCompatibility } from "../domain/versions.js";
 import { walkIndexableFiles } from "../engine/ts-fallback-scanner.js";
 import { doctorSymbol } from "../formatters/doctor.js";
 import { fileContentHash } from "../io/file-hash.js";
@@ -74,6 +74,7 @@ export function doctorRepo(parsed: ParsedArgs): CommandPayload {
   const workspace = repoIsDirectory ? detectWorkspace(repoRoot) : "unknown";
   const stateSummary = inspectDoctorState(databasePath, repoIdForRoot(repoRoot));
   const runtime = doctorRuntime();
+  const machineContractVersions = currentMachineContractVersions();
   const v1Scope = doctorV1Scope();
   const repoRootStatus = repoIsDirectory ? "ok" : "fail";
   const repoRootDetail = repoIsDirectory
@@ -216,6 +217,7 @@ export function doctorRepo(parsed: ParsedArgs): CommandPayload {
           repo_root: repoRoot,
           database_path: databasePath,
           runtime,
+          machine_contract_versions: machineContractVersions,
           engine: runtimeEngineProvenance(),
           v1_scope: v1Scope,
           state_summary: stateSummary,

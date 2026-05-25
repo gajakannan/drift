@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as coreExports from "../src/index.js";
 import {
   AcceptedConventionSchema,
   AgentContractSchema,
@@ -110,6 +111,75 @@ describe("core domain", () => {
     })).toMatchObject({
       kind: "unresolved_import",
       confidence_impact: "lowers_flow"
+    });
+  });
+
+  it("validates scan capability reports as first-class scan proof", () => {
+    const schema = (coreExports as {
+      ScanCapabilityReportSchema?: { parse(input: unknown): unknown };
+    }).ScanCapabilityReportSchema;
+
+    expect(schema).toBeDefined();
+    expect(schema!.parse({
+      schema_version: "drift.scan_capability_report.v1",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      engine_source: "rust",
+      engine_version: "0.1.0",
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      certified_capabilities: ["file_discovery", "syntax_facts", "fact_graph"],
+      required_capabilities: ["file_discovery", "fact_graph"],
+      missing_capabilities: [],
+      completeness: [{
+        scope: "repo",
+        complete: true,
+        can_block: true,
+        reasons: []
+      }],
+      parser_gap_count: 1,
+      parser_gap_kinds: { unresolved_import: 1 },
+      fallback_used: false,
+      enforcement_degraded: false,
+      created_at: "2026-05-25T00:00:00.000Z"
+    })).toMatchObject({
+      schema_version: "drift.scan_capability_report.v1",
+      scan_id: "scan_abc",
+      certified_capabilities: ["file_discovery", "syntax_facts", "fact_graph"],
+      parser_gap_kinds: { unresolved_import: 1 }
+    });
+  });
+
+  it("validates machine contract version bindings", () => {
+    const schema = (coreExports as {
+      MachineContractVersionsSchema?: { parse(input: unknown): unknown };
+    }).MachineContractVersionsSchema;
+
+    expect(schema).toBeDefined();
+    expect(schema!.parse({
+      schema_version: "drift.machine_contract_versions.v1",
+      cli_version: "0.1.0",
+      core_version: "0.1.0",
+      storage_schema_version: 22,
+      contract_schema_version: 1,
+      engine_contract_versions: {
+        scan_request: "engine.scan.request.v1",
+        scan_result: "engine.scan.result.v1",
+        check_request: "engine.check.request.v1",
+        check_result: "engine.check.result.v1",
+        candidates_result: "engine.candidates.result.v1",
+        stream_event: "engine.stream.event.v1"
+      },
+      factgraph_schema_version: "factgraph.v2",
+      scanner_version: "0.1.0",
+      rule_engine_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" }
+    })).toMatchObject({
+      schema_version: "drift.machine_contract_versions.v1",
+      engine_contract_versions: {
+        check_result: "engine.check.result.v1"
+      },
+      factgraph_schema_version: "factgraph.v2"
     });
   });
 
@@ -646,6 +716,7 @@ describe("core domain", () => {
       "ParsedFactContract",
       "FactQualityContract",
       "GraphContract",
+      "ScanStatusContract",
       "RoleOntologyContract",
       "LayerArchitectureContract",
       "AdapterContract",

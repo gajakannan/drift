@@ -606,9 +606,10 @@ Expected initial failure:
 
 GREEN implementation:
 
-- Add content-hash/fingerprint reuse metadata.
-- Reuse facts and graph projections only when resolver/package inputs match.
-- Invalidate dependents on resolver config changes.
+- Add an engine reuse manifest keyed by content hash and previous scan facts.
+- Reuse unchanged file facts only when resolver/package inputs match.
+- Rebuild graph projections for the current scan from the combined reused and freshly parsed facts.
+- Fall back to full scan when there is no previous scan, no reusable files, or resolver/scanner inputs changed.
 
 Focused commands:
 

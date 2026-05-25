@@ -129,6 +129,9 @@ describe("release hygiene", () => {
       good_route_passed: null,
       bad_route_blocked: null,
       finding_evidence_complete: null,
+      capability_report_verified: null,
+      machine_contract_versions_verified: null,
+      finding_evidence_confidence_verified: null,
       required_check_execution_proof_verified: null,
       contract_parity_verified: null,
       mcp_cli_parity_verified: false,
@@ -146,6 +149,9 @@ describe("release hygiene", () => {
         "good_route_passed",
         "bad_route_blocked",
         "finding_evidence_complete",
+        "capability_report_verified",
+        "machine_contract_versions_verified",
+        "finding_evidence_confidence_verified",
         "required_check_execution_proof_verified",
         "contract_parity_verified",
         "mcp_cli_parity_verified",
@@ -172,6 +178,9 @@ describe("release hygiene", () => {
       good_route_passed: true,
       bad_route_blocked: true,
       finding_evidence_complete: true,
+      capability_report_verified: true,
+      machine_contract_versions_verified: true,
+      finding_evidence_confidence_verified: true,
       required_check_execution_proof_verified: true,
       contract_parity_verified: true,
       mcp_cli_parity_verified: true,
@@ -180,6 +189,18 @@ describe("release hygiene", () => {
     expect(betaProof.evidence.contract_parity.summary).toMatchObject({
       missing_count: 0,
       partial_beta_required_count: 0
+    });
+    expect(betaProof.evidence.capability_report).toMatchObject({
+      schema_version: "drift.scan_capability_report.v1",
+      scan_id: betaProof.beta_proof.scan_id
+    });
+    expect(betaProof.evidence.machine_contract_versions).toMatchObject({
+      schema_version: "drift.machine_contract_versions.v1"
+    });
+    expect(betaProof.evidence.finding_evidence_confidence).toMatchObject({
+      confidence_kind: "deterministic",
+      extractor: expect.any(String),
+      snippet_hash: expect.stringMatching(/^[a-f0-9]{64}$/)
     });
     expect(betaProof.beta_proof.dogfood_or_fixture_repo_id).toMatch(/^repo_[a-f0-9]+$/);
     expect(betaProof.beta_proof.scan_id).toMatch(/^scan_/);
@@ -215,6 +236,9 @@ describe("release hygiene", () => {
       good_route_passed: true,
       bad_route_blocked: true,
       finding_evidence_complete: true,
+      capability_report_verified: true,
+      machine_contract_versions_verified: true,
+      finding_evidence_confidence_verified: true,
       required_check_execution_proof_verified: true,
       contract_parity_verified: true,
       mcp_cli_parity_hash: betaProof.beta_proof.mcp_cli_parity_hash,
@@ -362,7 +386,8 @@ describe("release hygiene", () => {
     expect(output).toContain("runtime capabilities");
     expect(claims.schema_version).toBe("drift.production.claims.v1");
     expect(claims.allowed_claims).toContain("typescript_api_route_layering");
-    expect(claims.blocked_claims).toContain("incremental_reuse");
+    expect(claims.allowed_claims).toContain("incremental_reuse");
+    expect(claims.blocked_claims).not.toContain("incremental_reuse");
     expect(claims.blocked_claims).toContain("mutation_capable_mcp");
   });
 

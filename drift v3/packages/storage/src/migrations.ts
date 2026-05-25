@@ -616,5 +616,59 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE audit_events ADD COLUMN after_hash TEXT;
       ALTER TABLE audit_events ADD COLUMN object_schema_version TEXT;
     `
+  },
+  {
+    id: "019_scan_capability_reports",
+    sql: `
+      CREATE TABLE IF NOT EXISTS scan_capability_reports (
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        schema_version TEXT NOT NULL,
+        engine_source TEXT NOT NULL CHECK (engine_source IN ('rust', 'typescript')),
+        engine_version TEXT,
+        scanner_version TEXT NOT NULL,
+        adapter_versions_json TEXT NOT NULL,
+        certified_capabilities_json TEXT NOT NULL,
+        required_capabilities_json TEXT NOT NULL,
+        missing_capabilities_json TEXT NOT NULL,
+        completeness_json TEXT NOT NULL,
+        parser_gap_count INTEGER NOT NULL,
+        parser_gap_kinds_json TEXT NOT NULL,
+        fallback_used INTEGER NOT NULL CHECK (fallback_used IN (0, 1)),
+        enforcement_degraded INTEGER NOT NULL CHECK (enforcement_degraded IN (0, 1)),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id),
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_scan_capability_reports_repo_scan
+        ON scan_capability_reports(repo_id, scan_id);
+    `
+  },
+  {
+    id: "020_machine_contract_versions",
+    sql: `
+      ALTER TABLE check_runs ADD COLUMN machine_contract_versions_json TEXT;
+
+      ALTER TABLE findings ADD COLUMN created_by_engine_version TEXT;
+      ALTER TABLE findings ADD COLUMN created_by_rule_engine_version TEXT;
+      ALTER TABLE findings ADD COLUMN contract_schema_version INTEGER;
+    `
+  },
+  {
+    id: "021_graph_evidence_confidence",
+    sql: `
+      ALTER TABLE graph_evidence ADD COLUMN confidence_kind TEXT NOT NULL DEFAULT 'deterministic'
+        CHECK (confidence_kind IN ('deterministic', 'heuristic', 'unresolved'));
+      ALTER TABLE graph_evidence ADD COLUMN extractor TEXT NOT NULL DEFAULT 'unknown';
+      ALTER TABLE graph_evidence ADD COLUMN snippet_hash TEXT;
+    `
+  },
+  {
+    id: "022_fact_imported_name",
+    sql: `
+      ALTER TABLE facts ADD COLUMN imported_name TEXT;
+    `
   }
 ];

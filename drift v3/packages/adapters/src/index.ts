@@ -209,6 +209,35 @@ export function nextAppRouterAdapter(): FrameworkAdapterContract {
   });
 }
 
+export function expressAdapter(): FrameworkAdapterContract {
+  return FrameworkAdapterContractSchema.parse({
+    schema_version: "drift.framework_adapter.v1",
+    adapter_id: "express_router",
+    framework: "express",
+    version: "0.1.0",
+    route_discovery: {
+      path_globs: ["**/routes/**/*.ts", "**/routes/**/*.js", "**/server.ts", "**/app.ts"],
+      method_exports: ["get", "post", "put", "patch", "delete", "all", "use"]
+    },
+    method_discovery: {
+      exported_handler_methods: ["router.METHOD(path, handler)", "app.METHOD(path, handler)"]
+    },
+    handler_shape: ["router.get('/path', handler)", "app.post('/path', async (req, res) => {})"],
+    middleware_shape: ["app.use(middleware)", "router.use(path?, middleware)"],
+    server_client_boundary: ["Express handlers are server-side entrypoints"],
+    config_files: ["server.ts", "server.js", "app.ts", "app.js"],
+    test_conventions: ["*.test.ts", "*.spec.ts", "__tests__/**/*.ts"],
+    entrypoint_patterns: ["api_route", "middleware", "webhook_handler"],
+    data_access_patterns: ["prisma.*", "db.*", "database.*", "repositories/**"],
+    generated_file_patterns: ["dist/**", "build/**"],
+    unsupported_patterns: [
+      "computed router method names",
+      "runtime-loaded route modules",
+      "framework wrappers that hide app/router calls"
+    ]
+  });
+}
+
 export const TYPESCRIPT_ADAPTER_MANIFEST: AdapterManifest = AdapterManifestSchema.parse({
   id: "typescript",
   language: "typescript",

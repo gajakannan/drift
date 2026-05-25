@@ -5,6 +5,7 @@ import {
   TYPESCRIPT_ADAPTER_MANIFEST,
   assertCertifiedCapability,
   certifiedCapabilitiesForAdapter,
+  expressAdapter,
   missingRequiredCapabilities,
   nextAppRouterAdapter,
   validateAdapterOutputBatch
@@ -22,6 +23,22 @@ describe("adapter capability registry", () => {
       },
       entrypoint_patterns: expect.arrayContaining(["api_route", "server_action", "middleware"])
     });
+  });
+
+  it("describes Express route shapes without certifying runtime support", () => {
+    expect(expressAdapter()).toMatchObject({
+      schema_version: "drift.framework_adapter.v1",
+      framework: "express",
+      adapter_id: "express_router",
+      route_discovery: {
+        method_exports: ["get", "post", "put", "patch", "delete", "all", "use"]
+      },
+      entrypoint_patterns: expect.arrayContaining(["api_route", "middleware", "webhook_handler"]),
+      unsupported_patterns: expect.arrayContaining(["computed router method names"])
+    });
+    expect(TYPESCRIPT_ADAPTER_MANIFEST.capabilities.some((capability) =>
+      capability.scope.frameworks?.includes("express")
+    )).toBe(false);
   });
 
   it("validates the built-in TypeScript adapter manifest", () => {

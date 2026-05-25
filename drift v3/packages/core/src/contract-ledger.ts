@@ -32,6 +32,7 @@ const CONTRACTS: ContractParityLedgerRow[] = [
   row("ParsedFactContract", "persisted", "internal", "not_applicable", "covered", true),
   row("FactQualityContract", "persisted", "internal", "not_applicable", "covered", true),
   row("GraphContract", "persisted", "exposed", "exposed", "covered", true),
+  row("ScanStatusContract", "derived", "exposed", "exposed", "covered", true),
   row("RoleOntologyContract", "derived", "internal", "not_applicable", "covered", true),
   row("LayerArchitectureContract", "persisted", "exposed", "exposed", "covered", true),
   row("AdapterContract", "derived", "internal", "not_applicable", "not_required", true),

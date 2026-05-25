@@ -117,10 +117,10 @@ export function createProductionClaimsManifest(): DriftProductionClaimsManifest 
       "sqlite_local_state",
       "human_confirmed_governance",
       "read_only_mcp",
-      "accepted_contract_blocks_direct_data_access"
+      "accepted_contract_blocks_direct_data_access",
+      "incremental_reuse"
     ],
     blocked_claims: [
-      "incremental_reuse",
       "cloud_sync",
       "desktop_ui",
       "python_adapter",

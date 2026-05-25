@@ -5,6 +5,7 @@ import {
   type FactRecord,
   type FileRole,
   type Finding,
+  type MachineContractVersions,
   type RequiredCheckExecution,
   type RepoContract
 } from "@drift/core";
@@ -21,6 +22,7 @@ import { contractFingerprint,hashStable } from "../domain/identifiers.js";
 import { WaivedFinding } from "../domain/preflight.js";
 import { isApiRoutePath,matchesGlob } from "../domain/repo-paths.js";
 import { parserGapsFromDiagnostics } from "../domain/scan-status.js";
+import { currentMachineContractVersions } from "../domain/versions.js";
 import { collectScanData,type ScanData } from "../engine/collect-scan-data.js";
 import { runEngineCheck } from "../engine/engine-check.js";
 import { extractImports,importFactsForFile } from "../engine/fact-extraction.js";
@@ -60,6 +62,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
   const checkId = `check_${hashStable(`${repoId}:${scope}:${now}`).slice(0, 16)}`;
   const checkScanId = `scan_check_${hashStable(`${repoId}:${now}`).slice(0, 16)}`;
   const contractFingerprintValue = contractFingerprint(contract);
+  const machineContractVersions = currentMachineContractVersions();
   const rawDiff = scope === "full" ? null : loadDiff(repo.root_path, parsed);
   const parsedDiff = scope === "full"
     ? fullRepoDiff(repo.root_path)
@@ -95,7 +98,8 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
       scope,
       status: "blocked",
       fallbackStatus,
-      capabilityCompleteness
+      capabilityCompleteness,
+      machineContractVersions
     });
     storage.upsertCheckRun({
       id: checkId,
@@ -111,6 +115,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
       capability_complete: false,
       findings_count: 0,
       blocking_count: 0,
+      machine_contract_versions: machineContractVersions,
       started_at: now,
       completed_at: now
     });
@@ -118,6 +123,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
       response_schema: "drift.check.result.v1",
       check,
       readiness,
+      machine_contract_versions: machineContractVersions,
       policy,
       governance: preflightGovernance(),
       audit_integrity: storage.verifyAuditChain(repoId),
@@ -409,6 +415,11 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     storage.upsertFinding(finding);
   }
 
+  attachFindingVersionBindings(findings, machineContractVersions);
+  for (const finding of findings) {
+    storage.upsertFinding(finding);
+  }
+
   const blockingCount = findings.filter((finding) =>
     finding.status === "new" &&
     finding.diff_status === "new_in_diff" &&
@@ -433,7 +444,8 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     scope,
     status: checkStatus,
     fallbackStatus,
-    capabilityCompleteness
+    capabilityCompleteness,
+    machineContractVersions
   });
   storage.upsertCheckRun({
     id: checkId,
@@ -449,6 +461,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     capability_complete: capabilityCompleteness.complete,
     findings_count: findings.length,
     blocking_count: blockingCount,
+    machine_contract_versions: machineContractVersions,
     started_at: now,
     completed_at: now
   });
@@ -462,6 +475,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     response_schema: "drift.check.result.v1",
     check,
     readiness,
+    machine_contract_versions: machineContractVersions,
     policy,
     governance: preflightGovernance(),
     audit_integrity: storage.verifyAuditChain(repoId),
@@ -540,6 +554,17 @@ function readinessForCheck(input: {
   });
 }
 
+function attachFindingVersionBindings(
+  findings: Finding[],
+  machineContractVersions: MachineContractVersions
+): void {
+  for (const finding of findings) {
+    finding.created_by_engine_version = machineContractVersions.scanner_version;
+    finding.created_by_rule_engine_version = machineContractVersions.rule_engine_version;
+    finding.contract_schema_version = machineContractVersions.contract_schema_version;
+  }
+}
+
 function checkEnvelope(input: {
   checkId: string;
   repoId: string;
@@ -550,6 +575,7 @@ function checkEnvelope(input: {
   status: CheckRun["status"];
   fallbackStatus: ScanData["fallbackStatus"];
   capabilityCompleteness: ReturnType<typeof capabilityCompletenessForCheck>;
+  machineContractVersions: MachineContractVersions;
 }): {
   id: string;
   repo_id: string;
@@ -565,6 +591,7 @@ function checkEnvelope(input: {
   };
   fallback_status: ScanData["fallbackStatus"];
   capability_completeness: ReturnType<typeof capabilityCompletenessForCheck>;
+  machine_contract_versions: MachineContractVersions;
 } {
   return {
     id: input.checkId,
@@ -580,7 +607,8 @@ function checkEnvelope(input: {
       scan_id: input.checkScanId
     },
     fallback_status: input.fallbackStatus,
-    capability_completeness: input.capabilityCompleteness
+    capability_completeness: input.capabilityCompleteness,
+    machine_contract_versions: input.machineContractVersions
   };
 }
 

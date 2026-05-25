@@ -53,7 +53,7 @@ Current beta proof state:
 3. Candidate inference may propose governance; it must not create governance by itself.
 4. No blocking finding should ship without contract id, file/range, evidence, and an understandable fix direction.
 5. Fallback scanner output cannot be production-equivalent.
-6. Incremental scan reporting is not incremental reuse.
+6. Incremental reuse is limited to unchanged file facts when resolver inputs match; graph projections are rebuilt for the new scan.
 7. MCP is a read-only transport. Product logic should live in shared query/domain code.
 8. A beta demo from dirty state is not beta-grade.
 9. Scanner skip rules, context egress denied globs, and support/export redaction are separate controls. Rust skip behavior is the production scanner guarantee; policy denied globs are output controls; TypeScript fallback is degraded and cannot be claimed equivalent for secret-like handling.
@@ -187,14 +187,15 @@ Current implementation:
 - `ScanManifest`, `FileSnapshot`, `ScanFileChange`, and `ResolverDependency` are typed in `packages/core/src/domain.ts:100`, `packages/core/src/domain.ts:119`, `packages/core/src/domain.ts:130`, and `packages/core/src/domain.ts:140`.
 - `scan_manifests`, `file_snapshots`, `scan_file_changes`, and resolver/module projection tables are created in `packages/storage/src/migrations.ts:23`, `packages/storage/src/migrations.ts:46`, `packages/storage/src/migrations.ts:369`, and `packages/storage/src/migrations.ts:411`.
 - `runScanRepo` stores manifest, snapshots, file changes, facts, graph artifact, candidates, and scan audit events in `packages/cli/src/domain/scan-status.ts:40`.
-- `incrementalScanPlan` is explicit: `execution_mode: "full_scan"`, `reuse_applied: false`, and always includes `engine_reuse_not_enabled` in `packages/cli/src/domain/scan-status.ts:31` and `packages/cli/src/domain/scan-status.ts:341`.
+- `incrementalScanPlan` is explicit: it reports `execution_mode: "incremental_reuse"` only when the Rust engine reused unchanged file facts, and falls back to `full_scan` when there is no previous scan, no reusable files, or resolver/scanner inputs changed.
 - `scanStatusPayload` detects source changes, branch drift, version drift, resolver input drift, and audit validity in `packages/cli/src/domain/scan-status.ts:372`.
 - Resolver input drift is tested in `packages/cli/test/cli.test.ts:1435`.
 
 Required invariants:
 
 - Full scan must say full scan.
-- Reuse must not be claimed unless reuse is real.
+- Reuse must not be claimed unless the engine reports reused files for the current scan.
+- Resolver/package input changes must block fact reuse and force fresh extraction.
 - Stale scan status must be visible to CLI/MCP/preflight.
 - A beta release script should require fresh scan before demo.
 - Freshness is one shared read model with one invalidation enum. CLI, MCP, prepare, repo map, findings, allowed context, and check should expose the same `stale`, `invalidation_reasons`, and `freshness_requirement`.
@@ -597,7 +598,7 @@ Required beta proof:
 8. Finding output includes convention id, file/range, evidence, and fix direction.
 9. Audit hash chain verifies.
 10. MCP reports same scan/contract/preflight/repo-map truth as CLI.
-11. No incremental reuse claim unless reuse is actually implemented and tested.
+11. Incremental reuse claims must stay limited to tested unchanged-file fact reuse with graph rebuild.
 
 Current evidence:
 
@@ -922,14 +923,14 @@ Purpose: prevent beta/release claims from outrunning implemented behavior.
 Required invariants:
 
 - Public docs, demo scripts, release notes, and product copy must be checked against capabilities output.
-- Claims about incremental reuse, broad language support, desktop UI, cloud sync, Python adapter, duplicate helper detection, or mutation-capable MCP are blocked until capabilities output and release proof support them.
+- Claims about broad language support, desktop UI, cloud sync, Python adapter, duplicate helper detection, or mutation-capable MCP are blocked until capabilities output and release proof support them.
 - If TypeScript fallback is used, outputs must say enforcement is degraded and cannot support blocking beta claims.
 
 Current evidence:
 
 - Capabilities output is real and narrow.
 - `docs/architecture/beta-claims.json` is the machine-readable production claims manifest.
-- `scripts/validate-product-claims.mjs` blocks explicit overclaims for incremental reuse, cloud sync, mutation-capable MCP, and broad language support.
+- `scripts/validate-product-claims.mjs` blocks explicit overclaims for cloud sync, mutation-capable MCP, broad language support, and unsupported incremental scan performance claims.
 - `pnpm verify:ci` runs `pnpm validate:claims`.
 
 Status: `canonical-beta`.

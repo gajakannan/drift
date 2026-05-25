@@ -511,9 +511,40 @@ describe("read-only MCP handlers", () => {
       evidence_refs: ["diagnostic_unresolved_import"],
       created_at: "2026-05-10T00:00:08.000Z"
     }]);
+    storage.upsertScanCapabilityReport({
+      schema_version: "drift.scan_capability_report.v1",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      engine_source: "rust",
+      engine_version: null,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      certified_capabilities: ["file_discovery", "syntax_facts", "fact_graph"],
+      required_capabilities: ["file_discovery", "fact_graph"],
+      missing_capabilities: ["fact_graph"],
+      completeness: [{
+        scope: "repo",
+        complete: false,
+        can_block: false,
+        reasons: ["graph_missing"]
+      }],
+      parser_gap_count: 1,
+      parser_gap_kinds: { unresolved_import: 1 },
+      fallback_used: false,
+      enforcement_degraded: true,
+      created_at: "2026-05-10T00:00:09.000Z"
+    });
     storage.close();
 
     expect(createReadOnlyMcpHandlers({ databasePath }).get_scan_status({ repo_id: "repo_abc" })).toMatchObject({
+      capability_report: {
+        schema_version: "drift.scan_capability_report.v1",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        parser_gap_count: 1,
+        parser_gap_kinds: { unresolved_import: 1 },
+        enforcement_degraded: true
+      },
       parser_gaps: {
         total_count: 1,
         by_kind: { unresolved_import: 1 },
@@ -2381,7 +2412,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 18,
+        supported_sqlite_schema_version: 22,
         storage_driver: "sqlite"
       },
       v1_scope: {

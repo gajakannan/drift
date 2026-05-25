@@ -61,6 +61,15 @@ export async function GET() {
             .iter()
             .any(|event| event["event"] == "graph_evidence_batch")
     );
+    let evidence = events
+        .iter()
+        .find(|event| event["event"] == "graph_evidence_batch")
+        .and_then(|event| event["graph_evidence"].as_array())
+        .and_then(|items| items.first())
+        .expect("graph evidence");
+    assert_eq!(evidence["confidence_kind"], "deterministic");
+    assert_eq!(evidence["extractor"], "rust_typescript_graph");
+    assert_eq!(evidence["snippet_hash"].as_str().unwrap().len(), 64);
     let completed = events
         .iter()
         .find(|event| event["event"] == "scan_completed")
@@ -75,6 +84,97 @@ export async function GET() {
         completed["stats"]["capabilities"]["missing"],
         serde_json::json!([])
     );
+}
+
+#[test]
+fn scan_stream_reuses_unchanged_file_facts_from_reuse_manifest() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let route = dir.path().join("app/api/users");
+    fs::create_dir_all(&route).expect("create route dir");
+    fs::write(
+        route.join("route.ts"),
+        r#"import { prisma } from "../../../lib/prisma";
+
+export async function GET() {
+  return Response.json(await prisma.user.findMany());
+}
+"#,
+    )
+    .expect("write route");
+    let lib = dir.path().join("app/lib");
+    fs::create_dir_all(&lib).expect("create lib dir");
+    fs::write(lib.join("prisma.ts"), "export const prisma = {};\n").expect("write lib");
+
+    let first = Command::new(env!("CARGO_BIN_EXE_drift-engine"))
+        .args([
+            "scan-repo",
+            dir.path().to_str().expect("utf8 temp dir"),
+            "--repo-id",
+            "repo_abc",
+            "--scan-id",
+            "scan_first",
+        ])
+        .output()
+        .expect("run first drift-engine scan");
+    assert!(
+        first.status.success(),
+        "engine failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_json: Value = serde_json::from_slice(&first.stdout).expect("first scan json");
+    let manifest = serde_json::json!({
+        "schema_version": "engine.reuse_manifest.v1",
+        "previous_scan_id": "scan_first",
+        "file_snapshots": first_json["file_snapshots"],
+        "facts": first_json["facts"]
+    });
+    let manifest_path = dir.path().join("reuse-manifest.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )
+    .expect("write reuse manifest");
+
+    let second = Command::new(env!("CARGO_BIN_EXE_drift-engine"))
+        .args([
+            "scan-repo",
+            dir.path().to_str().expect("utf8 temp dir"),
+            "--format",
+            "jsonl",
+            "--repo-id",
+            "repo_abc",
+            "--scan-id",
+            "scan_second",
+            "--reuse-manifest",
+            manifest_path.to_str().expect("utf8 manifest path"),
+        ])
+        .output()
+        .expect("run second drift-engine scan");
+    assert!(
+        second.status.success(),
+        "engine failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let events = String::from_utf8(second.stdout)
+        .expect("utf8 stdout")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json line"))
+        .collect::<Vec<_>>();
+    assert!(
+        events
+            .iter()
+            .any(|event| event["event"] == "graph_edge_batch"),
+        "reuse must still rebuild graph edges for the new scan"
+    );
+    let completed = events
+        .iter()
+        .find(|event| event["event"] == "scan_completed")
+        .expect("scan_completed event");
+    assert_eq!(completed["stats"]["reuse_applied"], true);
+    assert_eq!(completed["stats"]["files_reused"].as_u64().unwrap(), 2);
+    assert_eq!(completed["stats"]["files_parsed"].as_u64().unwrap(), 0);
+    assert!(completed["stats"]["graph_edges"].as_u64().unwrap() > 0);
 }
 
 #[test]

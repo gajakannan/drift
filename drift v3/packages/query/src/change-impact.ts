@@ -1,4 +1,4 @@
-import type { ChangeImpact } from "@drift/core";
+import type { ChangeImpact, SymbolIdentity } from "@drift/core";
 
 export interface ChangeImpactRouteFlow {
   route: string;
@@ -12,6 +12,7 @@ export interface BuildChangeImpactInput {
   scan_id: string;
   changed_files: string[];
   route_flows?: ChangeImpactRouteFlow[];
+  symbol_identities?: SymbolIdentity[];
   test_files?: string[];
 }
 
@@ -31,13 +32,14 @@ export function buildChangeImpact(input: BuildChangeImpactInput): ChangeImpact {
   const affectedTests = uniqueSorted((input.test_files ?? []).filter((file) =>
     [...affectedRoutes, ...affectedServices, ...input.changed_files].some((subject) => sameSubject(file, subject))
   ));
+  const changedSymbols = changedSymbolsForFiles(input.changed_files, input.symbol_identities ?? []);
 
   return {
     schema_version: "drift.change_impact.v1",
     repo_id: input.repo_id,
     scan_id: input.scan_id,
     changed_files: uniqueSorted(input.changed_files),
-    changed_symbols: [],
+    changed_symbols: changedSymbols,
     changed_routes: uniqueSorted(input.changed_files.filter((file) => file.includes("/api/"))),
     changed_tests: uniqueSorted(input.changed_files.filter(isTestFile)),
     changed_contract_surfaces: changedContractSurfaces(input.changed_files),
@@ -49,6 +51,17 @@ export function buildChangeImpact(input: BuildChangeImpactInput): ChangeImpact {
     affected_importers: affectedServices,
     missing_test_candidates: affectedRoutes.length > 0 && affectedTests.length === 0 ? affectedRoutes : []
   };
+}
+
+function changedSymbolsForFiles(files: string[], identities: SymbolIdentity[]): string[] {
+  const changed = new Set(files);
+  return uniqueSorted(identities.flatMap((identity) => {
+    const touchesDeclaration = changed.has(identity.declared_in) ||
+      identity.exported_from.some((file) => changed.has(file));
+    return touchesDeclaration
+      ? [identity.canonical_definition]
+      : [];
+  }));
 }
 
 function changedContractSurfaces(files: string[]): string[] {

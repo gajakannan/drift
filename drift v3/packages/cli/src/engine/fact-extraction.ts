@@ -99,6 +99,7 @@ export function factRecord(
   quality: Partial<Pick<FactRecord,
     | "source_span"
     | "ast_node_kind"
+    | "imported_name"
     | "extraction_method"
     | "extractor_version"
     | "parser_version"
@@ -119,6 +120,7 @@ export function factRecord(
     file_path: input.filePath,
     name,
     value,
+    imported_name: quality.imported_name,
     start_line: startLine,
     end_line: endLine,
     source_span: quality.source_span ?? {

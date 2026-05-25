@@ -275,6 +275,7 @@ export interface FactRecord {
   file_path: string;
   name: string;
   value?: string;
+  imported_name?: string;
   start_line: number;
   end_line: number;
   source_span: SourceSpan;
@@ -316,6 +317,60 @@ export interface ParserGap {
   message: string;
   evidence_refs: string[];
   created_at: string;
+}
+
+export type ScanCapabilityReportScope =
+  | "repo"
+  | "changed-files"
+  | "changed-hunks"
+  | "route-flow"
+  | "file";
+
+export interface ScanCapabilityCompleteness {
+  scope: ScanCapabilityReportScope;
+  rule_id?: string;
+  complete: boolean;
+  can_block: boolean;
+  reasons: string[];
+}
+
+export interface ScanCapabilityReport {
+  schema_version: "drift.scan_capability_report.v1";
+  repo_id: string;
+  scan_id: string;
+  engine_source: "rust" | "typescript";
+  engine_version: string | null;
+  scanner_version: string;
+  adapter_versions: Record<string, string>;
+  certified_capabilities: string[];
+  required_capabilities: string[];
+  missing_capabilities: string[];
+  completeness: ScanCapabilityCompleteness[];
+  parser_gap_count: number;
+  parser_gap_kinds: Record<string, number>;
+  fallback_used: boolean;
+  enforcement_degraded: boolean;
+  created_at: string;
+}
+
+export interface MachineContractVersions {
+  schema_version: "drift.machine_contract_versions.v1";
+  cli_version: string;
+  core_version: string;
+  storage_schema_version: number;
+  contract_schema_version: number;
+  engine_contract_versions: {
+    scan_request: string;
+    scan_result: string;
+    check_request: string;
+    check_result: string;
+    candidates_result: string;
+    stream_event: string;
+  };
+  factgraph_schema_version: "factgraph.v1" | "factgraph.v2";
+  scanner_version: string;
+  rule_engine_version: string;
+  adapter_versions: Record<string, string>;
 }
 
 export type EntrypointKind =
@@ -630,6 +685,7 @@ export interface CheckRun {
   capability_complete: boolean;
   findings_count: number;
   blocking_count: number;
+  machine_contract_versions?: MachineContractVersions;
   started_at: string;
   completed_at: string;
 }
@@ -657,6 +713,9 @@ export interface Finding {
   drift_category?: FindingDriftCategory;
   introduced_by_diff?: boolean;
   affected_contract?: string;
+  created_by_engine_version?: string;
+  created_by_rule_engine_version?: string;
+  contract_schema_version?: number;
   created_at: string;
 }
 

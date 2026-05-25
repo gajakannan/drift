@@ -295,6 +295,21 @@ function betaProofFields({ dirtyState, sourceBuildSchemaMatch, installedCliSmoke
     "finding_evidence_complete",
     strictBetaInput ? null : "DRIFT_RELEASE_FINDING_EVIDENCE_COMPLETE"
   );
+  const capabilityReportVerified = booleanInput(
+    betaProofInput,
+    "capability_report_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_CAPABILITY_REPORT_VERIFIED"
+  );
+  const machineContractVersionsVerified = booleanInput(
+    betaProofInput,
+    "machine_contract_versions_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_MACHINE_CONTRACT_VERSIONS_VERIFIED"
+  );
+  const findingEvidenceConfidenceVerified = booleanInput(
+    betaProofInput,
+    "finding_evidence_confidence_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_FINDING_EVIDENCE_CONFIDENCE_VERIFIED"
+  );
   const requiredCheckExecutionProofVerified = booleanInput(
     betaProofInput,
     "required_check_execution_proof_verified",
@@ -342,6 +357,9 @@ function betaProofFields({ dirtyState, sourceBuildSchemaMatch, installedCliSmoke
     good_route_passed: goodRoutePassed,
     bad_route_blocked: badRouteBlocked,
     finding_evidence_complete: findingEvidenceComplete,
+    capability_report_verified: capabilityReportVerified,
+    machine_contract_versions_verified: machineContractVersionsVerified,
+    finding_evidence_confidence_verified: findingEvidenceConfidenceVerified,
     required_check_execution_proof_verified: requiredCheckExecutionProofVerified,
     contract_parity_verified: contractParityVerified,
     mcp_cli_parity_hash: mcpCliParityHash,
@@ -426,6 +444,9 @@ function missingBetaProofFields(proof) {
     good_route_passed: proof.good_route_passed,
     bad_route_blocked: proof.bad_route_blocked,
     finding_evidence_complete: proof.finding_evidence_complete,
+    capability_report_verified: proof.capability_report_verified,
+    machine_contract_versions_verified: proof.machine_contract_versions_verified,
+    finding_evidence_confidence_verified: proof.finding_evidence_confidence_verified,
     required_check_execution_proof_verified: proof.required_check_execution_proof_verified,
     contract_parity_verified: proof.contract_parity_verified,
     mcp_cli_parity_verified: proof.mcp_cli_parity_verified,
