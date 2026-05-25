@@ -483,5 +483,193 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE repos ADD COLUMN lockfile_hashes_json TEXT;
       ALTER TABLE repos ADD COLUMN resolver_input_hash TEXT;
     `
+  },
+  {
+    id: "013_required_check_executions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS required_check_executions (
+        execution_id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL,
+        repo_root TEXT NOT NULL,
+        repo_commit TEXT NOT NULL,
+        worktree_dirty INTEGER NOT NULL CHECK (worktree_dirty IN (0, 1)),
+        scan_id TEXT,
+        repo_contract_id TEXT NOT NULL,
+        agent_contract_id TEXT NOT NULL,
+        command TEXT NOT NULL,
+        argv_json TEXT NOT NULL,
+        command_hash TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        timeout_ms INTEGER NOT NULL,
+        exit_code INTEGER,
+        status TEXT NOT NULL CHECK (status IN ('passed', 'failed', 'timed_out', 'blocked')),
+        stdout_hash TEXT NOT NULL,
+        stderr_hash TEXT NOT NULL,
+        stdout_preview TEXT NOT NULL,
+        stderr_preview TEXT NOT NULL,
+        audit_event_id TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_required_check_executions_repo_command
+        ON required_check_executions(repo_id, command_hash, completed_at);
+
+      CREATE INDEX IF NOT EXISTS idx_required_check_executions_repo_contract
+        ON required_check_executions(repo_id, repo_contract_id, scan_id);
+    `
+  },
+  {
+    id: "014_fact_quality",
+    sql: `
+      ALTER TABLE facts ADD COLUMN source_span_json TEXT NOT NULL DEFAULT '{"start_line":1,"start_column":1,"end_line":1,"end_column":1}';
+      ALTER TABLE facts ADD COLUMN ast_node_kind TEXT;
+      ALTER TABLE facts ADD COLUMN extraction_method TEXT NOT NULL DEFAULT 'legacy_parser';
+      ALTER TABLE facts ADD COLUMN extractor_version TEXT NOT NULL DEFAULT '0.1.0';
+      ALTER TABLE facts ADD COLUMN parser_version TEXT NOT NULL DEFAULT '0.1.0';
+      ALTER TABLE facts ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0;
+      ALTER TABLE facts ADD COLUMN confidence_label TEXT NOT NULL DEFAULT 'certain';
+      ALTER TABLE facts ADD COLUMN evidence_level TEXT NOT NULL DEFAULT 'text';
+      ALTER TABLE facts ADD COLUMN resolution_status TEXT NOT NULL DEFAULT 'resolved';
+      ALTER TABLE facts ADD COLUMN staleness_status TEXT NOT NULL DEFAULT 'fresh';
+      ALTER TABLE facts ADD COLUMN last_seen_scan_id TEXT;
+      UPDATE facts SET last_seen_scan_id = scan_id WHERE last_seen_scan_id IS NULL;
+    `
+  },
+  {
+    id: "015_parser_gaps",
+    sql: `
+      CREATE TABLE IF NOT EXISTS parser_gaps (
+        gap_id TEXT PRIMARY KEY,
+        schema_version TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        start_line INTEGER NOT NULL,
+        end_line INTEGER NOT NULL,
+        confidence_impact TEXT NOT NULL,
+        message TEXT NOT NULL,
+        evidence_refs_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_parser_gaps_repo_scan
+        ON parser_gaps(repo_id, scan_id);
+
+      CREATE INDEX IF NOT EXISTS idx_parser_gaps_repo_kind
+        ON parser_gaps(repo_id, kind);
+    `
+  },
+  {
+    id: "016_symbol_identities",
+    sql: `
+      CREATE TABLE IF NOT EXISTS symbol_identities (
+        symbol_id TEXT NOT NULL,
+        schema_version TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        symbol_name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        declared_in TEXT NOT NULL,
+        exported_from_json TEXT NOT NULL,
+        imported_as_json TEXT NOT NULL,
+        re_export_chain_json TEXT NOT NULL,
+        canonical_definition TEXT NOT NULL,
+        call_sites_json TEXT NOT NULL,
+        references_json TEXT NOT NULL,
+        visibility TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id, symbol_id),
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_symbol_identities_repo_scan
+        ON symbol_identities(repo_id, scan_id);
+
+      CREATE INDEX IF NOT EXISTS idx_symbol_identities_repo_name
+        ON symbol_identities(repo_id, symbol_name);
+    `
+  },
+  {
+    id: "017_required_check_state_binding",
+    sql: `
+      ALTER TABLE required_check_executions ADD COLUMN git_branch TEXT NOT NULL DEFAULT 'unknown';
+      ALTER TABLE required_check_executions ADD COLUMN git_commit_sha TEXT NOT NULL DEFAULT 'unknown';
+      ALTER TABLE required_check_executions ADD COLUMN untracked_files_present INTEGER NOT NULL DEFAULT 0 CHECK (untracked_files_present IN (0, 1));
+      ALTER TABLE required_check_executions ADD COLUMN contract_fingerprint TEXT NOT NULL DEFAULT 'unknown';
+      ALTER TABLE required_check_executions ADD COLUMN repo_contract_version INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE required_check_executions ADD COLUMN diff_hash TEXT NOT NULL DEFAULT 'no_diff';
+      ALTER TABLE required_check_executions ADD COLUMN lockfile_hash TEXT;
+      ALTER TABLE required_check_executions ADD COLUMN package_manager TEXT;
+
+      CREATE INDEX IF NOT EXISTS idx_required_check_executions_state_binding
+        ON required_check_executions(repo_id, repo_contract_id, contract_fingerprint, diff_hash, completed_at);
+    `
+  },
+  {
+    id: "018_audit_object_hashes",
+    sql: `
+      ALTER TABLE audit_events ADD COLUMN before_hash TEXT;
+      ALTER TABLE audit_events ADD COLUMN after_hash TEXT;
+      ALTER TABLE audit_events ADD COLUMN object_schema_version TEXT;
+    `
+  },
+  {
+    id: "019_scan_capability_reports",
+    sql: `
+      CREATE TABLE IF NOT EXISTS scan_capability_reports (
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        schema_version TEXT NOT NULL,
+        engine_source TEXT NOT NULL CHECK (engine_source IN ('rust', 'typescript')),
+        engine_version TEXT,
+        scanner_version TEXT NOT NULL,
+        adapter_versions_json TEXT NOT NULL,
+        certified_capabilities_json TEXT NOT NULL,
+        required_capabilities_json TEXT NOT NULL,
+        missing_capabilities_json TEXT NOT NULL,
+        completeness_json TEXT NOT NULL,
+        parser_gap_count INTEGER NOT NULL,
+        parser_gap_kinds_json TEXT NOT NULL,
+        fallback_used INTEGER NOT NULL CHECK (fallback_used IN (0, 1)),
+        enforcement_degraded INTEGER NOT NULL CHECK (enforcement_degraded IN (0, 1)),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id),
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_scan_capability_reports_repo_scan
+        ON scan_capability_reports(repo_id, scan_id);
+    `
+  },
+  {
+    id: "020_machine_contract_versions",
+    sql: `
+      ALTER TABLE check_runs ADD COLUMN machine_contract_versions_json TEXT;
+
+      ALTER TABLE findings ADD COLUMN created_by_engine_version TEXT;
+      ALTER TABLE findings ADD COLUMN created_by_rule_engine_version TEXT;
+      ALTER TABLE findings ADD COLUMN contract_schema_version INTEGER;
+    `
+  },
+  {
+    id: "021_graph_evidence_confidence",
+    sql: `
+      ALTER TABLE graph_evidence ADD COLUMN confidence_kind TEXT NOT NULL DEFAULT 'deterministic'
+        CHECK (confidence_kind IN ('deterministic', 'heuristic', 'unresolved'));
+      ALTER TABLE graph_evidence ADD COLUMN extractor TEXT NOT NULL DEFAULT 'unknown';
+      ALTER TABLE graph_evidence ADD COLUMN snippet_hash TEXT;
+    `
+  },
+  {
+    id: "022_fact_imported_name",
+    sql: `
+      ALTER TABLE facts ADD COLUMN imported_name TEXT;
+    `
   }
 ];

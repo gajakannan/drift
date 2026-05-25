@@ -288,7 +288,7 @@ export function requiredChecksForFiles(
   contract: RepoContract,
   relevantFiles: RelevantFile[]
 ): PreparedRequiredCheck[] {
-  return contract.required_checks.flatMap((check) => {
+  return allRequiredChecks(contract).flatMap((check) => {
     const matchedFiles = relevantFiles
       .filter((file) => requiredCheckMatchesFile(check, file.path, file.roles))
       .map((file) => file.path);
@@ -301,11 +301,33 @@ export function requiredChecksForPath(
   filePath: string
 ): PreparedRequiredCheck[] {
   const roles = rolesForPath(filePath);
-  return contract.required_checks.flatMap((check) =>
+  return allRequiredChecks(contract).flatMap((check) =>
     requiredCheckMatchesFile(check, filePath, roles)
       ? [{ ...check, matched_files: [filePath] }]
       : []
   );
+}
+
+export function allRequiredChecks(contract: RepoContract): RepoContract["required_checks"] {
+  return [
+    ...contract.required_checks,
+    ...(contract.agent_contracts ?? []).flatMap((agentContract) => {
+      if (agentContract.kind !== "required_change_checks") {
+        return [];
+      }
+      return agentContract.rules.flatMap((rule) =>
+        rule.required_checks.map((check) => ({
+          command: check.command,
+          applies_to: {
+            path_globs: rule.applies_to.path_globs ?? [],
+            file_roles: rule.applies_to.file_roles ?? []
+          },
+          reason: check.reason,
+          source: "contract" as const
+        }))
+      );
+    })
+  ];
 }
 
 export function requiredCheckMatchesFile(

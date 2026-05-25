@@ -6,6 +6,7 @@ export const VALUE_FLAGS = new Set([
   "capability",
   "checksum",
   "convention",
+  "command",
   "db",
   "default-mode",
   "deny-glob",
@@ -50,6 +51,7 @@ export const VALUE_FLAGS = new Set([
   "operation-kind",
   "target-id",
   "target-type",
+  "timeout-ms",
   "until"
 ]);
 
@@ -66,6 +68,7 @@ export const BOOLEAN_FLAGS = new Set([
   "json",
   "require-checksum",
   "require-fresh",
+  "reapprove-on-change",
   "strict",
   "version"
 ]);

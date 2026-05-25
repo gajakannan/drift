@@ -41,6 +41,9 @@ export function canonicalAuditEventJson(
     target_type: event.target_type,
     target_id: event.target_id,
     metadata: event.metadata,
+    ...(event.before_hash ? { before_hash: event.before_hash } : {}),
+    ...(event.after_hash ? { after_hash: event.after_hash } : {}),
+    ...(event.object_schema_version ? { object_schema_version: event.object_schema_version } : {}),
     created_at: event.created_at,
     previous_event_hash: previousEventHash
   })}\n`;

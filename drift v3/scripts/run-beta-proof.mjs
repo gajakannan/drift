@@ -14,9 +14,11 @@ const root = process.cwd();
 
 ensureBuiltRuntime();
 
-const [{ runCli }, { createReadOnlyMcpHandlers }] = await Promise.all([
+const [{ runCli }, { createReadOnlyMcpHandlers }, { openDriftStorage }, { createContractParityLedger }] = await Promise.all([
   import(pathToFileURL(resolve("packages/cli/dist/index.js")).href),
-  import(pathToFileURL(resolve("packages/mcp/dist/index.js")).href)
+  import(pathToFileURL(resolve("packages/mcp/dist/index.js")).href),
+  import(pathToFileURL(resolve("packages/storage/dist/index.js")).href),
+  import(pathToFileURL(resolve("packages/core/dist/index.js")).href)
 ]);
 
 const tempRoot = await mkdtemp(join(tmpdir(), "drift-beta-proof-"));
@@ -33,6 +35,13 @@ try {
   ]);
   const databasePath = started.state.database_path;
   const repoId = started.repo.id;
+
+  const requiredCheckCommand = "node -e \"process.stdout.write('ok')\"";
+  addRequiredProofContract({
+    databasePath,
+    repoId,
+    command: requiredCheckCommand
+  });
 
   const contract = await runJson([
     "--db", databasePath,
@@ -62,6 +71,17 @@ try {
     "--json"
   ]);
 
+  await runJson([
+    "--db", databasePath,
+    "checks", "run",
+    "--repo", repoId,
+    "--command", requiredCheckCommand,
+    "--diff-file", goodDiff,
+    "--timeout-ms", "30000",
+    "--now", "2026-05-10T00:00:01.500Z",
+    "--json"
+  ]);
+
   const goodCheck = await runJson([
     "--db", databasePath,
     "check",
@@ -69,6 +89,17 @@ try {
     "--diff-file", goodDiff,
     "--scope", "changed-hunks",
     "--now", "2026-05-10T00:00:02.000Z",
+    "--json"
+  ]);
+
+  const requiredCheckExecution = await runJson([
+    "--db", databasePath,
+    "checks", "run",
+    "--repo", repoId,
+    "--command", requiredCheckCommand,
+    "--diff-file", badDiff,
+    "--timeout-ms", "30000",
+    "--now", "2026-05-10T00:00:02.500Z",
     "--json"
   ]);
 
@@ -83,6 +114,9 @@ try {
   ], { exitCodes: [1] });
 
   const parity = await mcpCliParity({ databasePath, repoId });
+  const contractParity = createContractParityLedger();
+  const contractParityVerified = contractParity.summary.missing_count === 0 &&
+    contractParity.summary.partial_beta_required_count === 0;
   const audit = await runJson([
     "--db", databasePath,
     "audit", "verify",
@@ -117,6 +151,50 @@ try {
   const fallbackUsed = badCheck.check?.fallback_status?.fallback_used ?? badCheck.summary?.engine_source !== "rust";
   const latestScanId = scanStatus.latest_scan?.id ?? started.scan?.id ?? null;
   const graphProof = await graphProofForScan(databasePath, repoId, latestScanId);
+  const capabilityReport = scanStatus.capability_report ?? null;
+  const machineContractVersions = badCheck.machine_contract_versions ?? badCheck.check?.machine_contract_versions ?? null;
+  const findingEvidenceConfidence = graphProof.evidence_confidence.find((evidence) =>
+    evidence.file_path === badRoute.path &&
+    typeof evidence.extractor === "string" &&
+    evidence.extractor.length > 0
+  ) ?? graphProof.evidence_confidence[0] ?? null;
+  const capabilityReportVerified = Boolean(
+    capabilityReport?.schema_version === "drift.scan_capability_report.v1" &&
+      capabilityReport.scan_id === latestScanId &&
+      capabilityReport.fallback_used === false &&
+      capabilityReport.enforcement_degraded === false
+  );
+  const machineContractVersionsVerified = Boolean(
+    machineContractVersions?.schema_version === "drift.machine_contract_versions.v1" &&
+      machineContractVersions.storage_schema_version > 0 &&
+      typeof machineContractVersions.engine_contract_versions?.scan_result === "string" &&
+      machineContractVersions.factgraph_schema_version === "factgraph.v2"
+  );
+  const findingEvidenceConfidenceVerified = Boolean(
+    findingEvidenceConfidence &&
+      ["deterministic", "heuristic", "unresolved"].includes(findingEvidenceConfidence.confidence_kind) &&
+      typeof findingEvidenceConfidence.extractor === "string" &&
+      findingEvidenceConfidence.extractor.length > 0 &&
+      (findingEvidenceConfidence.snippet_hash === null ||
+        /^[a-f0-9]{64}$/.test(findingEvidenceConfidence.snippet_hash))
+  );
+  const mcpRequiredCheckExecutions = createReadOnlyMcpHandlers({ databasePath })
+    .get_required_check_executions({ repo_id: repoId, command: requiredCheckCommand });
+  const requiredCheckExecutionProofVerified = Boolean(
+    requiredCheckExecution.response_schema === "drift.required-check-execution.v1" &&
+      requiredCheckExecution.summary?.passed === true &&
+      requiredCheckExecution.execution?.repo_contract_id === contract.contract?.id &&
+      requiredCheckExecution.execution?.agent_contract_id === "agent_contract_beta_smoke_checks" &&
+      requiredCheckExecution.execution?.command === requiredCheckCommand &&
+      Array.isArray(requiredCheckExecution.execution?.argv) &&
+      requiredCheckExecution.execution.argv.length > 0 &&
+      mcpRequiredCheckExecutions.response_schema === "drift.required_check_executions.v1" &&
+      mcpRequiredCheckExecutions.latest_by_command?.some((execution) =>
+        execution.execution_id === requiredCheckExecution.execution.execution_id &&
+        execution.command === requiredCheckCommand &&
+        execution.status === "passed"
+      )
+  );
 
   const betaProof = {
     verify_ci_status: process.env.DRIFT_VERIFY_CI_STATUS ?? null,
@@ -142,6 +220,11 @@ try {
       badCheck.summary?.blocking_count > 0 &&
       badCheck.findings?.some((item) => item.enforcement_result === "block"),
     finding_evidence_complete: findingEvidenceComplete,
+    capability_report_verified: capabilityReportVerified,
+    machine_contract_versions_verified: machineContractVersionsVerified,
+    finding_evidence_confidence_verified: findingEvidenceConfidenceVerified,
+    required_check_execution_proof_verified: requiredCheckExecutionProofVerified,
+    contract_parity_verified: contractParityVerified,
     mcp_cli_parity_hash: parity.hash,
     mcp_cli_parity_verified: parity.verified,
     audit_head_hash: audit.verification?.head_event_hash ?? null,
@@ -165,6 +248,9 @@ try {
         graph_edges_count: graphProof.graph_edges_count,
         graph_evidence_count: graphProof.graph_evidence_count
       },
+      capability_report: capabilityReport,
+      machine_contract_versions: machineContractVersions,
+      finding_evidence_confidence: findingEvidenceConfidence,
       good_route: {
         path: goodRoute.path,
         check_id: goodCheck.check?.id ?? null,
@@ -178,6 +264,14 @@ try {
         blocking_count: badCheck.summary?.blocking_count ?? null,
         first_finding_id: finding?.id ?? null
       },
+      required_check_execution: {
+        command: requiredCheckCommand,
+        execution_id: requiredCheckExecution.execution?.execution_id ?? null,
+        status: requiredCheckExecution.execution?.status ?? null,
+        argv: requiredCheckExecution.execution?.argv ?? [],
+        mcp_summary: mcpRequiredCheckExecutions.summary ?? null
+      },
+      contract_parity: contractParity,
       mcp_cli_parity: parity.bundle,
       audit_verification: audit.verification
     },
@@ -218,6 +312,48 @@ async function createFixture(dir) {
     ""
   ].join("\n"));
   return { repoRoot, stateRoot };
+}
+
+function addRequiredProofContract({ databasePath, repoId, command }) {
+  const storage = openDriftStorage({ databasePath });
+  try {
+    const contract = storage.getRepoContract(repoId);
+    if (!contract) {
+      throw new Error(`No repo contract exists for ${repoId}.`);
+    }
+    storage.upsertRepoContract({
+      ...contract,
+      safe_commands: [
+        ...contract.safe_commands.filter((entry) => entry.command !== command),
+        {
+          command,
+          reason: "Run deterministic beta smoke check.",
+          requires_explicit_run: true
+        }
+      ],
+      agent_contracts: [
+        ...(contract.agent_contracts ?? []).filter((entry) => entry.id !== "agent_contract_beta_smoke_checks"),
+        {
+          kind: "required_change_checks",
+          id: "agent_contract_beta_smoke_checks",
+          version: 1,
+          rules: [{
+            applies_to: {
+              path_globs: ["apps/web/app/api/**/route.ts"],
+              file_roles: ["api_route"]
+            },
+            required_checks: [{
+              command,
+              reason: "Run deterministic beta smoke check.",
+              required_for_release: true
+            }]
+          }]
+        }
+      ]
+    });
+  } finally {
+    storage.close();
+  }
 }
 
 async function writeGoodRoute(repoRoot) {
@@ -437,6 +573,11 @@ function assertBetaProof(proof) {
     "good_route_passed",
     "bad_route_blocked",
     "finding_evidence_complete",
+    "capability_report_verified",
+    "machine_contract_versions_verified",
+    "finding_evidence_confidence_verified",
+    "required_check_execution_proof_verified",
+    "contract_parity_verified",
     "mcp_cli_parity_verified",
     "audit_verified"
   ]) {
@@ -454,16 +595,27 @@ async function graphProofForScan(databasePath, repoId, scanId) {
     return {
       graph_nodes_count: 0,
       graph_edges_count: 0,
-      graph_evidence_count: 0
+      graph_evidence_count: 0,
+      evidence_confidence: []
     };
   }
   const { openDriftStorage } = await import(pathToFileURL(resolve("packages/storage/dist/index.js")).href);
   const storage = openDriftStorage({ databasePath });
   try {
+    const graphEvidence = storage.listGraphEvidence(repoId, scanId);
     return {
       graph_nodes_count: storage.listGraphNodes(repoId, scanId).length,
       graph_edges_count: storage.listGraphEdges(repoId, scanId).length,
-      graph_evidence_count: storage.listGraphEvidence(repoId, scanId).length
+      graph_evidence_count: graphEvidence.length,
+      evidence_confidence: graphEvidence
+        .filter((evidence) => typeof evidence.confidence_kind === "string")
+        .map((evidence) => ({
+          id: evidence.id,
+          file_path: evidence.file_path,
+          confidence_kind: evidence.confidence_kind,
+          extractor: evidence.extractor,
+          snippet_hash: evidence.snippet_hash ?? null
+        }))
     };
   } finally {
     storage.close();

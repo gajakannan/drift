@@ -95,7 +95,21 @@ export function factRecord(
   name: string,
   value: string | undefined,
   startLine: number,
-  endLine: number
+  endLine: number,
+  quality: Partial<Pick<FactRecord,
+    | "source_span"
+    | "ast_node_kind"
+    | "imported_name"
+    | "extraction_method"
+    | "extractor_version"
+    | "parser_version"
+    | "confidence"
+    | "confidence_label"
+    | "evidence_level"
+    | "resolution_status"
+    | "staleness_status"
+    | "last_seen_scan_id"
+  >> = {}
 ): FactRecord {
   const id = `fact_${hashStable(`${input.scanId}:${input.filePath}:${kind}:${name}:${value ?? ""}:${startLine}`).slice(0, 16)}`;
   return {
@@ -106,9 +120,57 @@ export function factRecord(
     file_path: input.filePath,
     name,
     value,
+    imported_name: quality.imported_name,
     start_line: startLine,
-    end_line: endLine
+    end_line: endLine,
+    source_span: quality.source_span ?? {
+      start_line: startLine,
+      start_column: 1,
+      end_line: endLine,
+      end_column: 1
+    },
+    ast_node_kind: quality.ast_node_kind ?? null,
+    extraction_method: quality.extraction_method ?? extractionMethodForKind(kind),
+    extractor_version: quality.extractor_version ?? "0.1.0",
+    parser_version: quality.parser_version ?? "0.1.0",
+    confidence: quality.confidence ?? confidenceForKind(kind),
+    confidence_label: quality.confidence_label ?? confidenceLabelForKind(kind),
+    evidence_level: quality.evidence_level ?? evidenceLevelForKind(kind),
+    resolution_status: quality.resolution_status ?? "resolved",
+    staleness_status: quality.staleness_status ?? "fresh",
+    last_seen_scan_id: quality.last_seen_scan_id ?? input.scanId
   };
+}
+
+function extractionMethodForKind(kind: FactRecord["kind"]): string {
+  if (kind === "file_role_detected") {
+    return "path_role_classifier";
+  }
+  if (kind === "file_detected") {
+    return "filesystem_scanner";
+  }
+  return "typescript_fallback_parser";
+}
+
+function evidenceLevelForKind(kind: FactRecord["kind"]): FactRecord["evidence_level"] {
+  if (kind === "file_role_detected" || kind === "file_detected") {
+    return "path";
+  }
+  return "text";
+}
+
+function confidenceForKind(kind: FactRecord["kind"]): number {
+  if (kind === "file_role_detected") {
+    return 0.9;
+  }
+  return 1;
+}
+
+function confidenceLabelForKind(kind: FactRecord["kind"]): FactRecord["confidence_label"] {
+  if (kind === "file_role_detected") {
+    return "high";
+  }
+  return "certain";
 }
 
 export function importFactsForFile(facts: FactRecord[], filePath: string): Array<{

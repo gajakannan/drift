@@ -1,4 +1,4 @@
-import { authorizeContextExport,type RepoContract } from "@drift/core";
+import { authorizeContextExport,createContextPolicyMatrix,type RepoContract } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { actorFlag,agentPermissionFlag,hasAnyFlag,optionalContextDefaultModeFlag,optionalPositiveIntegerFlag,optionalRepoRelativeFlag,requiredFlag,requiredNonEmptyFlag,requiredRepoRelativeFlag,stringFlag } from "../args/flag-readers.js";
@@ -7,7 +7,7 @@ import { auditEvent,preflightGovernance } from "../domain/governance.js";
 import { MAX_POLICY_SNIPPET_CHARS,guardedSurfaces,policyContextNextCommands,policyContextSummary,policyShowNextCommands,policyShowSummary,policySurface } from "../domain/policy-context.js";
 import { policyFileContext } from "../domain/repo-map.js";
 import { requiredRepoContract } from "../domain/repo-paths.js";
-import { assertFreshScanIfRequired,freshnessRequirement,scanStatusPayload } from "../domain/scan-status.js";
+import { assertFreshScanIfRequired,freshnessRequirement,readinessForStoredScan,scanStatusPayload } from "../domain/scan-status.js";
 import { formatPolicyDecisionText,formatPolicyShowText } from "../formatters/policy.js";
 
 export function showPolicy(storage: SqliteDriftStorage, parsed: ParsedArgs): CommandPayload {
@@ -44,6 +44,7 @@ export function checkPolicyContext(storage: SqliteDriftStorage, parsed: ParsedAr
   const contract = requiredRepoContract(storage, repoId);
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, requireFresh);
+  const readiness = readinessForStoredScan(storage, repoId, scanStatus.latest_scan?.id ?? null, "allowed_context");
   const freshness = freshnessRequirement(requireFresh, scanStatus);
   const fileContext = policyFileContext(storage, repoId, contextPath, contract);
   const decision = authorizeContextExport(contract, surface, {
@@ -51,6 +52,7 @@ export function checkPolicyContext(storage: SqliteDriftStorage, parsed: ParsedAr
     requested_snippet_chars: requestedSnippetChars,
     request_full_file_content: requestFullFileContent
   });
+  const contextPolicy = createContextPolicyMatrix(contract, decision);
   const payload = {
     response_schema: "drift.allowed-context.v1",
     repo_id: repoId,
@@ -62,6 +64,12 @@ export function checkPolicyContext(storage: SqliteDriftStorage, parsed: ParsedAr
       request_full_file_content: requestFullFileContent,
       require_fresh: requireFresh
     },
+    contract: {
+      ready: true,
+      id: contract.id,
+      source: "accepted_contract"
+    },
+    readiness,
     governance: preflightGovernance(),
     scan_status: scanStatus,
     freshness_requirement: freshness,
@@ -78,6 +86,7 @@ export function checkPolicyContext(storage: SqliteDriftStorage, parsed: ParsedAr
       deniedGlobCount: contract.context_egress.denied_globs.length
     }),
     decision,
+    context_policy: contextPolicy,
     next_commands: policyContextNextCommands(repoId, contextPath, decision)
   };
 

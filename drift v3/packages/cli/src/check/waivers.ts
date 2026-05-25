@@ -108,6 +108,22 @@ export function findContractWaiverForImport(
   });
 }
 
+export function waiverRequiresReapproval(
+  waiver: RepoContract["waivers"][number],
+  filePath: string,
+  currentContentHash: string | undefined
+): boolean {
+  if (!waiver.requires_reapproval_on_change) {
+    return false;
+  }
+  if (!currentContentHash) {
+    return true;
+  }
+  return !(waiver.approved_file_hashes ?? []).some((entry) =>
+    entry.file_path === filePath && entry.content_hash === currentContentHash
+  );
+}
+
 export function isActiveException(
   exception: AcceptedConvention["exceptions"][number],
   now: string

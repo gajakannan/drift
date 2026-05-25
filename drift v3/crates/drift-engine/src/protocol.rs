@@ -16,6 +16,7 @@ pub struct ScanRepoArgs {
     pub format: OutputFormat,
     pub repo_id: String,
     pub scan_id: String,
+    pub reuse_manifest: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -46,7 +47,7 @@ pub struct ScannedFile {
     pub indexed: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EngineFact {
     pub kind: String,
     pub file_path: String,
@@ -73,6 +74,9 @@ pub struct EngineStats {
     pub files_seen: usize,
     pub files_skipped: usize,
     pub files_parsed: usize,
+    pub files_reused: usize,
+    pub reuse_applied: bool,
+    pub reuse_blocked_reasons: Vec<String>,
     pub facts_emitted: usize,
     pub graph_nodes: usize,
     pub graph_edges: usize,
@@ -80,6 +84,14 @@ pub struct EngineStats {
     pub duration_ms: u128,
     pub truncated: bool,
     pub capabilities: EngineCapabilityStats,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ScanReuseManifest {
+    pub schema_version: String,
+    pub previous_scan_id: String,
+    pub file_snapshots: Vec<ScannedFile>,
+    pub facts: Vec<EngineFact>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,7 +145,21 @@ pub struct GraphEvidence {
     pub adapter_id: String,
     pub adapter_version: String,
     pub fact_ids: Vec<String>,
+    #[serde(default = "default_evidence_confidence_kind")]
+    pub confidence_kind: String,
+    #[serde(default = "default_evidence_extractor")]
+    pub extractor: String,
+    #[serde(default)]
+    pub snippet_hash: String,
     pub redaction_state: String,
+}
+
+fn default_evidence_confidence_kind() -> String {
+    "deterministic".to_string()
+}
+
+fn default_evidence_extractor() -> String {
+    "unknown".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -426,6 +452,9 @@ pub fn engine_stats(
         files_seen,
         files_skipped,
         files_parsed,
+        files_reused: 0,
+        reuse_applied: false,
+        reuse_blocked_reasons: Vec::new(),
         facts_emitted,
         graph_nodes: 0,
         graph_edges: 0,

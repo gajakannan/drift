@@ -51,6 +51,8 @@ export const GraphEdgeKindSchema = z.enum([
   "FINDING_HAS_EVIDENCE"
 ]);
 
+export const EvidenceConfidenceKindSchema = z.enum(["deterministic", "heuristic", "unresolved"]);
+
 export const GraphEvidenceSchema = z.object({
   id: z.string().min(1),
   repo_id: z.string().min(1),
@@ -65,6 +67,9 @@ export const GraphEvidenceSchema = z.object({
   adapter_id: z.string().min(1),
   adapter_version: z.string().min(1),
   fact_ids: z.array(z.string().min(1)),
+  confidence_kind: EvidenceConfidenceKindSchema.default("deterministic"),
+  extractor: z.string().min(1).default("unknown"),
+  snippet_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   redaction_state: z.enum(["none", "redacted", "snippet_limited"])
 });
 
@@ -159,6 +164,7 @@ export const FactGraphArtifactSchema = z.object({
 
 export type GraphNodeKind = z.infer<typeof GraphNodeKindSchema>;
 export type GraphEdgeKind = z.infer<typeof GraphEdgeKindSchema>;
+export type EvidenceConfidenceKind = z.infer<typeof EvidenceConfidenceKindSchema>;
 export type GraphEvidence = z.infer<typeof GraphEvidenceSchema>;
 export type GraphNode = z.infer<typeof GraphNodeSchema>;
 export type GraphEdge = z.infer<typeof GraphEdgeSchema>;
@@ -550,8 +556,27 @@ function evidenceForFact(
     adapter_id: adapter.id,
     adapter_version: adapter.version,
     fact_ids: [fact.id],
+    confidence_kind: evidenceConfidenceKindForFact(fact),
+    extractor: fact.extraction_method ?? "typescript_ast",
+    snippet_hash: sha256([
+      snapshot.content_hash,
+      fact.start_line,
+      fact.end_line,
+      fact.source_span?.start_column ?? "",
+      fact.source_span?.end_column ?? ""
+    ].join(":")),
     redaction_state: "none"
   });
+}
+
+function evidenceConfidenceKindForFact(fact: FactRecord): EvidenceConfidenceKind {
+  if (fact.resolution_status === "unresolved" || fact.resolution_status === "unsupported") {
+    return "unresolved";
+  }
+  if (fact.evidence_level === "heuristic" || fact.evidence_level === "path") {
+    return "heuristic";
+  }
+  return "deterministic";
 }
 
 function edge(

@@ -33,6 +33,7 @@ interface ScanDataInput {
   repoId: string;
   scanId: string;
   repoRoot: string;
+  reuseManifestPath?: string;
 }
 
 export async function collectScanData(input: ScanDataInput): Promise<ScanData> {
@@ -109,7 +110,8 @@ export async function collectScanDataFromRust(input: ScanDataInput): Promise<Sca
     "--repo-id",
     input.repoId,
     "--scan-id",
-    input.scanId
+    input.scanId,
+    ...(input.reuseManifestPath ? ["--reuse-manifest", input.reuseManifestPath] : [])
   ], (line) => {
     events.push(parseEngineStreamLine(line, events.length));
   });
@@ -164,7 +166,7 @@ export function scanDataFromEngineStreamEvents(events: EngineStreamEvent[], inpu
         graphEdges.push(...event.graph_edges);
         break;
       case "graph_evidence_batch":
-        graphEvidence.push(...event.graph_evidence);
+        graphEvidence.push(...event.graph_evidence.map(engineGraphEvidence));
         break;
       case "scan_completed":
         completed = true;
@@ -225,6 +227,16 @@ function parseEngineStreamLine(line: string, index: number): EngineStreamEvent {
   }
 }
 
+function engineGraphEvidence(
+  evidence: Extract<EngineStreamEvent, { event: "graph_evidence_batch" }>["graph_evidence"][number]
+): GraphEvidence {
+  return {
+    ...evidence,
+    confidence_kind: evidence.confidence_kind ?? "deterministic",
+    extractor: evidence.extractor ?? "drift-engine"
+  };
+}
+
 function engineFactRecord(input: ScanDataInput, fact: EngineScanResult["facts"][number]): FactRecord {
   return factRecord(
     { repoId: input.repoId, scanId: input.scanId, filePath: fact.file_path },
@@ -232,8 +244,61 @@ function engineFactRecord(input: ScanDataInput, fact: EngineScanResult["facts"][
     fact.name,
     fact.value ?? undefined,
     fact.start_line,
-    fact.end_line
+    fact.end_line,
+    {
+      source_span: {
+        start_line: fact.start_line,
+        start_column: 1,
+        end_line: fact.end_line,
+        end_column: 1
+      },
+      ast_node_kind: null,
+      extraction_method: rustExtractionMethodForKind(fact.kind),
+      imported_name: fact.imported_name,
+      extractor_version: "0.1.0",
+      parser_version: "0.1.0",
+      confidence: rustConfidenceForKind(fact.kind),
+      confidence_label: rustConfidenceLabelForKind(fact.kind),
+      evidence_level: rustEvidenceLevelForKind(fact.kind),
+      resolution_status: "resolved",
+      staleness_status: "fresh",
+      last_seen_scan_id: input.scanId
+    }
   );
+}
+
+function rustExtractionMethodForKind(kind: FactRecord["kind"]): string {
+  if (kind === "file_detected") {
+    return "rust_filesystem_scanner";
+  }
+  if (kind === "file_role_detected") {
+    return "rust_path_role_classifier";
+  }
+  if (kind === "route_declared") {
+    return "next_app_router_parser";
+  }
+  return "rust_typescript_parser";
+}
+
+function rustEvidenceLevelForKind(kind: FactRecord["kind"]): FactRecord["evidence_level"] {
+  if (kind === "file_detected" || kind === "file_role_detected") {
+    return "path";
+  }
+  return "ast";
+}
+
+function rustConfidenceForKind(kind: FactRecord["kind"]): number {
+  if (kind === "file_role_detected") {
+    return 0.9;
+  }
+  return 1;
+}
+
+function rustConfidenceLabelForKind(kind: FactRecord["kind"]): FactRecord["confidence_label"] {
+  if (kind === "file_role_detected") {
+    return "high";
+  }
+  return "certain";
 }
 
 function engineFileSnapshot(

@@ -20,6 +20,17 @@ use sha2::{Digest, Sha256};
 type EngineResult<T> = Result<T, Box<dyn std::error::Error>>;
 type ScannedFileFacts = (ScannedFile, Vec<EngineFact>);
 
+#[derive(Default)]
+struct ScanFilesResult {
+    scanned: Vec<ScannedFileFacts>,
+    files_reused: usize,
+}
+
+struct ReuseIndex {
+    facts_by_file: BTreeMap<String, Vec<EngineFact>>,
+    snapshots_by_file: BTreeMap<String, ScannedFile>,
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
@@ -34,11 +45,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let args = parse_scan_repo_args(args.collect())?;
             match args.format {
                 OutputFormat::Json => {
-                    let output = scan_repo(&args.repo_root, args.repo_id, args.scan_id)?;
+                    let output = scan_repo(
+                        &args.repo_root,
+                        args.repo_id,
+                        args.scan_id,
+                        args.reuse_manifest.as_deref(),
+                    )?;
                     println!("{}", serde_json::to_string_pretty(&output)?);
                     Ok(())
                 }
-                OutputFormat::Jsonl => stream_scan_repo(&args.repo_root, args.repo_id, args.scan_id),
+                OutputFormat::Jsonl => stream_scan_repo(
+                    &args.repo_root,
+                    args.repo_id,
+                    args.scan_id,
+                    args.reuse_manifest.as_deref(),
+                ),
             }
         }
         Some("check-repo") => {
@@ -68,6 +89,7 @@ fn parse_scan_repo_args(args: Vec<String>) -> Result<ScanRepoArgs, Box<dyn std::
         format: OutputFormat::Json,
         repo_id: "repo_unknown".to_string(),
         scan_id: "scan_unknown".to_string(),
+        reuse_manifest: None,
     };
     let mut index = 1;
     while index < args.len() {
@@ -95,6 +117,13 @@ fn parse_scan_repo_args(args: Vec<String>) -> Result<ScanRepoArgs, Box<dyn std::
                     .ok_or("missing value for --scan-id")?
                     .to_string();
             }
+            "--reuse-manifest" => {
+                index += 1;
+                parsed.reuse_manifest = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or("missing value for --reuse-manifest")?,
+                ));
+            }
             flag => return Err(format!("unknown scan-repo option: {flag}").into()),
         }
         index += 1;
@@ -106,6 +135,7 @@ fn scan_repo(
     repo_root: &Path,
     repo_id: String,
     scan_id: String,
+    reuse_manifest_path: Option<&Path>,
 ) -> Result<ScanRepoOutput, Box<dyn std::error::Error>> {
     let started = Instant::now();
     let mut files = Vec::new();
@@ -113,15 +143,17 @@ fn scan_repo(
     collect_indexable_files(repo_root, repo_root, &mut files, &ignore)?;
     files.sort();
     let mut resolver = build_resolver_context(repo_root, &files);
+    let reuse_index = load_reuse_index(reuse_manifest_path)?;
 
     let mut scanned_files = Vec::new();
     let mut facts = Vec::new();
     let mut diagnostics = Vec::new();
     let mut graph_node_count = 0_usize;
     let mut graph_edge_count = 0_usize;
-    let scanned = scan_files(repo_root, &files, &mut diagnostics)?;
-    resolver.exported_symbols = exported_symbols_by_file(&scanned);
-    for (file, file_facts) in scanned {
+    let scanned = scan_files(repo_root, &files, &mut diagnostics, reuse_index.as_ref())?;
+    let files_reused = scanned.files_reused;
+    resolver.exported_symbols = exported_symbols_by_file(&scanned.scanned);
+    for (file, file_facts) in scanned.scanned {
         let graph = graph_for_file(&repo_id, &scan_id, &file, &file_facts, &resolver);
         graph_node_count += graph.nodes.len();
         graph_edge_count += graph.edges.len();
@@ -133,11 +165,13 @@ fn scan_repo(
     let mut stats = engine_stats(
         files.len(),
         diagnostics.len(),
-        scanned_files.len(),
+        scanned_files.len().saturating_sub(files_reused),
         facts.len(),
         diagnostics.len(),
         started.elapsed().as_millis(),
     );
+    stats.files_reused = files_reused;
+    stats.reuse_applied = files_reused > 0;
     stats.graph_nodes = graph_node_count;
     stats.graph_edges = graph_edge_count;
     stats.capabilities = capability_stats(&["file_discovery", "syntax_facts", "graph_stream"], &[]);
@@ -159,6 +193,7 @@ fn stream_scan_repo(
     repo_root: &Path,
     repo_id: String,
     scan_id: String,
+    reuse_manifest_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let mut stdout = io::BufWriter::new(io::stdout().lock());
@@ -177,6 +212,7 @@ fn stream_scan_repo(
     collect_indexable_files(repo_root, repo_root, &mut files, &ignore)?;
     files.sort();
     let mut resolver = build_resolver_context(repo_root, &files);
+    let reuse_index = load_reuse_index(reuse_manifest_path)?;
 
     let mut files_parsed = 0_usize;
     let mut files_skipped = 0_usize;
@@ -185,7 +221,12 @@ fn stream_scan_repo(
     let mut graph_edges_emitted = 0_usize;
     let mut diagnostics_emitted = 0_usize;
     let mut scan_diagnostics = Vec::new();
-    let scanned = scan_files(repo_root, &files, &mut scan_diagnostics)?;
+    let scanned = scan_files(
+        repo_root,
+        &files,
+        &mut scan_diagnostics,
+        reuse_index.as_ref(),
+    )?;
     files_skipped += scan_diagnostics.len();
     if !scan_diagnostics.is_empty() {
         diagnostics_emitted += scan_diagnostics.len();
@@ -197,9 +238,12 @@ fn stream_scan_repo(
             },
         )?;
     }
-    resolver.exported_symbols = exported_symbols_by_file(&scanned);
-    for (file, facts) in scanned {
-        files_parsed += 1;
+    resolver.exported_symbols = exported_symbols_by_file(&scanned.scanned);
+    let files_reused = scanned.files_reused;
+    for (file, facts) in scanned.scanned {
+        if !reused_file(&file, reuse_index.as_ref()) {
+            files_parsed += 1;
+        }
         facts_emitted += facts.len();
         let graph = graph_for_file(&repo_id, &scan_id, &file, &facts, &resolver);
         graph_nodes_emitted += graph.nodes.len();
@@ -269,6 +313,8 @@ fn stream_scan_repo(
     );
     stats.graph_nodes = graph_nodes_emitted;
     stats.graph_edges = graph_edges_emitted;
+    stats.files_reused = files_reused;
+    stats.reuse_applied = files_reused > 0;
     stats.capabilities = capability_stats(&["file_discovery", "syntax_facts", "graph_stream"], &[]);
     write_event(
         &mut stdout,
@@ -291,11 +337,48 @@ fn write_event(
     Ok(())
 }
 
-fn scan_file(
+fn load_reuse_index(path: Option<&Path>) -> EngineResult<Option<ReuseIndex>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let manifest_text = fs::read_to_string(path)?;
+    let manifest: ScanReuseManifest = serde_json::from_str(&manifest_text)?;
+    if manifest.schema_version != "engine.reuse_manifest.v1" {
+        return Err(format!(
+            "unsupported reuse manifest schema: {}",
+            manifest.schema_version
+        )
+        .into());
+    }
+    if manifest.previous_scan_id.trim().is_empty() {
+        return Err("reuse manifest previous_scan_id is required".into());
+    }
+
+    let mut facts_by_file = BTreeMap::<String, Vec<EngineFact>>::new();
+    for fact in manifest.facts {
+        facts_by_file
+            .entry(fact.file_path.clone())
+            .or_default()
+            .push(fact);
+    }
+    let snapshots_by_file = manifest
+        .file_snapshots
+        .into_iter()
+        .filter(|snapshot| snapshot.indexed)
+        .map(|snapshot| (snapshot.file_path.clone(), snapshot))
+        .collect();
+    Ok(Some(ReuseIndex {
+        facts_by_file,
+        snapshots_by_file,
+    }))
+}
+
+fn scan_file_with_reuse(
     repo_root: &Path,
     file_path: &Path,
     diagnostics: &mut Vec<EngineDiagnostic>,
-) -> EngineResult<Option<ScannedFileFacts>> {
+    reuse: Option<&ReuseIndex>,
+) -> EngineResult<Option<(ScannedFile, Vec<EngineFact>, bool)>> {
     let absolute_path = repo_root.join(file_path);
     let metadata = fs::metadata(&absolute_path)?;
     if metadata.len() > MAX_FILE_BYTES {
@@ -312,33 +395,64 @@ fn scan_file(
         });
         return Ok(None);
     }
-    let source = fs::read_to_string(&absolute_path)?;
     let normalized = normalize_path(file_path);
     let file = ScannedFile {
-        file_path: normalized,
+        file_path: normalized.clone(),
         content_hash: hash_file(&absolute_path)?,
         byte_size: metadata.len(),
         indexed: true,
     };
+    if let Some(reused_facts) = reusable_facts_for_file(&file, reuse) {
+        return Ok(Some((file, reused_facts, true)));
+    }
+    let source = fs::read_to_string(&absolute_path)?;
     let facts = extract_typescript_facts(file_path, &source)?
         .into_iter()
         .map(engine_fact)
         .collect();
-    Ok(Some((file, facts)))
+    Ok(Some((file, facts, false)))
 }
 
 fn scan_files(
     repo_root: &Path,
     files: &[PathBuf],
     diagnostics: &mut Vec<EngineDiagnostic>,
-) -> EngineResult<Vec<ScannedFileFacts>> {
-    let mut scanned = Vec::new();
+    reuse: Option<&ReuseIndex>,
+) -> EngineResult<ScanFilesResult> {
+    let mut result = ScanFilesResult::default();
     for file_path in files {
-        if let Some(scan) = scan_file(repo_root, file_path, diagnostics)? {
-            scanned.push(scan);
+        if let Some((file, facts, reused)) =
+            scan_file_with_reuse(repo_root, file_path, diagnostics, reuse)?
+        {
+            if reused {
+                result.files_reused += 1;
+            }
+            result.scanned.push((file, facts));
         }
     }
-    Ok(scanned)
+    Ok(result)
+}
+
+fn reusable_facts_for_file(
+    file: &ScannedFile,
+    reuse: Option<&ReuseIndex>,
+) -> Option<Vec<EngineFact>> {
+    let reuse = reuse?;
+    let previous = reuse.snapshots_by_file.get(&file.file_path)?;
+    if previous.content_hash != file.content_hash || previous.byte_size != file.byte_size {
+        return None;
+    }
+    Some(
+        reuse
+            .facts_by_file
+            .get(&file.file_path)
+            .cloned()
+            .unwrap_or_default(),
+    )
+}
+
+fn reused_file(file: &ScannedFile, reuse: Option<&ReuseIndex>) -> bool {
+    reusable_facts_for_file(file, reuse).is_some()
 }
 
 fn collect_indexable_files(
@@ -475,6 +589,10 @@ fn hash_file(path: &Path) -> io::Result<String> {
         hasher.update(&buffer[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn stable_hash(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
 fn engine_fact(fact: Fact) -> EngineFact {
@@ -663,6 +781,12 @@ fn graph_for_file(
                 adapter_id: "typescript".to_string(),
                 adapter_version: drift_engine::DRIFT_ENGINE_VERSION.to_string(),
                 fact_ids: vec![fact_id(fact)],
+                confidence_kind: "deterministic".to_string(),
+                extractor: "rust_typescript_graph".to_string(),
+                snippet_hash: stable_hash(&format!(
+                    "{}:{}:{}",
+                    file.content_hash, fact.start_line, fact.end_line
+                )),
                 redaction_state: "none".to_string(),
             },
         );
@@ -1878,17 +2002,40 @@ fn alias_capture(pattern: &str, source: &str) -> String {
 }
 
 fn candidate_paths(base: &str) -> Vec<String> {
-    vec![
+    let mut candidates = vec![
         base.to_string(),
         format!("{base}.ts"),
         format!("{base}.tsx"),
+        format!("{base}.mts"),
+        format!("{base}.cts"),
         format!("{base}.js"),
         format!("{base}.jsx"),
+        format!("{base}.mjs"),
+        format!("{base}.cjs"),
         format!("{base}/index.ts"),
         format!("{base}/index.tsx"),
+        format!("{base}/index.mts"),
+        format!("{base}/index.cts"),
         format!("{base}/index.js"),
         format!("{base}/index.jsx"),
-    ]
+        format!("{base}/index.mjs"),
+        format!("{base}/index.cjs"),
+    ];
+    for (runtime_ext, source_exts) in [
+        (".js", [".ts", ".tsx", ".mts", ".cts"].as_slice()),
+        (".jsx", [".tsx", ".ts"].as_slice()),
+        (".mjs", [".mts", ".ts", ".tsx"].as_slice()),
+        (".cjs", [".cts", ".ts", ".tsx"].as_slice()),
+    ] {
+        if let Some(stripped) = base.strip_suffix(runtime_ext) {
+            candidates.extend(
+                source_exts
+                    .iter()
+                    .map(|source_ext| format!("{stripped}{source_ext}")),
+            );
+        }
+    }
+    candidates
 }
 
 fn join_repo_path(left: &str, right: &str) -> String {

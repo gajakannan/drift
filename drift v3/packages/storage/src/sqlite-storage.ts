@@ -13,11 +13,15 @@ import type {
   FileSnapshot,
   Finding,
   ModuleDependent,
+  ParserGap,
   RepoContract,
   RepoRecord,
+  RequiredCheckExecution,
   ResolverDependency,
+  ScanCapabilityReport,
   ScanFileChange,
   ScanManifest,
+  SymbolIdentity,
   SymbolOccurrence
 } from "@drift/core";
 import {
@@ -31,11 +35,15 @@ import {
   FileSnapshotSchema,
   FindingSchema,
   ModuleDependentSchema,
+  ParserGapSchema,
   RepoContractSchema,
   RepoRecordSchema,
+  RequiredCheckExecutionSchema,
   ResolverDependencySchema,
+  ScanCapabilityReportSchema,
   ScanFileChangeSchema,
   ScanManifestSchema,
+  SymbolIdentitySchema,
   SymbolOccurrenceSchema,
   auditEventHash
 } from "@drift/core";
@@ -379,23 +387,47 @@ export class SqliteDriftStorage {
     const parsedFacts = facts.map((fact) => FactRecordSchema.parse(fact));
     const insert = this.db.prepare(`
       INSERT INTO facts (
-        id, repo_id, scan_id, kind, file_path, name, value, start_line, end_line
+        id, repo_id, scan_id, kind, file_path, name, value, imported_name, start_line, end_line,
+        source_span_json, ast_node_kind, extraction_method, extractor_version, parser_version,
+        confidence, confidence_label, evidence_level, resolution_status, staleness_status,
+        last_seen_scan_id
       )
       VALUES (
-        @id, @repo_id, @scan_id, @kind, @file_path, @name, @value, @start_line, @end_line
+        @id, @repo_id, @scan_id, @kind, @file_path, @name, @value, @imported_name, @start_line, @end_line,
+        @source_span_json, @ast_node_kind, @extraction_method, @extractor_version, @parser_version,
+        @confidence, @confidence_label, @evidence_level, @resolution_status, @staleness_status,
+        @last_seen_scan_id
       )
       ON CONFLICT(id) DO UPDATE SET
         kind = excluded.kind,
         file_path = excluded.file_path,
         name = excluded.name,
         value = excluded.value,
+        imported_name = excluded.imported_name,
         start_line = excluded.start_line,
-        end_line = excluded.end_line
+        end_line = excluded.end_line,
+        source_span_json = excluded.source_span_json,
+        ast_node_kind = excluded.ast_node_kind,
+        extraction_method = excluded.extraction_method,
+        extractor_version = excluded.extractor_version,
+        parser_version = excluded.parser_version,
+        confidence = excluded.confidence,
+        confidence_label = excluded.confidence_label,
+        evidence_level = excluded.evidence_level,
+        resolution_status = excluded.resolution_status,
+        staleness_status = excluded.staleness_status,
+        last_seen_scan_id = excluded.last_seen_scan_id
     `);
 
     const transaction = this.db.transaction(() => {
       for (const fact of parsedFacts) {
-        insert.run({ ...fact, value: fact.value ?? null });
+        insert.run({
+          ...fact,
+          value: fact.value ?? null,
+          imported_name: fact.imported_name ?? null,
+          ast_node_kind: fact.ast_node_kind ?? null,
+          source_span_json: JSON.stringify(fact.source_span)
+        });
       }
     });
     transaction();
@@ -411,6 +443,161 @@ export class SqliteDriftStorage {
           .all(scanId);
 
     return rows.map(factFromRow);
+  }
+
+  upsertParserGaps(gaps: ParserGap[]): void {
+    const parsedGaps = deduplicateParserGaps(gaps.map((gap) => ParserGapSchema.parse(gap)));
+    const insert = this.db.prepare(`
+      INSERT INTO parser_gaps (
+        gap_id, schema_version, repo_id, scan_id, kind, file_path, start_line, end_line,
+        confidence_impact, message, evidence_refs_json, created_at
+      )
+      VALUES (
+        @gap_id, @schema_version, @repo_id, @scan_id, @kind, @file_path, @start_line, @end_line,
+        @confidence_impact, @message, @evidence_refs_json, @created_at
+      )
+      ON CONFLICT(gap_id) DO UPDATE SET
+        schema_version = excluded.schema_version,
+        repo_id = excluded.repo_id,
+        scan_id = excluded.scan_id,
+        kind = excluded.kind,
+        file_path = excluded.file_path,
+        start_line = excluded.start_line,
+        end_line = excluded.end_line,
+        confidence_impact = excluded.confidence_impact,
+        message = excluded.message,
+        evidence_refs_json = excluded.evidence_refs_json,
+        created_at = excluded.created_at
+    `);
+
+    const transaction = this.db.transaction(() => {
+      for (const gap of parsedGaps) {
+        insert.run({
+          ...gap,
+          evidence_refs_json: JSON.stringify(gap.evidence_refs)
+        });
+      }
+    });
+    transaction();
+  }
+
+  listParserGaps(repoId: string, scanId?: string): ParserGap[] {
+    const rows = scanId
+      ? this.db
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND scan_id = ? ORDER BY file_path, start_line, gap_id")
+          .all(repoId, scanId)
+      : this.db
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? ORDER BY scan_id, file_path, start_line, gap_id")
+          .all(repoId);
+
+    return rows.map(parserGapFromRow);
+  }
+
+  upsertScanCapabilityReport(report: ScanCapabilityReport): void {
+    const parsed = ScanCapabilityReportSchema.parse(report);
+    this.db
+      .prepare(`
+        INSERT INTO scan_capability_reports (
+          repo_id, scan_id, schema_version, engine_source, engine_version, scanner_version,
+          adapter_versions_json, certified_capabilities_json, required_capabilities_json,
+          missing_capabilities_json, completeness_json, parser_gap_count, parser_gap_kinds_json,
+          fallback_used, enforcement_degraded, created_at
+        )
+        VALUES (
+          @repo_id, @scan_id, @schema_version, @engine_source, @engine_version, @scanner_version,
+          @adapter_versions_json, @certified_capabilities_json, @required_capabilities_json,
+          @missing_capabilities_json, @completeness_json, @parser_gap_count, @parser_gap_kinds_json,
+          @fallback_used, @enforcement_degraded, @created_at
+        )
+        ON CONFLICT(repo_id, scan_id) DO UPDATE SET
+          schema_version = excluded.schema_version,
+          engine_source = excluded.engine_source,
+          engine_version = excluded.engine_version,
+          scanner_version = excluded.scanner_version,
+          adapter_versions_json = excluded.adapter_versions_json,
+          certified_capabilities_json = excluded.certified_capabilities_json,
+          required_capabilities_json = excluded.required_capabilities_json,
+          missing_capabilities_json = excluded.missing_capabilities_json,
+          completeness_json = excluded.completeness_json,
+          parser_gap_count = excluded.parser_gap_count,
+          parser_gap_kinds_json = excluded.parser_gap_kinds_json,
+          fallback_used = excluded.fallback_used,
+          enforcement_degraded = excluded.enforcement_degraded,
+          created_at = excluded.created_at
+      `)
+      .run({
+        ...parsed,
+        engine_version: parsed.engine_version ?? null,
+        adapter_versions_json: stringifyJson(parsed.adapter_versions),
+        certified_capabilities_json: stringifyJson(parsed.certified_capabilities),
+        required_capabilities_json: stringifyJson(parsed.required_capabilities),
+        missing_capabilities_json: stringifyJson(parsed.missing_capabilities),
+        completeness_json: stringifyJson(parsed.completeness),
+        parser_gap_kinds_json: stringifyJson(parsed.parser_gap_kinds),
+        fallback_used: parsed.fallback_used ? 1 : 0,
+        enforcement_degraded: parsed.enforcement_degraded ? 1 : 0
+      });
+  }
+
+  getScanCapabilityReport(repoId: string, scanId: string): ScanCapabilityReport | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM scan_capability_reports WHERE repo_id = ? AND scan_id = ?")
+      .get(repoId, scanId);
+    return row ? scanCapabilityReportFromRow(row) : undefined;
+  }
+
+  upsertSymbolIdentities(identities: SymbolIdentity[]): void {
+    const parsedIdentities = identities.map((identity) => SymbolIdentitySchema.parse(identity));
+    const insert = this.db.prepare(`
+      INSERT INTO symbol_identities (
+        symbol_id, schema_version, repo_id, scan_id, symbol_name, kind, declared_in,
+        exported_from_json, imported_as_json, re_export_chain_json, canonical_definition,
+        call_sites_json, references_json, visibility
+      )
+      VALUES (
+        @symbol_id, @schema_version, @repo_id, @scan_id, @symbol_name, @kind, @declared_in,
+        @exported_from_json, @imported_as_json, @re_export_chain_json, @canonical_definition,
+        @call_sites_json, @references_json, @visibility
+      )
+      ON CONFLICT(repo_id, scan_id, symbol_id) DO UPDATE SET
+        schema_version = excluded.schema_version,
+        symbol_name = excluded.symbol_name,
+        kind = excluded.kind,
+        declared_in = excluded.declared_in,
+        exported_from_json = excluded.exported_from_json,
+        imported_as_json = excluded.imported_as_json,
+        re_export_chain_json = excluded.re_export_chain_json,
+        canonical_definition = excluded.canonical_definition,
+        call_sites_json = excluded.call_sites_json,
+        references_json = excluded.references_json,
+        visibility = excluded.visibility
+    `);
+
+    const transaction = this.db.transaction(() => {
+      for (const identity of parsedIdentities) {
+        insert.run({
+          ...identity,
+          exported_from_json: JSON.stringify(identity.exported_from),
+          imported_as_json: JSON.stringify(identity.imported_as),
+          re_export_chain_json: JSON.stringify(identity.re_export_chain),
+          call_sites_json: JSON.stringify(identity.call_sites),
+          references_json: JSON.stringify(identity.references)
+        });
+      }
+    });
+    transaction();
+  }
+
+  listSymbolIdentities(repoId: string, scanId?: string): SymbolIdentity[] {
+    const rows = scanId
+      ? this.db
+          .prepare("SELECT * FROM symbol_identities WHERE repo_id = ? AND scan_id = ? ORDER BY declared_in, symbol_name, symbol_id")
+          .all(repoId, scanId)
+      : this.db
+          .prepare("SELECT * FROM symbol_identities WHERE repo_id = ? ORDER BY scan_id, declared_in, symbol_name, symbol_id")
+          .all(repoId);
+
+    return rows.map(symbolIdentityFromRow);
   }
 
   upsertFactGraphArtifact(artifact: FactGraphArtifact): void {
@@ -484,11 +671,13 @@ export class SqliteDriftStorage {
     const insertEvidence = this.db.prepare(`
       INSERT INTO graph_evidence (
         repo_id, scan_id, id, artifact_id, file_path, file_hash, start_line, end_line,
-        start_column, end_column, adapter_id, adapter_version, fact_ids_json, redaction_state
+        start_column, end_column, adapter_id, adapter_version, fact_ids_json, confidence_kind,
+        extractor, snippet_hash, redaction_state
       )
       VALUES (
         @repo_id, @scan_id, @id, @artifact_id, @file_path, @file_hash, @start_line, @end_line,
-        @start_column, @end_column, @adapter_id, @adapter_version, @fact_ids_json, @redaction_state
+        @start_column, @end_column, @adapter_id, @adapter_version, @fact_ids_json, @confidence_kind,
+        @extractor, @snippet_hash, @redaction_state
       )
     `);
     const insertDiagnostic = this.db.prepare(`
@@ -593,7 +782,10 @@ export class SqliteDriftStorage {
           ...evidence,
           start_column: evidence.start_column ?? null,
           end_column: evidence.end_column ?? null,
-          fact_ids_json: stringifyJson(evidence.fact_ids)
+          fact_ids_json: stringifyJson(evidence.fact_ids),
+          confidence_kind: evidence.confidence_kind ?? "deterministic",
+          extractor: evidence.extractor ?? "unknown",
+          snippet_hash: evidence.snippet_hash ?? null
         });
       }
       for (const diagnostic of graphDiagnostics) {
@@ -699,12 +891,12 @@ export class SqliteDriftStorage {
         INSERT INTO check_runs (
           id, repo_id, repo_contract_id, contract_fingerprint, scan_id, status, scope,
           engine_source, fallback_used, stale_scan, capability_complete, findings_count,
-          blocking_count, started_at, completed_at
+          blocking_count, machine_contract_versions_json, started_at, completed_at
         )
         VALUES (
           @id, @repo_id, @repo_contract_id, @contract_fingerprint, @scan_id, @status, @scope,
           @engine_source, @fallback_used, @stale_scan, @capability_complete, @findings_count,
-          @blocking_count, @started_at, @completed_at
+          @blocking_count, @machine_contract_versions_json, @started_at, @completed_at
         )
         ON CONFLICT(id) DO UPDATE SET
           repo_contract_id = excluded.repo_contract_id,
@@ -718,13 +910,17 @@ export class SqliteDriftStorage {
           capability_complete = excluded.capability_complete,
           findings_count = excluded.findings_count,
           blocking_count = excluded.blocking_count,
+          machine_contract_versions_json = excluded.machine_contract_versions_json,
           completed_at = excluded.completed_at
       `)
       .run({
         ...parsed,
         fallback_used: parsed.fallback_used ? 1 : 0,
         stale_scan: parsed.stale_scan ? 1 : 0,
-        capability_complete: parsed.capability_complete ? 1 : 0
+        capability_complete: parsed.capability_complete ? 1 : 0,
+        machine_contract_versions_json: parsed.machine_contract_versions
+          ? stringifyJson(parsed.machine_contract_versions)
+          : null
       });
   }
 
@@ -743,13 +939,15 @@ export class SqliteDriftStorage {
           id, repo_id, convention_id, fingerprint, title, message, severity,
           enforcement_result, status, diff_status, evidence_refs_json, check_id,
           repo_contract_id, expected_layer, actual_layer, graph_path_json,
-          suggested_fix, related_node_ids_json, created_at
+          suggested_fix, related_node_ids_json, created_by_engine_version,
+          created_by_rule_engine_version, contract_schema_version, created_at
         )
         VALUES (
           @id, @repo_id, @convention_id, @fingerprint, @title, @message, @severity,
           @enforcement_result, @status, @diff_status, @evidence_refs_json, @check_id,
           @repo_contract_id, @expected_layer, @actual_layer, @graph_path_json,
-          @suggested_fix, @related_node_ids_json, @created_at
+          @suggested_fix, @related_node_ids_json, @created_by_engine_version,
+          @created_by_rule_engine_version, @contract_schema_version, @created_at
         )
         ON CONFLICT(repo_id, fingerprint) DO UPDATE SET
           title = excluded.title,
@@ -765,7 +963,10 @@ export class SqliteDriftStorage {
           actual_layer = excluded.actual_layer,
           graph_path_json = excluded.graph_path_json,
           suggested_fix = excluded.suggested_fix,
-          related_node_ids_json = excluded.related_node_ids_json
+          related_node_ids_json = excluded.related_node_ids_json,
+          created_by_engine_version = excluded.created_by_engine_version,
+          created_by_rule_engine_version = excluded.created_by_rule_engine_version,
+          contract_schema_version = excluded.contract_schema_version
       `)
       .run({
         ...parsed,
@@ -776,7 +977,10 @@ export class SqliteDriftStorage {
         actual_layer: parsed.actual_layer ?? null,
         graph_path_json: stringifyJson(parsed.graph_path ?? []),
         suggested_fix: parsed.suggested_fix ?? null,
-        related_node_ids_json: stringifyJson(parsed.related_node_ids ?? [])
+        related_node_ids_json: stringifyJson(parsed.related_node_ids ?? []),
+        created_by_engine_version: parsed.created_by_engine_version ?? null,
+        created_by_rule_engine_version: parsed.created_by_rule_engine_version ?? null,
+        contract_schema_version: parsed.contract_schema_version ?? null
       });
   }
 
@@ -975,6 +1179,96 @@ export class SqliteDriftStorage {
     return RepoContractSchema.parse(JSON.parse(rowValue<string>(row, "contract_json")));
   }
 
+  recordRequiredCheckExecution(execution: RequiredCheckExecution): void {
+    const parsed = RequiredCheckExecutionSchema.parse(execution);
+    this.db
+      .prepare(`
+        INSERT INTO required_check_executions (
+          execution_id, repo_id, repo_root, repo_commit, git_branch, git_commit_sha,
+          worktree_dirty, untracked_files_present, scan_id, repo_contract_id, agent_contract_id,
+          contract_fingerprint, repo_contract_version, command, argv_json, command_hash,
+          diff_hash, lockfile_hash, package_manager, cwd,
+          started_at, completed_at, timeout_ms, exit_code, status, stdout_hash,
+          stderr_hash, stdout_preview, stderr_preview, audit_event_id
+        )
+        VALUES (
+          @execution_id, @repo_id, @repo_root, @repo_commit, @git_branch, @git_commit_sha,
+          @worktree_dirty, @untracked_files_present, @scan_id, @repo_contract_id, @agent_contract_id,
+          @contract_fingerprint, @repo_contract_version, @command, @argv_json, @command_hash,
+          @diff_hash, @lockfile_hash, @package_manager, @cwd,
+          @started_at, @completed_at, @timeout_ms, @exit_code, @status, @stdout_hash,
+          @stderr_hash, @stdout_preview, @stderr_preview, @audit_event_id
+        )
+        ON CONFLICT(execution_id) DO UPDATE SET
+          status = excluded.status,
+          completed_at = excluded.completed_at,
+          exit_code = excluded.exit_code,
+          stdout_hash = excluded.stdout_hash,
+          stderr_hash = excluded.stderr_hash,
+          stdout_preview = excluded.stdout_preview,
+          stderr_preview = excluded.stderr_preview,
+          git_branch = excluded.git_branch,
+          git_commit_sha = excluded.git_commit_sha,
+          worktree_dirty = excluded.worktree_dirty,
+          untracked_files_present = excluded.untracked_files_present,
+          contract_fingerprint = excluded.contract_fingerprint,
+          repo_contract_version = excluded.repo_contract_version,
+          diff_hash = excluded.diff_hash,
+          lockfile_hash = excluded.lockfile_hash,
+          package_manager = excluded.package_manager
+      `)
+      .run({
+        ...parsed,
+        worktree_dirty: parsed.worktree_dirty ? 1 : 0,
+        untracked_files_present: parsed.untracked_files_present ? 1 : 0,
+        scan_id: parsed.scan_id ?? null,
+        argv_json: stringifyJson(parsed.argv),
+        lockfile_hash: parsed.lockfile_hash ?? null,
+        package_manager: parsed.package_manager ?? null,
+        exit_code: parsed.exit_code ?? null
+      });
+  }
+
+  listRequiredCheckExecutions(
+    repoId: string,
+    filters: { command?: string; scan_id?: string; repo_contract_id?: string } = {}
+  ): RequiredCheckExecution[] {
+    const conditions = ["repo_id = ?"];
+    const values: unknown[] = [repoId];
+    if (filters.command) {
+      conditions.push("command = ?");
+      values.push(filters.command);
+    }
+    if (filters.scan_id) {
+      conditions.push("scan_id = ?");
+      values.push(filters.scan_id);
+    }
+    if (filters.repo_contract_id) {
+      conditions.push("repo_contract_id = ?");
+      values.push(filters.repo_contract_id);
+    }
+    return this.db
+      .prepare(`
+        SELECT * FROM required_check_executions
+        WHERE ${conditions.join(" AND ")}
+        ORDER BY completed_at DESC, execution_id DESC
+      `)
+      .all(...values)
+      .map(requiredCheckExecutionFromRow);
+  }
+
+  latestRequiredCheckExecution(repoId: string, command: string): RequiredCheckExecution | null {
+    const row = this.db
+      .prepare(`
+        SELECT * FROM required_check_executions
+        WHERE repo_id = ? AND command = ?
+        ORDER BY completed_at DESC, execution_id DESC
+        LIMIT 1
+      `)
+      .get(repoId, command);
+    return row ? requiredCheckExecutionFromRow(row) : null;
+  }
+
   appendAuditEvent(event: AuditEvent): void {
     const parsed = AuditEventSchema.parse(event);
     const previousEventHash = this.latestAuditEventHash(parsed.repo_id);
@@ -990,15 +1284,18 @@ export class SqliteDriftStorage {
         .prepare(`
           INSERT INTO audit_events (
             id, repo_id, actor, action, target_type, target_id, metadata_json,
-            created_at, sequence, previous_event_hash, event_hash
+            before_hash, after_hash, object_schema_version, created_at, sequence, previous_event_hash, event_hash
           )
           VALUES (
             @id, @repo_id, @actor, @action, @target_type, @target_id, @metadata_json,
-            @created_at, @sequence, @previous_event_hash, @event_hash
+            @before_hash, @after_hash, @object_schema_version, @created_at, @sequence, @previous_event_hash, @event_hash
           )
         `)
         .run({
           ...eventWithHash,
+          before_hash: eventWithHash.before_hash ?? null,
+          after_hash: eventWithHash.after_hash ?? null,
+          object_schema_version: eventWithHash.object_schema_version ?? null,
           metadata_json: stringifyJson(eventWithHash.metadata)
         });
     } catch (error) {
@@ -1197,7 +1494,10 @@ function findingFromRow(row: unknown): Finding {
     actual_layer: record.actual_layer ?? undefined,
     graph_path: parseJsonArray(record.graph_path_json ?? "[]"),
     suggested_fix: record.suggested_fix ?? undefined,
-    related_node_ids: parseJsonArray(record.related_node_ids_json ?? "[]")
+    related_node_ids: parseJsonArray(record.related_node_ids_json ?? "[]"),
+    created_by_engine_version: record.created_by_engine_version ?? undefined,
+    created_by_rule_engine_version: record.created_by_rule_engine_version ?? undefined,
+    contract_schema_version: record.contract_schema_version ?? undefined
   });
 }
 
@@ -1207,7 +1507,10 @@ function checkRunFromRow(row: unknown): CheckRun {
     ...record,
     fallback_used: record.fallback_used === 1,
     stale_scan: record.stale_scan === 1,
-    capability_complete: record.capability_complete === 1
+    capability_complete: record.capability_complete === 1,
+    machine_contract_versions: typeof record.machine_contract_versions_json === "string"
+      ? parseJsonObject(record.machine_contract_versions_json)
+      : undefined
   });
 }
 
@@ -1215,7 +1518,76 @@ function factFromRow(row: unknown): FactRecord {
   const record = row as Record<string, unknown>;
   return FactRecordSchema.parse({
     ...record,
-    value: record.value ?? undefined
+    value: record.value ?? undefined,
+    imported_name: record.imported_name ?? undefined,
+    ast_node_kind: record.ast_node_kind ?? null,
+    source_span: typeof record.source_span_json === "string"
+      ? JSON.parse(record.source_span_json) as unknown
+      : record.source_span,
+    last_seen_scan_id: record.last_seen_scan_id ?? record.scan_id
+  });
+}
+
+function parserGapFromRow(row: unknown): ParserGap {
+  const record = row as Record<string, unknown>;
+  return ParserGapSchema.parse({
+    ...record,
+    evidence_refs: typeof record.evidence_refs_json === "string"
+      ? JSON.parse(record.evidence_refs_json) as unknown
+      : []
+  });
+}
+
+function scanCapabilityReportFromRow(row: unknown): ScanCapabilityReport {
+  const record = row as Record<string, unknown>;
+  return ScanCapabilityReportSchema.parse({
+    ...record,
+    engine_version: record.engine_version ?? null,
+    adapter_versions: parseJsonObject(record.adapter_versions_json),
+    certified_capabilities: parseJsonArray(record.certified_capabilities_json),
+    required_capabilities: parseJsonArray(record.required_capabilities_json),
+    missing_capabilities: parseJsonArray(record.missing_capabilities_json),
+    completeness: parseJsonArray(record.completeness_json),
+    parser_gap_kinds: parseJsonObject(record.parser_gap_kinds_json),
+    fallback_used: record.fallback_used === 1,
+    enforcement_degraded: record.enforcement_degraded === 1
+  });
+}
+
+function deduplicateParserGaps(gaps: ParserGap[]): ParserGap[] {
+  const bySemanticKey = new Map<string, ParserGap>();
+  for (const gap of gaps) {
+    const key = [
+      gap.repo_id,
+      gap.scan_id,
+      gap.kind,
+      gap.file_path,
+      gap.start_line,
+      gap.end_line,
+      gap.message
+    ].join("\0");
+    const existing = bySemanticKey.get(key);
+    if (!existing) {
+      bySemanticKey.set(key, gap);
+      continue;
+    }
+    bySemanticKey.set(key, {
+      ...existing,
+      evidence_refs: sortedUnique([...existing.evidence_refs, ...gap.evidence_refs])
+    });
+  }
+  return [...bySemanticKey.values()];
+}
+
+function symbolIdentityFromRow(row: unknown): SymbolIdentity {
+  const record = row as Record<string, unknown>;
+  return SymbolIdentitySchema.parse({
+    ...record,
+    exported_from: parseJsonArray(record.exported_from_json),
+    imported_as: parseJsonArray(record.imported_as_json),
+    re_export_chain: parseJsonArray(record.re_export_chain_json),
+    call_sites: parseJsonArray(record.call_sites_json),
+    references: parseJsonArray(record.references_json)
   });
 }
 
@@ -1274,6 +1646,7 @@ function graphEvidenceFromRow(row: unknown): GraphEvidence {
     ...record,
     start_column: record.start_column ?? undefined,
     end_column: record.end_column ?? undefined,
+    snippet_hash: record.snippet_hash ?? undefined,
     fact_ids: parseJsonArray(record.fact_ids_json)
   });
 }
@@ -1349,6 +1722,9 @@ function auditEventFromRow(row: unknown): AuditEvent {
   return AuditEventSchema.parse({
     ...record,
     sequence: typeof record.sequence === "number" ? record.sequence : undefined,
+    before_hash: record.before_hash ?? null,
+    after_hash: record.after_hash ?? null,
+    object_schema_version: record.object_schema_version ?? null,
     metadata: parseJsonObject(record.metadata_json)
   });
 }
@@ -1556,6 +1932,42 @@ function resolverDependencyFromEdge(
     source_path: sourcePath,
     dependency_path: dependencyPath,
     dependency_kind: dependencyKind
+  });
+}
+
+function requiredCheckExecutionFromRow(row: unknown): RequiredCheckExecution {
+  return RequiredCheckExecutionSchema.parse({
+    schema_version: "drift.required_check_execution.v1",
+    execution_id: rowValue<string>(row, "execution_id"),
+    repo_id: rowValue<string>(row, "repo_id"),
+    repo_root: rowValue<string>(row, "repo_root"),
+    repo_commit: rowValue<string>(row, "repo_commit"),
+    git_branch: rowValue<string>(row, "git_branch"),
+    git_commit_sha: rowValue<string>(row, "git_commit_sha"),
+    worktree_dirty: rowValue<number>(row, "worktree_dirty") === 1,
+    untracked_files_present: rowValue<number>(row, "untracked_files_present") === 1,
+    scan_id: rowValue<string | null>(row, "scan_id"),
+    repo_contract_id: rowValue<string>(row, "repo_contract_id"),
+    agent_contract_id: rowValue<string>(row, "agent_contract_id"),
+    contract_fingerprint: rowValue<string>(row, "contract_fingerprint"),
+    repo_contract_version: rowValue<number>(row, "repo_contract_version"),
+    command: rowValue<string>(row, "command"),
+    argv: parseJsonArray(rowValue<string>(row, "argv_json")).map(String),
+    command_hash: rowValue<string>(row, "command_hash"),
+    diff_hash: rowValue<string>(row, "diff_hash"),
+    lockfile_hash: rowValue<string | null>(row, "lockfile_hash"),
+    package_manager: rowValue<string | null>(row, "package_manager"),
+    cwd: rowValue<string>(row, "cwd"),
+    started_at: rowValue<string>(row, "started_at"),
+    completed_at: rowValue<string>(row, "completed_at"),
+    timeout_ms: rowValue<number>(row, "timeout_ms"),
+    exit_code: rowValue<number | null>(row, "exit_code"),
+    status: rowValue<string>(row, "status"),
+    stdout_hash: rowValue<string>(row, "stdout_hash"),
+    stderr_hash: rowValue<string>(row, "stderr_hash"),
+    stdout_preview: rowValue<string>(row, "stdout_preview"),
+    stderr_preview: rowValue<string>(row, "stderr_preview"),
+    audit_event_id: rowValue<string>(row, "audit_event_id")
   });
 }
 

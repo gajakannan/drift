@@ -306,8 +306,8 @@ Smallest practical fix:
 
 Evidence:
 
-- `packages/cli/src/domain/scan-status.ts:31-38` defines `IncrementalScanPlan` with `execution_mode: "full_scan"` and `reuse_applied: false`.
-- `packages/cli/src/domain/scan-status.ts:341-370` always returns `execution_mode: "full_scan"`, `reuse_applied: false`, and includes `engine_reuse_not_enabled`.
+- `packages/cli/src/domain/scan-status.ts` defines `IncrementalScanPlan` with `execution_mode: "full_scan" | "incremental_reuse"` and only reports reuse when the engine returns reused files.
+- `packages/cli/src/domain/scan-status.ts` blocks reuse when resolver/scanner inputs changed and falls back to full scan when no reusable files exist.
 - Migration `008_scan_file_changes` persists added/modified/deleted/unchanged file changes.
 
 Impact:
@@ -439,9 +439,8 @@ Smallest practical fix:
    - Leave JSON-RPC and argument validation in MCP.
 
 4. Keep incremental scan honest.
-   - Either implement reuse behind tested invalidation rules or keep reporting `engine_reuse_not_enabled`.
+   - Keep reuse limited to tested unchanged-file facts with resolver-input invalidation.
    - Do not imply incremental performance until reuse is real.
 
 5. Preserve the narrow wedge.
    - Finish TypeScript/Next.js API route layering and graph-backed check quality before broadening languages or UI.
-

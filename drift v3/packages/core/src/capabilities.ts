@@ -1,3 +1,5 @@
+import { createContractParityLedger,type ContractParityLedger } from "./contract-ledger.js";
+
 export interface DriftCapabilities {
   read_only_cli: string[];
   human_confirmed_cli: string[];
@@ -12,6 +14,7 @@ export interface DriftCapabilities {
     source_mutation: false;
   };
   deferred: string[];
+  contract_parity: ContractParityLedger;
 }
 
 export interface DriftProductionClaimsManifest {
@@ -31,6 +34,7 @@ export const DRIFT_DEFAULT_MCP_READ_ONLY_TOOLS = [
   "get_task_preflight",
   "get_conventions",
   "get_findings",
+  "get_required_check_executions",
   "get_allowed_context"
 ] as const;
 
@@ -98,7 +102,8 @@ export function createDriftCapabilities(input: {
       storage: "sqlite",
       source_mutation: false
     },
-    deferred: ["desktop_ui", "cloud_sync", "python_adapter", "duplicate_helper_detection"]
+    deferred: ["desktop_ui", "cloud_sync", "python_adapter", "duplicate_helper_detection"],
+    contract_parity: createContractParityLedger()
   };
 }
 
@@ -112,10 +117,10 @@ export function createProductionClaimsManifest(): DriftProductionClaimsManifest 
       "sqlite_local_state",
       "human_confirmed_governance",
       "read_only_mcp",
-      "accepted_contract_blocks_direct_data_access"
+      "accepted_contract_blocks_direct_data_access",
+      "incremental_reuse"
     ],
     blocked_claims: [
-      "incremental_reuse",
       "cloud_sync",
       "desktop_ui",
       "python_adapter",

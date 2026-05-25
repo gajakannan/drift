@@ -53,6 +53,9 @@ export function auditEvent(input: {
   targetType: string;
   targetId: string;
   metadata: Record<string, unknown>;
+  beforeHash?: string | null;
+  afterHash?: string | null;
+  objectSchemaVersion?: string | null;
   createdAt: string;
 }): AuditEvent {
   return {
@@ -63,6 +66,9 @@ export function auditEvent(input: {
     target_type: input.targetType,
     target_id: input.targetId,
     metadata: input.metadata,
+    before_hash: input.beforeHash ?? null,
+    after_hash: input.afterHash ?? null,
+    object_schema_version: input.objectSchemaVersion ?? null,
     created_at: input.createdAt
   };
 }

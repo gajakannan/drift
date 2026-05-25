@@ -13,7 +13,7 @@ import { agentEnvelopeForScan } from "./agent-envelope.js";
 import { preflightGovernance } from "./governance.js";
 import { scanFingerprint } from "./identifiers.js";
 import { repoContractOrDefault } from "./repo-paths.js";
-import { assertFreshScanIfRequired,freshnessRequirement,latestIndexedScan,scanStatusPayload } from "./scan-status.js";
+import { assertFreshScanIfRequired,freshnessRequirement,latestIndexedScan,readinessForStoredScan,scanStatusPayload } from "./scan-status.js";
 
 export function policyFileContext(
   storage: SqliteDriftStorage,
@@ -34,6 +34,8 @@ export function policyFileContext(
   const findings = storage.listFindings(repoId);
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
   const readModel = buildRepoMapReadModel({
+    repoId,
+    scanId: latestScan?.id ?? null,
     graphFiles: graphMap?.files ?? [],
     factFiles: fallbackFactRepoMapFiles(snapshots, facts),
     contract,
@@ -87,6 +89,8 @@ export function repoMapPayload(
   const findings = storage.listFindings(repoId);
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
   const readModel = buildRepoMapReadModel({
+    repoId,
+    scanId: latestScan?.id ?? null,
     graphFiles: graphMap?.files ?? [],
     factFiles: fallbackFactRepoMapFiles(snapshots, facts),
     contract,
@@ -101,6 +105,7 @@ export function repoMapPayload(
   const offset = options.offset ?? 0;
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
+  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "repo_map");
   return {
     response_schema: "drift.repo.map.v1",
     repo_id: repoId,
@@ -113,6 +118,7 @@ export function repoMapPayload(
       requireFresh: Boolean(options.requireFresh)
     }),
     policy,
+    readiness,
     governance: preflightGovernance(),
     latest_scan: latestScan ?? null,
     scan_fingerprint: latestScan ? scanFingerprint(latestScan, snapshots) : null,
@@ -123,6 +129,7 @@ export function repoMapPayload(
     },
     summary: readModel.summary,
     impact_summary: readModel.impact_summary,
+    topology: readModel.topology,
     pagination: readModel.pagination,
     freshness_requirement: freshnessRequirement(Boolean(options.requireFresh), scanStatus),
     files: readModel.listed_files,

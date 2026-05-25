@@ -5,11 +5,42 @@ import {
   TYPESCRIPT_ADAPTER_MANIFEST,
   assertCertifiedCapability,
   certifiedCapabilitiesForAdapter,
+  expressAdapter,
   missingRequiredCapabilities,
+  nextAppRouterAdapter,
   validateAdapterOutputBatch
 } from "../src/index.js";
 
 describe("adapter capability registry", () => {
+  it("describes Next.js app router entrypoints and boundaries", () => {
+    expect(nextAppRouterAdapter()).toMatchObject({
+      schema_version: "drift.framework_adapter.v1",
+      framework: "next",
+      adapter_id: "next_app_router",
+      route_discovery: {
+        path_globs: ["app/**/route.ts", "app/**/route.tsx"],
+        method_exports: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+      },
+      entrypoint_patterns: expect.arrayContaining(["api_route", "server_action", "middleware"])
+    });
+  });
+
+  it("describes Express route shapes without certifying runtime support", () => {
+    expect(expressAdapter()).toMatchObject({
+      schema_version: "drift.framework_adapter.v1",
+      framework: "express",
+      adapter_id: "express_router",
+      route_discovery: {
+        method_exports: ["get", "post", "put", "patch", "delete", "all", "use"]
+      },
+      entrypoint_patterns: expect.arrayContaining(["api_route", "middleware", "webhook_handler"]),
+      unsupported_patterns: expect.arrayContaining(["computed router method names"])
+    });
+    expect(TYPESCRIPT_ADAPTER_MANIFEST.capabilities.some((capability) =>
+      capability.scope.frameworks?.includes("express")
+    )).toBe(false);
+  });
+
   it("validates the built-in TypeScript adapter manifest", () => {
     const manifest = AdapterManifestSchema.parse(TYPESCRIPT_ADAPTER_MANIFEST);
 

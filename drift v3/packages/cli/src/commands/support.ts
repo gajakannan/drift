@@ -32,6 +32,28 @@ export function supportBundle(storage: SqliteDriftStorage, parsed: ParsedArgs) {
       includes_contract_json: false,
       includes_finding_evidence: false
     },
+    redaction_policy: {
+      schema_version: "drift.support.redaction.v1",
+      included_metadata: [
+        "runtime_versions",
+        "engine_provenance",
+        "repo_identity_hashes",
+        "migration_compatibility",
+        "scan_counts",
+        "audit_integrity",
+        "backup_count"
+      ],
+      excluded_data_classes: [
+        "source_text",
+        "sqlite_database",
+        "backup_files",
+        "environment_variables",
+        "absolute_paths",
+        "contract_json",
+        "finding_evidence_refs",
+        "graph_evidence"
+      ]
+    },
     manifest: {
       runtime: doctorRuntime(),
       engine: engineProvenance(),

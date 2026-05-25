@@ -180,6 +180,55 @@ export async function GET() {
 }
 
 #[test]
+fn extracts_commonjs_and_dynamic_import_bindings() {
+    let source = r#"
+const { prisma, db: database } = require("@/lib/prisma");
+const auth = await import("@/server/auth");
+
+export async function GET() {
+  return Response.json(await prisma.user.findMany());
+}
+"#;
+
+    let facts =
+        extract_typescript_facts("app/api/users/route.ts", source).expect("typescript facts");
+
+    assert!(facts.iter().any(|fact| fact.kind == FactKind::ImportUsed
+        && fact.name == "prisma"
+        && fact.imported_name.as_deref() == Some("prisma")
+        && fact.value.as_deref() == Some("@/lib/prisma")));
+    assert!(facts.iter().any(|fact| fact.kind == FactKind::ImportUsed
+        && fact.name == "database"
+        && fact.imported_name.as_deref() == Some("db")
+        && fact.value.as_deref() == Some("@/lib/prisma")));
+    assert!(facts.iter().any(|fact| fact.kind == FactKind::ImportUsed
+        && fact.name == "auth"
+        && fact.imported_name.as_deref() == Some("default")
+        && fact.value.as_deref() == Some("@/server/auth")));
+}
+
+#[test]
+fn extracts_next_route_handlers_declared_as_exported_constants() {
+    let source = r#"
+export const GET = async () => Response.json({ ok: true });
+"#;
+
+    let facts =
+        extract_typescript_facts("app/api/users/route.ts", source).expect("typescript facts");
+
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::ExportedSymbol && fact.name == "GET")
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::RouteDeclared && fact.name == "GET")
+    );
+}
+
+#[test]
 fn detects_package_and_module_roles_from_paths() {
     let source = "export function run() { return true; }\n";
     let cases = [

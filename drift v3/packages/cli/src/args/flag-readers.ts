@@ -59,7 +59,8 @@ export const AUDIT_ACTIONS = [
   "adapter_upgraded",
   "scan_invalidated",
   "baseline_created",
-  "baseline_cleared"
+  "baseline_cleared",
+  "required_check_executed"
 ] as const satisfies readonly AuditEvent["action"][];
 
 export function isAuditAction(value: string): value is AuditEvent["action"] {

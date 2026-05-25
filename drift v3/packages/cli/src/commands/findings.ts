@@ -1,5 +1,5 @@
 import { authorizeContextExport,type Finding,type FindingStatus } from "@drift/core";
-import { createGraphQueryService } from "@drift/query";
+import { buildFindingsReadModel, createGraphQueryService } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { actorFlag,optionalFindingDiffStatusFlag,optionalFindingStatusFlag,optionalNonEmptyFlag,optionalNonNegativeIntegerFlag,optionalPositiveIntegerFlag,optionalRepoRelativeFlag,optionalSeverityFlag,requiredFlag,requiredNonEmptyFlag,stringFlag,validateFileLineEvidence } from "../args/flag-readers.js";
@@ -7,7 +7,6 @@ import { resolveRepoId } from "../args/repo-flags.js";
 import { agentEnvelopeForScan } from "../domain/agent-envelope.js";
 import { findingMatchesPath,findingShowNextCommands,fixedFindingNextCommands,fixedFindingResolution,governedFindingNextCommands,governedFindingResolution,reviewFinding } from "../domain/findings.js";
 import { auditEvent,mutationGovernance,preflightGovernance } from "../domain/governance.js";
-import { countBy,orderFindingsForReview,paginateFindings,paginationSummary } from "../domain/pagination.js";
 import { requiredRepo,requiredRepoContract } from "../domain/repo-paths.js";
 import { assertFreshScanIfRequired,freshnessRequirement,scanStatusPayload } from "../domain/scan-status.js";
 import { formatFindingFixedText,formatFindingResolutionText,formatFindingShowText,formatFindingsText } from "../formatters/findings.js";
@@ -30,16 +29,18 @@ export function listFindings(storage: SqliteDriftStorage, parsed: ParsedArgs): C
   const requireFresh = parsed.flags.has("require-fresh");
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, requireFresh);
-  const allFindings = storage.listFindings(repoId);
-  const filteredFindings = allFindings.filter((finding) =>
-    (!status || finding.status === status) &&
-    (!severity || finding.severity === severity) &&
-    (!diffStatus || finding.diff_status === diffStatus) &&
-    (!conventionId || finding.convention_id === conventionId) &&
-    (!path || findingMatchesPath(finding, path))
-  );
-  const orderedFindings = orderFindingsForReview(filteredFindings);
-  const findings = paginateFindings(orderedFindings, limit, offset);
+  const readModel = buildFindingsReadModel({
+    findings: storage.listFindings(repoId),
+    filters: {
+      status,
+      severity,
+      diff_status: diffStatus,
+      convention_id: conventionId,
+      path
+    },
+    limit,
+    offset
+  });
 
   const payload = {
     response_schema: "drift.findings.list.v1",
@@ -52,25 +53,13 @@ export function listFindings(storage: SqliteDriftStorage, parsed: ParsedArgs): C
     }),
     policy,
     governance: preflightGovernance(),
-    filters: {
-      status: status ?? null,
-      severity: severity ?? null,
-      diff_status: diffStatus ?? null,
-      convention_id: conventionId ?? null,
-      path: path ?? null
-    },
+    filters: readModel.filters,
     scan_status: scanStatus,
     freshness_requirement: freshnessRequirement(requireFresh, scanStatus),
-    summary: {
-      total_count: allFindings.length,
-      filtered_count: filteredFindings.length,
-      by_status: countBy(allFindings, (finding) => finding.status),
-      by_severity: countBy(allFindings, (finding) => finding.severity),
-      by_diff_status: countBy(allFindings, (finding) => finding.diff_status)
-    },
-    pagination: paginationSummary(filteredFindings.length, findings.length, limit, offset),
-    review_items: findings.map(reviewFinding),
-    findings
+    summary: readModel.summary,
+    pagination: readModel.pagination,
+    review_items: readModel.review_items,
+    findings: readModel.findings
   };
 
   return {

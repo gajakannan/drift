@@ -1,7 +1,8 @@
 import { authorizeContextExport,DRIFT_CONTRACT_SCHEMA_VERSION,type RepoContract,RepoContractSchema } from "@drift/core";
+import { buildRepoContractReadModel } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,mkdirSync,statSync,writeFileSync } from "node:fs";
-import { dirname,extname } from "node:path";
+import { dirname,extname,join } from "node:path";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { actorFlag,optionalChecksumFlag,optionalIsoTimestampFlag,optionalNonEmptyFlag,optionalRepoRelativeFlag,optionalWaiverStatusFlag,rejectAmbiguousDryRunConfirm,requiredNonEmptyFlag,stringFlag } from "../args/flag-readers.js";
 import { requiredDatabasePath,resolveRepoId } from "../args/repo-flags.js";
@@ -20,15 +21,12 @@ export function showContract(storage: SqliteDriftStorage, parsed: ParsedArgs): C
   if (!policy.allowed) {
     throw new Error(`Policy denied contract show: ${policy.reason}`);
   }
-  const payload = {
-    response_schema: "drift.repo.contract.v1",
+  const payload = buildRepoContractReadModel({
     repo_id: repoId,
     contract,
-    contract_fingerprint: contractFingerprint(contract),
     policy,
-    governance: preflightGovernance(),
-    summary: contractSummary(contract)
-  };
+    governance: preflightGovernance()
+  });
   return {
     payload: parsed.flags.has("json") ? payload : formatContractShowText(payload)
   };
@@ -51,7 +49,8 @@ export function validateContract(storage: SqliteDriftStorage, parsed: ParsedArgs
     contract_fingerprint: contractFingerprint(contract),
     schema_version: contract.contract_schema_version,
     supported_schema_version: DRIFT_CONTRACT_SCHEMA_VERSION,
-    convention_count: contract.conventions.length
+    convention_count: contract.conventions.length,
+    agent_contract_count: contract.agent_contracts?.length ?? 0
   };
   return {
     payload: parsed.flags.has("json") ? payload : formatContractValidationText(payload)
@@ -172,6 +171,7 @@ export function importContractDryRun(
   const conventionContractIdsMatch = contract.conventions.every((convention) =>
     convention.contract_id === contract.id
   );
+  const agentContractIdsUnique = hasUniqueIds((contract.agent_contracts ?? []).map((entry) => entry.id));
   const agentPermissionsUnique = hasUniqueAgentPermissions(contract.agent_permissions);
   const exceptionIdsUnique = hasUniqueConventionExceptionIds(contract);
   const waiverIdsUnique = hasUniqueIds(contract.waivers.map((waiver) => waiver.id));
@@ -193,6 +193,7 @@ export function importContractDryRun(
       : undefined,
     !schemaSupported ? "contract_schema_unsupported" : undefined,
     !conventionContractIdsMatch ? "convention_contract_ids_mismatch" : undefined,
+    !agentContractIdsUnique ? "duplicate_agent_contract_ids" : undefined,
     !agentPermissionsUnique ? "duplicate_agent_permissions" : undefined,
     !exceptionIdsUnique ? "duplicate_exception_ids" : undefined,
     !waiverIdsUnique ? "duplicate_waiver_ids" : undefined,
@@ -213,6 +214,7 @@ export function importContractDryRun(
     schema_supported: schemaSupported,
     supported_schema_version: DRIFT_CONTRACT_SCHEMA_VERSION,
     convention_contract_ids_match: conventionContractIdsMatch,
+    agent_contract_ids_unique: agentContractIdsUnique,
     agent_permissions_unique: agentPermissionsUnique,
     exception_ids_unique: exceptionIdsUnique,
     waiver_ids_unique: waiverIdsUnique,
@@ -249,6 +251,7 @@ export function importContractDryRun(
     write_intent: !dryRun,
     confirm_command: dryRun ? confirmCommand : null,
     convention_count: contract.conventions.length,
+    agent_contract_count: contract.agent_contracts?.length ?? 0,
     would_update: wouldUpdate,
     added_convention_count: conventionImportSummary.added_count,
     changed_convention_count: conventionImportSummary.changed_count,
@@ -289,6 +292,7 @@ export function importContractDryRun(
       metadata: {
         contract_path: contractPath,
         convention_count: contract.conventions.length,
+        agent_contract_count: contract.agent_contracts?.length ?? 0,
         added_convention_count: conventionImportSummary.added_count,
         changed_convention_count: conventionImportSummary.changed_count,
         removed_convention_count: conventionImportSummary.removed_count,
@@ -311,7 +315,7 @@ export function importContractDryRun(
 
 export function addContractWaiver(storage: SqliteDriftStorage, parsed: ParsedArgs): CommandPayload {
   const repoId = resolveRepoId(parsed);
-  requiredRepo(storage, repoId);
+  const repo = requiredRepo(storage, repoId);
   if (!parsed.flags.has("confirm")) {
     throw new Error("Contract waiver changes require --confirm.");
   }
@@ -328,6 +332,9 @@ export function addContractWaiver(storage: SqliteDriftStorage, parsed: ParsedArg
   const now = stringFlag(parsed, "now") ?? new Date().toISOString();
   const actor = actorFlag(parsed);
   const contract = requiredRepoContract(storage, repoId);
+  const approvedFileHashes = parsed.flags.has("reapprove-on-change") && path && !path.includes("*")
+    ? approvedFileHashForPath(repo.root_path, path)
+    : [];
   const waiver = {
     id: contractWaiverId(repoId, path, symbol, importSource),
     reason,
@@ -335,6 +342,8 @@ export function addContractWaiver(storage: SqliteDriftStorage, parsed: ParsedArg
     ...(symbol ? { symbols: [symbol] } : {}),
     ...(importSource ? { imports: [importSource] } : {}),
     ...(expiresAt ? { expires_at: expiresAt } : {}),
+    ...(parsed.flags.has("reapprove-on-change") ? { requires_reapproval_on_change: true } : {}),
+    ...(approvedFileHashes.length > 0 ? { approved_file_hashes: approvedFileHashes } : {}),
     created_by: actor,
     created_at: now
   };
@@ -370,6 +379,8 @@ export function addContractWaiver(storage: SqliteDriftStorage, parsed: ParsedArg
     waivers: [...contract.waivers, waiver],
     updated_at: now
   };
+  const beforeHash = contractFingerprint(contract);
+  const afterHash = contractFingerprint(updatedContract);
   storage.transaction(() => {
     storage.upsertRepoContract(updatedContract);
     storage.appendAuditEvent(auditEvent({
@@ -384,9 +395,13 @@ export function addContractWaiver(storage: SqliteDriftStorage, parsed: ParsedArg
         symbol: symbol ?? null,
         import_source: importSource ?? null,
         expires_at: expiresAt ?? null,
+        requires_reapproval_on_change: parsed.flags.has("reapprove-on-change"),
         reason
       },
-      createdAt: now
+      createdAt: now,
+      beforeHash,
+      afterHash,
+      objectSchemaVersion: "drift.repo_contract.v1"
     }));
   });
 
@@ -493,6 +508,8 @@ export function removeContractWaiver(
     waivers: contract.waivers.filter((waiver) => waiver.id !== waiverId),
     updated_at: now
   };
+  const beforeHash = contractFingerprint(contract);
+  const afterHash = contractFingerprint(updatedContract);
   storage.transaction(() => {
     storage.upsertRepoContract(updatedContract);
     storage.appendAuditEvent(auditEvent({
@@ -506,7 +523,10 @@ export function removeContractWaiver(
         removed: true,
         reason: existing.reason
       },
-      createdAt: now
+      createdAt: now,
+      beforeHash,
+      afterHash,
+      objectSchemaVersion: "drift.repo_contract.v1"
     }));
   });
 
@@ -523,4 +543,18 @@ export function removeContractWaiver(
   return {
     payload: parsed.flags.has("json") ? payload : formatContractWaiverRemoveText(payload)
   };
+}
+
+function approvedFileHashForPath(
+  repoRoot: string,
+  path: string
+): Array<{ file_path: string; content_hash: string }> {
+  const absolutePath = join(repoRoot, path);
+  if (!existsSync(absolutePath) || !statSync(absolutePath).isFile()) {
+    return [];
+  }
+  return [{
+    file_path: path,
+    content_hash: fileContentHash(absolutePath)
+  }];
 }

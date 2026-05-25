@@ -1,10 +1,12 @@
-import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type RepoRecord,type ScanFileChange,type ScanManifest } from "@drift/core";
-import { buildFactGraphArtifactFromParts } from "@drift/factgraph";
+import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type ParserGap,type ParserGapConfidenceImpact,type ParserGapKind,type RepoRecord,type ScanCapabilityReport,type ScanFileChange,type ScanManifest } from "@drift/core";
+import { buildFactGraphArtifactFromParts,type FactGraphArtifact } from "@drift/factgraph";
+import { buildReadiness,type DriftReadinessSurface } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
-import { existsSync,readdirSync,statSync } from "node:fs";
+import { existsSync,mkdtempSync,readdirSync,rmSync,statSync,writeFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { collectScanData } from "../engine/collect-scan-data.js";
+import { tmpdir } from "node:os";
+import { collectScanData,type ScanData } from "../engine/collect-scan-data.js";
 import { inferConventionCandidatesFromEngine } from "../engine/engine-candidates.js";
 import { buildFactGraphArtifact } from "../engine/fact-graph.js";
 import { walkIndexableFiles } from "../engine/ts-fallback-scanner.js";
@@ -14,6 +16,7 @@ import { inferConventionCandidates } from "./convention-candidates.js";
 import { auditEvent,preflightGovernance } from "./governance.js";
 import { hashStable,scanFingerprint } from "./identifiers.js";
 import { repoRecordForRoot } from "./repo-paths.js";
+import { currentMachineContractVersions } from "./versions.js";
 
 export interface ScanStatusChangeSet {
   added: string[];
@@ -30,8 +33,8 @@ export interface ScanRepoInput {
 
 export interface IncrementalScanPlan {
   previous_scan_id: string | null;
-  execution_mode: "full_scan";
-  reuse_applied: false;
+  execution_mode: "full_scan" | "incremental_reuse";
+  reuse_applied: boolean;
   reusable_file_count: number;
   changed_file_count: number;
   blocked_reasons: string[];
@@ -64,6 +67,7 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
   const previousScan = storage.listScanManifests(repo.id).find((scan) => scan.status === "completed");
 
   const scanId = `scan_${hashStable(`${repo.id}:${now}`).slice(0, 16)}`;
+  let reuseManifest: { path: string; dir: string; blocked_reasons: string[] } | null = null;
   storage.appendAuditEvent(auditEvent({
     id: `audit_event_scan_started_${repo.id}_${scanId}`,
     repoId: repo.id,
@@ -78,7 +82,19 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
     createdAt: now
   }));
   try {
-    const scanData = await collectScanData({ repoId: repo.id, scanId, repoRoot });
+    const currentResolverInputFingerprint = resolverInputFingerprint(repoRoot);
+    reuseManifest = createScanReuseManifest({
+      storage,
+      repoId: repo.id,
+      previousScan,
+      currentResolverInputFingerprint
+    });
+    const scanData = await collectScanData({
+      repoId: repo.id,
+      scanId,
+      repoRoot,
+      reuseManifestPath: reuseManifest?.path
+    });
     const candidates = scanData.engineSource === "rust"
       ? await inferConventionCandidatesFromEngine({
           repoId: repo.id,
@@ -104,7 +120,7 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
       adapter_versions: {
         typescript: DRIFT_TYPESCRIPT_ADAPTER_VERSION,
         resolver: DRIFT_RESOLVER_VERSION,
-        resolver_inputs: resolverInputFingerprint(repoRoot)
+        resolver_inputs: currentResolverInputFingerprint
       },
       rule_engine_version: DRIFT_RULE_ENGINE_VERSION,
       status: "completed",
@@ -168,7 +184,30 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
     const incrementalPlan = incrementalScanPlan({
       previousScan,
       currentScan: scan,
-      changes: scanFileChanges
+      changes: scanFileChanges,
+      filesReused: scanData.stats?.files_reused ?? 0,
+      reuseBlockedReasons: reuseManifest?.blocked_reasons ?? scanReuseBlockedReasons({
+        previousScan,
+        currentResolverInputFingerprint,
+        previousCapabilityReport: previousScan
+          ? storage.getScanCapabilityReport(repo.id, previousScan.id) ?? null
+          : null
+      })
+    });
+    const parserGaps = parserGapsFromDiagnostics({
+      repoId: repo.id,
+      scanId,
+      diagnostics: scanData.graph_diagnostics.length > 0 ? scanData.graph_diagnostics : scanData.diagnostics,
+      createdAt: now
+    });
+    const capabilityReport = scanCapabilityReportForScan({
+      repoId: repo.id,
+      scanId,
+      scan,
+      scanData,
+      graphArtifact,
+      parserGaps,
+      createdAt: now
     });
 
     storage.transaction(() => {
@@ -178,6 +217,8 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
       }
       storage.upsertScanFileChanges(scanFileChanges);
       storage.upsertFacts(scanData.facts);
+      storage.upsertParserGaps(parserGaps);
+      storage.upsertScanCapabilityReport(capabilityReport);
       storage.upsertFactGraphArtifact(graphArtifact);
       for (const candidate of candidates) {
         storage.upsertConventionCandidate(candidate);
@@ -257,6 +298,8 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
       }));
     });
     throw error;
+  } finally {
+    cleanupScanReuseManifest(reuseManifest);
   }
 }
 
@@ -273,6 +316,104 @@ function readTsconfigPathAliases(repoRoot: string): Record<string, string[]> {
   } catch {
     return {};
   }
+}
+
+function createScanReuseManifest(input: {
+  storage: SqliteDriftStorage;
+  repoId: string;
+  previousScan?: ScanManifest;
+  currentResolverInputFingerprint: string;
+}): { path: string; dir: string; blocked_reasons: string[] } | null {
+  const blockedReasons = scanReuseBlockedReasons({
+    previousScan: input.previousScan,
+    currentResolverInputFingerprint: input.currentResolverInputFingerprint,
+    previousCapabilityReport: input.previousScan
+      ? input.storage.getScanCapabilityReport(input.repoId, input.previousScan.id) ?? null
+      : null
+  });
+  if (!input.previousScan || blockedReasons.length > 0) {
+    return null;
+  }
+
+  const snapshots = input.storage.listFileSnapshots(input.repoId, input.previousScan.id);
+  const facts = input.storage.listFacts(input.previousScan.id);
+  const dir = mkdtempSync(join(tmpdir(), "drift-reuse-"));
+  const path = join(dir, "reuse-manifest.json");
+  writeFileSync(path, JSON.stringify({
+    schema_version: "engine.reuse_manifest.v1",
+    previous_scan_id: input.previousScan.id,
+    file_snapshots: snapshots.map((snapshot) => ({
+      file_path: snapshot.file_path,
+      content_hash: snapshot.content_hash,
+      byte_size: snapshot.byte_size,
+      indexed: snapshot.indexed
+    })),
+    facts: facts.map((fact) => ({
+      kind: fact.kind,
+      file_path: fact.file_path,
+      name: fact.name,
+      ...(fact.value ? { value: fact.value } : {}),
+      ...(fact.imported_name ? { imported_name: fact.imported_name } : {}),
+      start_line: fact.start_line,
+      end_line: fact.end_line
+    }))
+  }), "utf8");
+  return { path, dir, blocked_reasons: [] };
+}
+
+function cleanupScanReuseManifest(manifest: { dir: string } | null): void {
+  if (!manifest) {
+    return;
+  }
+  rmSync(manifest.dir, { recursive: true, force: true });
+}
+
+function scanReuseBlockedReasons(input: {
+  previousScan?: ScanManifest;
+  currentResolverInputFingerprint?: string;
+  previousCapabilityReport?: ScanCapabilityReport | null;
+}): string[] {
+  if (!input.previousScan) {
+    return ["previous_scan_missing"];
+  }
+  const reasons: string[] = [];
+  if ("previousCapabilityReport" in input && !input.previousCapabilityReport) {
+    reasons.push("previous_scan_capability_report_missing");
+  } else if (input.previousCapabilityReport && (
+    input.previousCapabilityReport.engine_source !== "rust" ||
+    input.previousCapabilityReport.fallback_used ||
+    input.previousCapabilityReport.enforcement_degraded
+  )) {
+    reasons.push("previous_scan_degraded");
+  }
+  if (input.previousScan.scanner_version !== DRIFT_SCANNER_VERSION) {
+    reasons.push("scanner_version_changed");
+  }
+  if (input.previousScan.adapter_versions.typescript !== DRIFT_TYPESCRIPT_ADAPTER_VERSION) {
+    reasons.push("adapter_version_changed:typescript");
+  }
+  if (
+    input.previousScan.adapter_versions.resolver &&
+    input.previousScan.adapter_versions.resolver !== DRIFT_RESOLVER_VERSION
+  ) {
+    reasons.push("resolver_version_changed");
+  }
+  if (
+    input.previousScan.adapter_versions.resolver_inputs &&
+    input.currentResolverInputFingerprint &&
+    input.previousScan.adapter_versions.resolver_inputs !== input.currentResolverInputFingerprint
+  ) {
+    reasons.push("resolver_inputs_changed");
+  }
+  if (
+    input.previousScan.adapter_versions.resolver &&
+    input.previousScan.adapter_versions.resolver === DRIFT_RESOLVER_VERSION &&
+    input.currentResolverInputFingerprint &&
+    !input.previousScan.adapter_versions.resolver_inputs
+  ) {
+    reasons.push("resolver_inputs_missing");
+  }
+  return reasons.sort((left, right) => left.localeCompare(right));
 }
 
 export function classifyScanFileChanges(input: {
@@ -342,28 +483,30 @@ export function incrementalScanPlan(input: {
   previousScan?: ScanManifest;
   currentScan: ScanManifest;
   changes: ScanFileChange[];
+  filesReused?: number;
+  reuseBlockedReasons?: string[];
 }): IncrementalScanPlan {
   const summary = scanFileChangeSummary(input.changes);
-  const versionReasons = input.previousScan
-    ? scanInvalidationReasons(input.previousScan, {
-        currentBranch: input.currentScan.branch,
-        currentResolverInputFingerprint: input.currentScan.adapter_versions.resolver_inputs
-      })
-    : [];
+  const reuseBlockedReasons = input.reuseBlockedReasons ?? scanReuseBlockedReasons({
+    previousScan: input.previousScan,
+    currentResolverInputFingerprint: input.currentScan.adapter_versions.resolver_inputs,
+    previousCapabilityReport: undefined
+  });
   const changedFileCount = summary.added + summary.modified + summary.deleted;
-  const blockedReasons = [
-    ...(!input.previousScan ? ["previous_scan_missing"] : []),
-    ...versionReasons,
-    ...(changedFileCount > 0 ? ["source_files_changed"] : []),
-    ...(summary.deleted > 0 ? ["deleted_files_present"] : []),
-    "engine_reuse_not_enabled"
-  ];
+  const filesReused = input.filesReused ?? 0;
+  const reuseApplied = filesReused > 0 && reuseBlockedReasons.length === 0;
+  const blockedReasons = reuseApplied
+    ? []
+    : [
+        ...reuseBlockedReasons,
+        ...(input.previousScan && reuseBlockedReasons.length === 0 ? ["no_reusable_files"] : [])
+      ];
 
   return {
     previous_scan_id: input.previousScan?.id ?? null,
-    execution_mode: "full_scan",
-    reuse_applied: false,
-    reusable_file_count: input.previousScan ? summary.unchanged : 0,
+    execution_mode: reuseApplied ? "incremental_reuse" : "full_scan",
+    reuse_applied: reuseApplied,
+    reusable_file_count: reuseApplied ? filesReused : input.previousScan ? summary.unchanged : 0,
     changed_file_count: changedFileCount,
     blocked_reasons: [...new Set(blockedReasons)].sort((left, right) => left.localeCompare(right))
   };
@@ -414,6 +557,20 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
       stale: true,
       invalidation_reasons: ["scan_missing"],
       changes: { added: [], modified: [], deleted: [] },
+      parser_gaps: parserGapSummary([]),
+      readiness: buildReadiness({
+        repo_id: repoId,
+        scan_id: null,
+        surface: "scan_status",
+        graph_available: false,
+        graph_complete: false,
+        parser_gaps: [],
+        completeness_reasons: ["scan_missing"],
+        required_capabilities: ["scan_manifest", "fact_graph"],
+        missing_capabilities: ["scan_manifest", "fact_graph"]
+      }),
+      capability_report: null,
+      machine_contract_versions: currentMachineContractVersions(),
       next_command: nextCommands[0],
       next_commands: nextCommands
     };
@@ -443,6 +600,9 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     invalidationReasons.length > 0;
   const sourceChangeCount = changes.added.length + changes.modified.length + changes.deleted.length;
   const nextCommands = scanStatusNextCommands(repoId, repo.root_path, stale);
+  const parserGaps = storage.listParserGaps(repoId, latestScan.id);
+  const readiness = readinessForStoredScan(storage, repoId, latestScan.id, "scan_status", parserGaps);
+  const capabilityReport = storage.getScanCapabilityReport(repoId, latestScan.id) ?? null;
   const payload = {
     response_schema: "drift.scan.status.v1",
     repo_id: repoId,
@@ -468,10 +628,174 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     stale,
     invalidation_reasons: invalidationReasons,
     changes,
+    parser_gaps: parserGapSummary(parserGaps),
+    readiness,
+    capability_report: capabilityReport,
+    machine_contract_versions: currentMachineContractVersions(latestScan.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands
   };
   return payload;
+}
+
+export function readinessForStoredScan(
+  storage: SqliteDriftStorage,
+  repoId: string,
+  scanId: string | null,
+  surface: DriftReadinessSurface,
+  parserGaps: ParserGap[] = scanId ? storage.listParserGaps(repoId, scanId) : []
+) {
+  const graphAvailable = Boolean(scanId && storage.getFactGraphArtifact(repoId, scanId));
+  return buildReadiness({
+    repo_id: repoId,
+    scan_id: scanId,
+    surface,
+    graph_available: graphAvailable,
+    graph_complete: graphAvailable,
+    parser_gaps: parserGaps,
+    completeness_reasons: graphAvailable ? [] : ["graph_missing"],
+    required_capabilities: ["fact_graph"],
+    missing_capabilities: graphAvailable ? [] : ["fact_graph"]
+  });
+}
+
+export function parserGapsFromDiagnostics(input: {
+  repoId: string;
+  scanId: string;
+  diagnostics: Array<{ code: string; message: string; file_path?: string; evidence_id?: string }>;
+  createdAt: string;
+}): ParserGap[] {
+  return input.diagnostics
+    .map((diagnostic, index) => {
+      const kind = parserGapKindForDiagnostic(diagnostic.code);
+      if (!kind || !diagnostic.file_path) {
+        return null;
+      }
+      return {
+        schema_version: "drift.parser_gap.v1" as const,
+        gap_id: `parser_gap_${hashStable(`${input.scanId}:${diagnostic.code}:${diagnostic.file_path}:${index}`).slice(0, 16)}`,
+        repo_id: input.repoId,
+        scan_id: input.scanId,
+        kind,
+        file_path: diagnostic.file_path,
+        start_line: 1,
+        end_line: 1,
+        confidence_impact: parserGapImpact(kind),
+        message: diagnostic.message,
+        evidence_refs: diagnostic.evidence_id ? [diagnostic.evidence_id] : [],
+        created_at: input.createdAt
+      };
+    })
+    .filter((gap): gap is ParserGap => Boolean(gap));
+}
+
+export function parserGapSummary(gaps: ParserGap[]): {
+  total_count: number;
+  by_kind: Record<ParserGapKind, number>;
+  confidence_impact: Record<ParserGapConfidenceImpact, number>;
+} {
+  return {
+    total_count: gaps.length,
+    by_kind: countBy(gaps.map((gap) => gap.kind)) as Record<ParserGapKind, number>,
+    confidence_impact: countBy(gaps.map((gap) => gap.confidence_impact)) as Record<ParserGapConfidenceImpact, number>
+  };
+}
+
+function scanCapabilityReportForScan(input: {
+  repoId: string;
+  scanId: string;
+  scan: ScanManifest;
+  scanData: ScanData;
+  graphArtifact: FactGraphArtifact;
+  parserGaps: ParserGap[];
+  createdAt: string;
+}): ScanCapabilityReport {
+  const graphRequiredCapabilities = sortedUniqueStrings(input.graphArtifact.graph.completeness.flatMap((entry) =>
+    entry.required_capabilities
+  ));
+  const graphMissingCapabilities = sortedUniqueStrings(input.graphArtifact.graph.completeness.flatMap((entry) =>
+    entry.missing_capabilities
+  ));
+  const adapterCapabilities = sortedUniqueStrings(input.graphArtifact.graph.adapters.flatMap((adapter) =>
+    adapter.capabilities
+  ));
+  const statsCapabilities = input.scanData.stats?.capabilities;
+
+  return {
+    schema_version: "drift.scan_capability_report.v1",
+    repo_id: input.repoId,
+    scan_id: input.scanId,
+    engine_source: input.scanData.engineSource,
+    engine_version: null,
+    scanner_version: input.scan.scanner_version,
+    adapter_versions: input.scan.adapter_versions,
+    certified_capabilities: sortedUniqueStrings(statsCapabilities?.certified ?? adapterCapabilities),
+    required_capabilities: sortedUniqueStrings(statsCapabilities?.required ?? graphRequiredCapabilities),
+    missing_capabilities: sortedUniqueStrings([
+      ...(statsCapabilities?.missing ?? graphMissingCapabilities),
+      ...(input.scanData.fallbackStatus.fallback_used ? input.scanData.fallbackStatus.degraded_capabilities : [])
+    ]),
+    completeness: input.graphArtifact.graph.completeness.map((entry) => ({
+      scope: entry.scope,
+      ...(entry.rule_id ? { rule_id: entry.rule_id } : {}),
+      complete: entry.complete,
+      can_block: entry.can_block,
+      reasons: sortedUniqueStrings([
+        ...entry.reasons,
+        ...(entry.truncated ? ["truncated"] : [])
+      ])
+    })),
+    parser_gap_count: input.parserGaps.length,
+    parser_gap_kinds: countBy(input.parserGaps.map((gap) => gap.kind)) as Record<string, number>,
+    fallback_used: input.scanData.fallbackStatus.fallback_used,
+    enforcement_degraded: input.scanData.fallbackStatus.enforcement_degraded,
+    created_at: input.createdAt
+  };
+}
+
+function parserGapKindForDiagnostic(code: string): ParserGapKind | null {
+  switch (code) {
+    case "unresolved_import":
+      return "unresolved_import";
+    case "unresolved_import_symbol":
+      return "unresolved_symbol";
+    case "unsupported_namespace_import_symbol":
+      return "unsupported_framework_pattern";
+    case "typescript_fallback_used":
+    case "file_too_large":
+      return "partial_parse";
+    default:
+      return null;
+  }
+}
+
+function parserGapImpact(kind: ParserGapKind): ParserGapConfidenceImpact {
+  switch (kind) {
+    case "unresolved_import":
+    case "unresolved_symbol":
+    case "dynamic_import_unresolved":
+      return "lowers_flow";
+    case "parser_error":
+    case "partial_parse":
+      return "blocks_enforcement";
+    case "unknown_file_role":
+    case "mixed_file_role":
+      return "lowers_file";
+    default:
+      return "none";
+  }
+}
+
+function countBy<T extends string>(values: T[]): Partial<Record<T, number>> {
+  const counts: Partial<Record<T, number>> = {};
+  for (const value of values) {
+    counts[value] = (counts[value] ?? 0) + 1;
+  }
+  return Object.fromEntries(Object.entries(counts).sort(([left], [right]) => left.localeCompare(right))) as Partial<Record<T, number>>;
+}
+
+function sortedUniqueStrings(values: string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
 export function scanStatusSummary(options: {
@@ -617,6 +941,14 @@ export function scanInvalidationReasons(
     scan.adapter_versions.resolver_inputs !== input.currentResolverInputFingerprint
   ) {
     reasons.push("resolver_inputs_changed");
+  }
+  if (
+    scan.adapter_versions.resolver &&
+    scan.adapter_versions.resolver === DRIFT_RESOLVER_VERSION &&
+    input.currentResolverInputFingerprint &&
+    !scan.adapter_versions.resolver_inputs
+  ) {
+    reasons.push("resolver_inputs_missing");
   }
   if (scan.rule_engine_version !== DRIFT_RULE_ENGINE_VERSION) {
     reasons.push("rule_engine_version_changed");

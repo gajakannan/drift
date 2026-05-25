@@ -101,6 +101,9 @@ pub fn extract_typescript_facts(
 fn walk_node(node: Node<'_>, source: &[u8], file_path: &str, facts: &mut Vec<Fact>) {
     match node.kind() {
         "import_statement" => extract_imports(node, source, file_path, facts),
+        "lexical_declaration" | "variable_declaration" => {
+            extract_runtime_imports(node, source, file_path, facts)
+        }
         "call_expression" => extract_call(node, source, file_path, facts),
         "export_statement" => extract_export(node, source, file_path, facts),
         _ => {}
@@ -131,6 +134,82 @@ fn extract_imports(node: Node<'_>, source: &[u8], file_path: &str, facts: &mut V
             start_line: node.start_position().row + 1,
             end_line: node.end_position().row + 1,
         });
+    }
+}
+
+fn extract_runtime_imports(node: Node<'_>, source: &[u8], file_path: &str, facts: &mut Vec<Fact>) {
+    let Some(statement) = node_text(node, source) else {
+        return;
+    };
+    let Some(source_value) = runtime_import_source(&statement) else {
+        return;
+    };
+    let Some(binding_clause) = runtime_import_binding_clause(&statement) else {
+        return;
+    };
+
+    for binding in runtime_import_bindings(binding_clause) {
+        facts.push(Fact {
+            kind: FactKind::ImportUsed,
+            file_path: file_path.to_string(),
+            name: binding.local_name,
+            value: Some(source_value.clone()),
+            imported_name: Some(binding.imported_name),
+            start_line: node.start_position().row + 1,
+            end_line: node.end_position().row + 1,
+        });
+    }
+}
+
+fn runtime_import_source(statement: &str) -> Option<String> {
+    quoted_call_argument(statement, "require(")
+        .or_else(|| quoted_call_argument(statement, "import("))
+}
+
+fn quoted_call_argument(statement: &str, marker: &str) -> Option<String> {
+    let after_marker = statement.split(marker).nth(1)?;
+    let quote = after_marker
+        .chars()
+        .find(|value| *value == '"' || *value == '\'')?;
+    let after_quote = after_marker.split_once(quote)?.1;
+    let value = after_quote.split_once(quote)?.0.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn runtime_import_binding_clause(statement: &str) -> Option<&str> {
+    let trimmed = statement.trim();
+    let after_keyword = trimmed
+        .strip_prefix("const ")
+        .or_else(|| trimmed.strip_prefix("let "))
+        .or_else(|| trimmed.strip_prefix("var "))?;
+    let (binding_clause, _) = after_keyword.split_once('=')?;
+    let binding_clause = binding_clause.trim();
+    (!binding_clause.is_empty()).then_some(binding_clause)
+}
+
+fn runtime_import_bindings(binding_clause: &str) -> Vec<ImportBinding> {
+    let trimmed = binding_clause.trim();
+    if trimmed.starts_with('{') {
+        let Some(end) = trimmed.find('}') else {
+            return Vec::new();
+        };
+        let mut bindings = Vec::new();
+        for specifier in trimmed[1..end].split(',') {
+            let specifier = specifier.trim();
+            if specifier.is_empty() {
+                continue;
+            }
+            if let Some((imported_name, local_name)) = specifier.split_once(':') {
+                push_import_binding(&mut bindings, imported_name, local_name);
+            } else {
+                push_import_binding(&mut bindings, specifier, specifier);
+            }
+        }
+        bindings
+    } else {
+        let mut bindings = Vec::new();
+        push_import_binding(&mut bindings, "default", trimmed);
+        bindings
     }
 }
 
@@ -513,7 +592,29 @@ fn first_named_declaration_identifier(node: Node<'_>, source: &[u8]) -> Option<S
         {
             return Some(name);
         }
+        if matches!(child.kind(), "lexical_declaration" | "variable_declaration")
+            && let Some(name) = first_variable_declaration_identifier(child, source)
+        {
+            return Some(name);
+        }
         if let Some(name) = first_named_declaration_identifier(child, source) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn first_variable_declaration_identifier(node: Node<'_>, source: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "variable_declarator"
+            && let Some(name) = child
+                .child_by_field_name("name")
+                .and_then(|name| node_text(name, source))
+        {
+            return Some(name);
+        }
+        if let Some(name) = first_variable_declaration_identifier(child, source) {
             return Some(name);
         }
     }

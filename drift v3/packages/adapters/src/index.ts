@@ -143,6 +143,101 @@ export const AdapterOutputBatchSchema = z.object({
 
 export type AdapterOutputBatch = z.infer<typeof AdapterOutputBatchSchema>;
 
+export const FrameworkEntrypointKindSchema = z.enum([
+  "api_route",
+  "page_route",
+  "server_action",
+  "cli_command",
+  "cron_job",
+  "queue_consumer",
+  "webhook_handler",
+  "middleware",
+  "test_entrypoint",
+  "script",
+  "migration",
+  "lambda_handler",
+  "worker"
+]);
+
+export const FrameworkAdapterContractSchema = z.object({
+  schema_version: z.literal("drift.framework_adapter.v1"),
+  adapter_id: z.string().min(1),
+  framework: z.string().min(1),
+  version: z.string().min(1),
+  route_discovery: z.object({
+    path_globs: z.array(z.string().min(1)),
+    method_exports: z.array(z.string().min(1))
+  }),
+  method_discovery: z.object({
+    exported_handler_methods: z.array(z.string().min(1))
+  }),
+  handler_shape: z.array(z.string().min(1)),
+  middleware_shape: z.array(z.string().min(1)),
+  server_client_boundary: z.array(z.string().min(1)),
+  config_files: z.array(z.string().min(1)),
+  test_conventions: z.array(z.string().min(1)),
+  entrypoint_patterns: z.array(FrameworkEntrypointKindSchema),
+  data_access_patterns: z.array(z.string().min(1)),
+  generated_file_patterns: z.array(z.string().min(1)),
+  unsupported_patterns: z.array(z.string().min(1))
+});
+
+export type FrameworkAdapterContract = z.infer<typeof FrameworkAdapterContractSchema>;
+
+export function nextAppRouterAdapter(): FrameworkAdapterContract {
+  return FrameworkAdapterContractSchema.parse({
+    schema_version: "drift.framework_adapter.v1",
+    adapter_id: "next_app_router",
+    framework: "next",
+    version: "0.1.0",
+    route_discovery: {
+      path_globs: ["app/**/route.ts", "app/**/route.tsx"],
+      method_exports: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+    },
+    method_discovery: {
+      exported_handler_methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+    },
+    handler_shape: ["exported async function METHOD(request?: Request)"],
+    middleware_shape: ["middleware.ts export function middleware(request)"],
+    server_client_boundary: ["app router route handlers are server-side entrypoints"],
+    config_files: ["next.config.js", "next.config.mjs", "next.config.ts"],
+    test_conventions: ["*.test.ts", "*.spec.ts", "__tests__/**/*.ts"],
+    entrypoint_patterns: ["api_route", "server_action", "middleware"],
+    data_access_patterns: ["prisma.*", "db.*", "database.*", "repositories/**"],
+    generated_file_patterns: [".next/**", "next-env.d.ts"],
+    unsupported_patterns: ["dynamic route handler export names", "runtime reflection over methods"]
+  });
+}
+
+export function expressAdapter(): FrameworkAdapterContract {
+  return FrameworkAdapterContractSchema.parse({
+    schema_version: "drift.framework_adapter.v1",
+    adapter_id: "express_router",
+    framework: "express",
+    version: "0.1.0",
+    route_discovery: {
+      path_globs: ["**/routes/**/*.ts", "**/routes/**/*.js", "**/server.ts", "**/app.ts"],
+      method_exports: ["get", "post", "put", "patch", "delete", "all", "use"]
+    },
+    method_discovery: {
+      exported_handler_methods: ["router.METHOD(path, handler)", "app.METHOD(path, handler)"]
+    },
+    handler_shape: ["router.get('/path', handler)", "app.post('/path', async (req, res) => {})"],
+    middleware_shape: ["app.use(middleware)", "router.use(path?, middleware)"],
+    server_client_boundary: ["Express handlers are server-side entrypoints"],
+    config_files: ["server.ts", "server.js", "app.ts", "app.js"],
+    test_conventions: ["*.test.ts", "*.spec.ts", "__tests__/**/*.ts"],
+    entrypoint_patterns: ["api_route", "middleware", "webhook_handler"],
+    data_access_patterns: ["prisma.*", "db.*", "database.*", "repositories/**"],
+    generated_file_patterns: ["dist/**", "build/**"],
+    unsupported_patterns: [
+      "computed router method names",
+      "runtime-loaded route modules",
+      "framework wrappers that hide app/router calls"
+    ]
+  });
+}
+
 export const TYPESCRIPT_ADAPTER_MANIFEST: AdapterManifest = AdapterManifestSchema.parse({
   id: "typescript",
   language: "typescript",

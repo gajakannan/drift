@@ -1,4 +1,5 @@
-import type { PolicyDecision, RepoContract } from "./domain.js";
+import type { ContextPolicyMatrix, PolicyDecision, RepoContract } from "./domain.js";
+import { ContextPolicyMatrixSchema } from "./schemas.js";
 
 export type PolicyRedactionState = "none" | "metadata_only" | "snippet_limited" | "denied";
 
@@ -129,6 +130,43 @@ export function createPolicyProof(
       contextTruncated
     })
   };
+}
+
+export function createContextPolicyMatrix(
+  contract: RepoContract,
+  decision: PolicyDecision
+): ContextPolicyMatrix {
+  const egressLevel = contextEgressLevel(contract, decision);
+  return ContextPolicyMatrixSchema.parse({
+    schema_version: "drift.context_policy.v1",
+    can_read_repo_map: decision.allowed,
+    can_read_source_snippets: egressLevel === "snippet_allowed" || egressLevel === "full_file_allowed",
+    can_read_contract: decision.allowed,
+    can_read_findings: decision.allowed,
+    can_execute_commands: false,
+    can_modify_contract: false,
+    can_create_waiver: false,
+    can_request_human_approval: true,
+    can_access_secret_like_files: false,
+    can_emit_patch: false,
+    egress_level: egressLevel
+  });
+}
+
+function contextEgressLevel(
+  contract: RepoContract,
+  decision: PolicyDecision
+): ContextPolicyMatrix["egress_level"] {
+  if (!decision.allowed) {
+    return "no_source";
+  }
+  if (contract.context_egress.allow_full_file_content) {
+    return "full_file_allowed";
+  }
+  if (decision.mode === "redacted") {
+    return "snippet_allowed";
+  }
+  return "symbol_only";
 }
 
 function policyRedactionState(

@@ -23,6 +23,7 @@ export function formatContractShowText(payload: {
     `Mode: ${payload.contract.context_egress.default_mode}`,
     `Policy: ${payload.policy.allowed ? "allowed" : "denied"} (${payload.policy.mode})`,
     `Conventions: ${payload.contract.conventions.length}`,
+    `Agent contracts: ${payload.contract.agent_contracts?.length ?? 0}`,
     `Waivers: ${payload.contract.waivers.length}`,
     `Required checks: ${payload.contract.required_checks.length}`,
     `Safe commands: ${payload.contract.safe_commands.length}`,
@@ -44,6 +45,7 @@ export function formatContractValidationText(payload: {
   schema_version: number;
   supported_schema_version?: number;
   convention_count: number;
+  agent_contract_count?: number;
   compatibility?: {
     compatible: boolean;
     reasons?: string[];
@@ -61,6 +63,7 @@ export function formatContractValidationText(payload: {
       ? `Supported schema version: ${payload.supported_schema_version}`
       : "",
     `Conventions: ${payload.convention_count}`,
+    payload.agent_contract_count !== undefined ? `Agent contracts: ${payload.agent_contract_count}` : "",
     payload.compatibility
       ? `Compatibility: ${payload.compatibility.compatible ? "compatible" : "incompatible"}`
       : "",

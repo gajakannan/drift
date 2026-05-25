@@ -8,6 +8,22 @@ import { openDriftStorage } from "../src/index.js";
 
 const tempDirs: string[] = [];
 
+function factQuality(scanId = "scan_abc") {
+  return {
+    source_span: { start_line: 1, start_column: 1, end_line: 1, end_column: 1 },
+    ast_node_kind: null,
+    extraction_method: "test_fixture",
+    extractor_version: "0.1.0",
+    parser_version: "0.1.0",
+    confidence: 1,
+    confidence_label: "certain" as const,
+    evidence_level: "text" as const,
+    resolution_status: "resolved" as const,
+    staleness_status: "fresh" as const,
+    last_seen_scan_id: scanId
+  };
+}
+
 async function tempDatabasePath(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "drift-storage-"));
   tempDirs.push(dir);
@@ -36,7 +52,17 @@ describe("SQLite Drift storage", () => {
       "009_symbol_occurrence_kind",
       "010_audit_sequence",
       "011_check_runs_and_finding_context",
-      "012_repo_identity"
+      "012_repo_identity",
+      "013_required_check_executions",
+      "014_fact_quality",
+      "015_parser_gaps",
+      "016_symbol_identities",
+      "017_required_check_state_binding",
+      "018_audit_object_hashes",
+      "019_scan_capability_reports",
+      "020_machine_contract_versions",
+      "021_graph_evidence_confidence",
+      "022_fact_imported_name"
     ]);
     storage.close();
   });
@@ -94,7 +120,17 @@ describe("SQLite Drift storage", () => {
       "009_symbol_occurrence_kind",
       "010_audit_sequence",
       "011_check_runs_and_finding_context",
-      "012_repo_identity"
+      "012_repo_identity",
+      "013_required_check_executions",
+      "014_fact_quality",
+      "015_parser_gaps",
+      "016_symbol_identities",
+      "017_required_check_state_binding",
+      "018_audit_object_hashes",
+      "019_scan_capability_reports",
+      "020_machine_contract_versions",
+      "021_graph_evidence_confidence",
+      "022_fact_imported_name"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -226,7 +262,26 @@ describe("SQLite Drift storage", () => {
       findings_count: 1,
       blocking_count: 1,
       started_at: "2026-05-10T00:00:01.500Z",
-      completed_at: "2026-05-10T00:00:02.000Z"
+      completed_at: "2026-05-10T00:00:02.000Z",
+      machine_contract_versions: {
+        schema_version: "drift.machine_contract_versions.v1",
+        cli_version: "0.1.0",
+        core_version: "0.1.0",
+        storage_schema_version: 22,
+        contract_schema_version: 1,
+        engine_contract_versions: {
+          scan_request: "engine.scan.request.v1",
+          scan_result: "engine.scan.result.v1",
+          check_request: "engine.check.request.v1",
+          check_result: "engine.check.result.v1",
+          candidates_result: "engine.candidates.result.v1",
+          stream_event: "engine.stream.event.v1"
+        },
+        factgraph_schema_version: "factgraph.v2",
+        scanner_version: "0.1.0",
+        rule_engine_version: "0.1.0",
+        adapter_versions: { typescript: "0.1.0" }
+      }
     });
     storage.upsertFinding({
       id: "finding_abc",
@@ -247,6 +302,9 @@ describe("SQLite Drift storage", () => {
       graph_path: ["route:users", "import:prisma", "data:prisma"],
       suggested_fix: "Move data access behind a service.",
       related_node_ids: ["route:users", "data:prisma"],
+      created_by_engine_version: "0.1.0",
+      created_by_rule_engine_version: "0.1.0",
+      contract_schema_version: 1,
       created_at: "2026-05-10T00:00:02.000Z"
     });
     storage.upsertBaselineViolation({
@@ -270,7 +328,8 @@ describe("SQLite Drift storage", () => {
         name: "prisma",
         value: "@/lib/prisma",
         start_line: 1,
-        end_line: 1
+        end_line: 1,
+        ...factQuality()
       },
       {
         id: "fact_api_role",
@@ -280,7 +339,8 @@ describe("SQLite Drift storage", () => {
         file_path: "apps/web/app/api/users/route.ts",
         name: "api_route",
         start_line: 1,
-        end_line: 1
+        end_line: 1,
+        ...factQuality()
       }
     ]);
 
@@ -291,6 +351,11 @@ describe("SQLite Drift storage", () => {
       expect.objectContaining({
         id: "check_abc",
         repo_contract_id: "contract_abc",
+        machine_contract_versions: expect.objectContaining({
+          schema_version: "drift.machine_contract_versions.v1",
+          storage_schema_version: 22,
+          factgraph_schema_version: "factgraph.v2"
+        }),
         status: "fail",
         capability_complete: true
       })
@@ -305,7 +370,8 @@ describe("SQLite Drift storage", () => {
         name: "prisma",
         value: "@/lib/prisma",
         start_line: 1,
-        end_line: 1
+        end_line: 1,
+        ...factQuality()
       }
     ]);
     expect(storage.listFindings("repo_abc")).toEqual([
@@ -317,10 +383,134 @@ describe("SQLite Drift storage", () => {
         actual_layer: "data_access",
         graph_path: ["route:users", "import:prisma", "data:prisma"],
         suggested_fix: "Move data access behind a service.",
-        related_node_ids: ["route:users", "data:prisma"]
+        related_node_ids: ["route:users", "data:prisma"],
+        created_by_engine_version: "0.1.0",
+        created_by_rule_engine_version: "0.1.0",
+        contract_schema_version: 1
       })
     ]);
     expect(storage.listBaselineViolations("repo_abc")).toHaveLength(1);
+    storage.close();
+  });
+
+  it("persists fact quality provenance fields", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_abc",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    storage.upsertFacts([{
+      id: "fact_route_users_get",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "route_declared",
+      file_path: "app/api/users/route.ts",
+      name: "GET /api/users",
+      value: "/api/users",
+      start_line: 1,
+      end_line: 3,
+      source_span: { start_line: 1, start_column: 1, end_line: 3, end_column: 2 },
+      ast_node_kind: "ExportedFunction",
+      extraction_method: "next_app_router_parser",
+      extractor_version: "0.1.0",
+      parser_version: "0.1.0",
+      confidence: 0.98,
+      confidence_label: "high",
+      evidence_level: "ast",
+      resolution_status: "resolved",
+      staleness_status: "fresh",
+      last_seen_scan_id: "scan_abc"
+    }]);
+
+    expect(storage.listFacts("scan_abc")[0]).toMatchObject({
+      extraction_method: "next_app_router_parser",
+      confidence_label: "high",
+      resolution_status: "resolved",
+      evidence_level: "ast",
+      source_span: { start_line: 1, start_column: 1, end_line: 3, end_column: 2 }
+    });
+    storage.close();
+  });
+
+  it("persists required check execution proof for later CLI and MCP reads", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+
+    storage.recordRequiredCheckExecution({
+      schema_version: "drift.required_check_execution.v1",
+      execution_id: "required_check_exec_abc",
+      repo_id: "repo_abc",
+      repo_root: "/repo",
+      repo_commit: "abc123",
+      git_branch: "main",
+      git_commit_sha: "abc123",
+      worktree_dirty: false,
+      untracked_files_present: false,
+      scan_id: "scan_abc",
+      repo_contract_id: "contract_abc",
+      agent_contract_id: "agent_contract_checks",
+      contract_fingerprint: "contract-fp",
+      repo_contract_version: 1,
+      command: "node scripts/smoke-check.mjs",
+      argv: ["node", "scripts/smoke-check.mjs"],
+      command_hash: "hash_command",
+      diff_hash: "diff-fp",
+      lockfile_hash: null,
+      package_manager: null,
+      cwd: "/repo",
+      started_at: "2026-05-10T00:00:01.000Z",
+      completed_at: "2026-05-10T00:00:02.000Z",
+      timeout_ms: 30000,
+      exit_code: 0,
+      status: "passed",
+      stdout_hash: "hash_stdout",
+      stderr_hash: "hash_stderr",
+      stdout_preview: "ok",
+      stderr_preview: "",
+      audit_event_id: "audit_required_check"
+    });
+
+    expect(storage.latestRequiredCheckExecution("repo_abc", "node scripts/smoke-check.mjs")).toMatchObject({
+      execution_id: "required_check_exec_abc",
+      argv: ["node", "scripts/smoke-check.mjs"],
+      status: "passed",
+      diff_hash: "diff-fp",
+      contract_fingerprint: "contract-fp"
+    });
+    expect(storage.listRequiredCheckExecutions("repo_abc", {
+      command: "node scripts/smoke-check.mjs",
+      scan_id: "scan_abc",
+      repo_contract_id: "contract_abc"
+    })).toHaveLength(1);
     storage.close();
   });
 
@@ -427,6 +617,287 @@ describe("SQLite Drift storage", () => {
     storage.close();
   });
 
+  it("persists parser gaps for scan confidence summaries", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_abc",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    storage.upsertParserGaps([{
+      schema_version: "drift.parser_gap.v1",
+      gap_id: "parser_gap_unresolved_users",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "unresolved_import",
+      file_path: "app/api/users/route.ts",
+      start_line: 2,
+      end_line: 2,
+      confidence_impact: "lowers_flow",
+      message: "Could not resolve import @/missing/service.",
+      evidence_refs: ["diagnostic_unresolved_import"],
+      created_at: "2026-05-10T00:00:02.000Z"
+    }]);
+
+    expect(storage.listParserGaps("repo_abc", "scan_abc")).toEqual([{
+      schema_version: "drift.parser_gap.v1",
+      gap_id: "parser_gap_unresolved_users",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "unresolved_import",
+      file_path: "app/api/users/route.ts",
+      start_line: 2,
+      end_line: 2,
+      confidence_impact: "lowers_flow",
+      message: "Could not resolve import @/missing/service.",
+      evidence_refs: ["diagnostic_unresolved_import"],
+      created_at: "2026-05-10T00:00:02.000Z"
+    }]);
+    expect(storage.listParserGaps("repo_abc")).toHaveLength(1);
+    storage.close();
+  });
+
+  it("persists scan capability reports for scan proof", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_abc",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    const report = {
+      schema_version: "drift.scan_capability_report.v1" as const,
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      engine_source: "rust" as const,
+      engine_version: "0.1.0",
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      certified_capabilities: ["file_discovery", "syntax_facts", "fact_graph"],
+      required_capabilities: ["file_discovery", "fact_graph"],
+      missing_capabilities: [],
+      completeness: [{
+        scope: "repo" as const,
+        complete: true,
+        can_block: true,
+        reasons: []
+      }],
+      parser_gap_count: 1,
+      parser_gap_kinds: { unresolved_import: 1 },
+      fallback_used: false,
+      enforcement_degraded: false,
+      created_at: "2026-05-25T00:00:00.000Z"
+    };
+    const storageWithReports = storage as typeof storage & {
+      upsertScanCapabilityReport(input: typeof report): void;
+      getScanCapabilityReport(repoId: string, scanId: string): typeof report | undefined;
+    };
+
+    storageWithReports.upsertScanCapabilityReport(report);
+
+    expect(storageWithReports.getScanCapabilityReport("repo_abc", "scan_abc")).toEqual(report);
+    storage.close();
+  });
+
+  it("deduplicates parser gaps by semantic location and message within a scan", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_abc",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    storage.upsertParserGaps([
+      {
+        schema_version: "drift.parser_gap.v1",
+        gap_id: "parser_gap_first",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        kind: "unresolved_import",
+        file_path: "packages/core/test/domain.test.ts",
+        start_line: 1,
+        end_line: 1,
+        confidence_impact: "lowers_flow",
+        message: "Could not resolve import ../src/index.js.",
+        evidence_refs: ["diagnostic_a"],
+        created_at: "2026-05-10T00:00:02.000Z"
+      },
+      {
+        schema_version: "drift.parser_gap.v1",
+        gap_id: "parser_gap_second",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        kind: "unresolved_import",
+        file_path: "packages/core/test/domain.test.ts",
+        start_line: 1,
+        end_line: 1,
+        confidence_impact: "lowers_flow",
+        message: "Could not resolve import ../src/index.js.",
+        evidence_refs: ["diagnostic_b"],
+        created_at: "2026-05-10T00:00:03.000Z"
+      }
+    ]);
+
+    expect(storage.listParserGaps("repo_abc", "scan_abc")).toEqual([
+      expect.objectContaining({
+        gap_id: "parser_gap_first",
+        evidence_refs: ["diagnostic_a", "diagnostic_b"]
+      })
+    ]);
+    storage.close();
+  });
+
+  it("persists symbol identities for alias and re-export analysis", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_abc",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    storage.upsertSymbolIdentities([{
+      schema_version: "drift.symbol_identity.v1",
+      symbol_id: "symbol_get_user",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      symbol_name: "getUserById",
+      kind: "function",
+      declared_in: "server/services/users.ts",
+      exported_from: ["server/services/users.ts", "server/services/index.ts"],
+      imported_as: [{ file_path: "app/api/users/route.ts", local_name: "loadUser" }],
+      re_export_chain: ["server/services/index.ts"],
+      canonical_definition: "server/services/users.ts#getUserById",
+      call_sites: [{ file_path: "app/api/users/route.ts", start_line: 4, end_line: 4 }],
+      references: [{ file_path: "app/api/users/route.ts", start_line: 1, end_line: 1 }],
+      visibility: "exported"
+    }]);
+
+    expect(storage.listSymbolIdentities("repo_abc", "scan_abc")[0]).toMatchObject({
+      symbol_id: "symbol_get_user",
+      canonical_definition: "server/services/users.ts#getUserById",
+      imported_as: [{ file_path: "app/api/users/route.ts", local_name: "loadUser" }]
+    });
+    expect(storage.listSymbolIdentities("repo_abc")).toHaveLength(1);
+    storage.upsertScanManifest({
+      id: "scan_def",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "def456",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      previous_scan_id: "scan_abc",
+      started_at: "2026-05-10T00:00:02.000Z",
+      completed_at: "2026-05-10T00:00:03.000Z"
+    });
+    storage.upsertSymbolIdentities([{
+      schema_version: "drift.symbol_identity.v1",
+      symbol_id: "symbol_get_user",
+      repo_id: "repo_abc",
+      scan_id: "scan_def",
+      symbol_name: "getUserById",
+      kind: "function",
+      declared_in: "server/services/users.ts",
+      exported_from: ["server/services/users.ts"],
+      imported_as: [],
+      re_export_chain: [],
+      canonical_definition: "server/services/users.ts#getUserById",
+      call_sites: [],
+      references: [],
+      visibility: "exported"
+    }]);
+    expect(storage.listSymbolIdentities("repo_abc", "scan_abc")).toHaveLength(1);
+    expect(storage.listSymbolIdentities("repo_abc", "scan_def")).toHaveLength(1);
+    expect(storage.listSymbolIdentities("repo_abc")).toHaveLength(2);
+    storage.close();
+  });
+
   it("persists versioned fact graph artifacts and query projections", async () => {
     const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
     storage.migrate();
@@ -479,7 +950,8 @@ describe("SQLite Drift storage", () => {
         file_path: "app/api/users/route.ts",
         name: "api_route",
         start_line: 1,
-        end_line: 3
+        end_line: 3,
+        ...factQuality()
       }],
       createdAt: "2026-05-10T00:00:02.000Z"
     });
@@ -501,6 +973,9 @@ describe("SQLite Drift storage", () => {
     expect(storage.listGraphEvidence("repo_abc", "scan_abc")).toContainEqual(expect.objectContaining({
       id: "evidence:typescript:app/api/users/route.ts:aaaaaaaaaaaa:1-3",
       file_path: "app/api/users/route.ts",
+      confidence_kind: "deterministic",
+      extractor: "test_fixture",
+      snippet_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
       fact_ids: ["fact_route_role"]
     }));
     expect(storage.listGraphCompleteness("repo_abc", "scan_abc")).toEqual([expect.objectContaining({
@@ -1050,10 +1525,28 @@ describe("SQLite Drift storage", () => {
     const events = storage.listAuditEvents("repo_abc");
     expect(events[0]?.event_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(events[1]?.previous_event_hash).toBe(events[0]?.event_hash);
+    storage.appendAuditEvent({
+      id: "audit_event_c",
+      repo_id: "repo_abc",
+      actor: "local-user",
+      action: "policy_changed",
+      target_type: "repo_contract",
+      target_id: "contract_abc",
+      metadata: {},
+      before_hash: "0".repeat(64),
+      after_hash: "1".repeat(64),
+      object_schema_version: "drift.repo_contract.v1",
+      created_at: "2026-05-10T00:00:02.000Z"
+    });
+    expect(storage.listAuditEvents("repo_abc").at(-1)).toMatchObject({
+      before_hash: "0".repeat(64),
+      after_hash: "1".repeat(64),
+      object_schema_version: "drift.repo_contract.v1"
+    });
     expect(storage.verifyAuditChain("repo_abc")).toMatchObject({
       valid: true,
-      event_count: 2,
-      verified_count: 2,
+      event_count: 3,
+      verified_count: 3,
       broken_at_event_id: null,
       reasons: []
     });
@@ -1067,9 +1560,46 @@ describe("SQLite Drift storage", () => {
     const tampered = openDriftStorage({ databasePath });
     expect(tampered.verifyAuditChain("repo_abc")).toMatchObject({
       valid: false,
-      event_count: 2,
+      event_count: 3,
       verified_count: 1,
       broken_at_event_id: "audit_event_b",
+      reasons: ["event_hash_mismatch"]
+    });
+    tampered.close();
+  });
+
+  it("detects tampering with audited object hashes", async () => {
+    const databasePath = await tempDatabasePath();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+
+    storage.appendAuditEvent({
+      id: "audit_event_object_hash",
+      repo_id: "repo_abc",
+      actor: "local-user",
+      action: "policy_changed",
+      target_type: "repo_contract",
+      target_id: "contract_abc",
+      metadata: {},
+      before_hash: "0".repeat(64),
+      after_hash: "1".repeat(64),
+      object_schema_version: "drift.repo_contract.v1",
+      created_at: "2026-05-10T00:00:02.000Z"
+    });
+    expect(storage.verifyAuditChain("repo_abc")).toMatchObject({ valid: true });
+    storage.close();
+
+    const db = new Database(databasePath);
+    db.prepare("UPDATE audit_events SET after_hash = ? WHERE id = ?")
+      .run("2".repeat(64), "audit_event_object_hash");
+    db.close();
+
+    const tampered = openDriftStorage({ databasePath });
+    expect(tampered.verifyAuditChain("repo_abc")).toMatchObject({
+      valid: false,
+      event_count: 1,
+      verified_count: 0,
+      broken_at_event_id: "audit_event_object_hash",
       reasons: ["event_hash_mismatch"]
     });
     tampered.close();

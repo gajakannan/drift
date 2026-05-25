@@ -132,6 +132,12 @@ importers:
       '@drift/core':
         specifier: workspace:*
         version: link:../core
+      '@drift/engine-contract':
+        specifier: workspace:*
+        version: link:../engine-contract
+      '@drift/factgraph':
+        specifier: workspace:*
+        version: link:../factgraph
       '@drift/query':
         specifier: workspace:*
         version: link:../query
@@ -139,9 +145,6 @@ importers:
         specifier: workspace:*
         version: link:../storage
     devDependencies:
-      '@drift/factgraph':
-        specifier: workspace:*
-        version: link:../factgraph
       typescript:
         specifier: ^5.8.0
         version: 5.9.3

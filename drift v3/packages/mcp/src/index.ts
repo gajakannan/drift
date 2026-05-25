@@ -8,18 +8,25 @@ import type {
   Finding,
   FindingDiffStatus,
   FindingStatus,
+  ParserGap,
+  ParserGapConfidenceImpact,
+  ParserGapKind,
   PolicyDecision,
   RepoContract,
   RepoRecord,
+  RequiredCheckExecution,
   ScanFileChange,
   ScanManifest,
   Severity
 } from "@drift/core";
 import {
+  AgentPreflightPacketV2Schema,
+  FileRoleSchema,
   authorizeContextExport,
-  canonicalRepoContractJson,
   canonicalScanStateJson,
   createAgentEnvelopeV2,
+  createAgentPreflightPacket,
+  createContextPolicyMatrix,
   createDriftCapabilities,
   matchesPolicyGlob
 } from "@drift/core";
@@ -29,15 +36,33 @@ import {
   DRIFT_RESOLVER_VERSION,
   DRIFT_RULE_ENGINE_VERSION,
   DRIFT_SCANNER_VERSION,
-  DRIFT_TYPESCRIPT_ADAPTER_VERSION
+  DRIFT_TYPESCRIPT_ADAPTER_VERSION,
+  type MachineContractVersions
 } from "@drift/core";
 import {
+  ENGINE_CANDIDATES_RESULT_SCHEMA_VERSION,
+  ENGINE_CHECK_REQUEST_SCHEMA_VERSION,
+  ENGINE_CHECK_RESULT_SCHEMA_VERSION,
+  ENGINE_SCAN_REQUEST_SCHEMA_VERSION,
+  ENGINE_SCAN_RESULT_SCHEMA_VERSION,
+  ENGINE_STREAM_EVENT_SCHEMA_VERSION
+} from "@drift/engine-contract";
+import { FACTGRAPH_SCHEMA_VERSION } from "@drift/factgraph";
+import {
+  buildChangeImpact,
+  buildFindingsReadModel,
+  buildRepoContractReadModel,
+  buildReadiness,
+  classifyAgentTask,
   buildRepoMapReadModel,
   createGraphQueryService,
   fallbackFactRepoMapFiles,
   repoMapConventionIds,
   repoMapOpenFindingIds,
-  repoMapRiskyAreaIds
+  repoMapRiskyAreaIds,
+  selectRelevantTests,
+  type ChangeImpactRouteFlow,
+  type DriftReadinessSurface
 } from "@drift/query";
 import { MIGRATIONS, openDriftStorage } from "@drift/storage";
 import { execFileSync } from "node:child_process";
@@ -67,6 +92,8 @@ export type {
   JsonRpcResponse,
   McpCliResult
 } from "./types.js";
+
+const DRIFT_CLI_VERSION = "0.1.0";
 
 export const DRIFT_MCP_PROTOCOL_VERSION = "2024-11-05";
 export const DRIFT_MCP_VERSION = "0.1.0";
@@ -108,15 +135,12 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
     get_repo_contract: ({ repo_id }) => withStorage(options, (storage) => {
       const requestedRepoId = requiredMcpString(repo_id, "repo_id");
       const { contract, policy } = requiredAuthorizedMcpContract(storage, requestedRepoId, "contract-export");
-      return {
-        response_schema: "drift.repo.contract.v1",
+      return buildRepoContractReadModel({
         repo_id: requestedRepoId,
+        contract,
         policy,
-        governance: preflightGovernance(),
-        summary: contractSummary(contract),
-        contract_fingerprint: contractFingerprint(contract),
-        contract
-      };
+        governance: preflightGovernance()
+      });
     }),
 
     get_repo_map: ({ repo_id, role, path, require_fresh, limit, offset }) => withStorage(options, (storage) => {
@@ -177,7 +201,80 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
           safeCommands: contract.safe_commands
         })
       ];
+      const changeImpactRouteFlows = routeFlowsForChangeImpact(graphContext);
+      const taskModel = classifyAgentTask(requestedTask);
+      const testFiles = scanStatus.latest_scan
+        ? storage.listFileSnapshots(requestedRepoId, scanStatus.latest_scan.id)
+            .filter((snapshot) => /(\.test|\.spec)\.[tj]sx?$/.test(snapshot.file_path))
+            .map((snapshot) => snapshot.file_path)
+        : [];
+      const symbolIdentities = scanStatus.latest_scan
+        ? storage.listSymbolIdentities(requestedRepoId, scanStatus.latest_scan.id)
+        : [];
+      const changeImpact = buildChangeImpact({
+        repo_id: requestedRepoId,
+        scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
+        changed_files: relevantFiles.map((file) => file.path),
+        route_flows: changeImpactRouteFlows,
+        symbol_identities: symbolIdentities,
+        test_files: testFiles
+      });
+      const testSelection = selectRelevantTests({
+        changed_file: relevantFiles[0]?.path ?? requestedPath ?? "",
+        route_flow: changeImpactRouteFlows[0],
+        test_files: testFiles
+      });
       const waivers = waiversForFiles(contract, relevantFiles, generatedAt);
+      const agentContractPacket = createAgentPreflightPacket({
+        repoContract: { ...contract, conventions: activeConventions },
+        task: requestedTask,
+        scan_id: scanStatus.latest_scan?.id ?? null,
+        stale: scanStatus.stale,
+        explicit_paths: requestedPath ? [requestedPath] : [],
+        changed_paths: relevantFiles.map((file) => file.path),
+        file_roles: uniqueFileRoles(relevantFiles),
+        graph_node_ids: graphNodeIdsForPreflight(graphContext, relevantFiles)
+      });
+      const parserGaps = scanStatus.latest_scan
+        ? storage.listParserGaps(requestedRepoId, scanStatus.latest_scan.id)
+        : [];
+      const readiness = buildReadiness({
+        repo_id: requestedRepoId,
+        scan_id: scanStatus.latest_scan?.id ?? null,
+        surface: "prepare",
+        graph_available: graphContext.available,
+        graph_complete: graphContext.completeness?.complete ?? false,
+        parser_gaps: parserGaps,
+        completeness_reasons: graphContext.completeness?.reasons ?? graphContext.diagnostics,
+        required_capabilities: ["route_flow_graph"],
+        missing_capabilities: graphContext.available ? [] : ["fact_graph"]
+      });
+      const contextPolicy = createContextPolicyMatrix(contract, policy);
+      const taskPreflightPacket = AgentPreflightPacketV2Schema.parse({
+        schema_version: "drift.agent_preflight.v2",
+        repo_id: requestedRepoId,
+        scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
+        task_model: taskModel,
+        repo_map_summary: {
+          relevant_file_count: relevantFiles.length,
+          route_flow_count: graphContext.route_flows.length,
+          parser_gap_count: parserGaps.length
+        },
+        accepted_conventions: activeConventions.map(preflightConvention),
+        relevant_files: relevantFiles,
+        role_layer_proof: [],
+        change_impact: changeImpact,
+        test_intelligence: testSelection.test_intelligence,
+        parser_gaps: parserGaps,
+        required_checks: requiredChecks,
+        forbidden_actions: taskModel.forbidden_actions,
+        context_policy: contextPolicy,
+        confidence: {
+          graph_confidence: readiness.confidence,
+          reasons: readiness.reasons
+        },
+        legacy_packet: agentContractPacket
+      });
       return {
         response_schema: "drift.task.preflight.v1",
         repo_id: requestedRepoId,
@@ -192,6 +289,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
           diagnostics: graphContext.diagnostics
         }),
         policy,
+        readiness,
         contract: {
           id: contractReady ? contract.id : null,
           schema_version: contract.contract_schema_version,
@@ -219,6 +317,11 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         scan_status: scanStatus,
         freshness_requirement: freshnessRequirement(Boolean(require_fresh), scanStatus),
         graph_context: graphContext,
+        task_model: taskModel,
+        task_preflight_packet: taskPreflightPacket,
+        change_impact: changeImpact,
+        test_intelligence: testSelection.test_intelligence,
+        agent_contract_packet: agentContractPacket,
         baseline,
         findings,
         relevant_files: relevantFiles,
@@ -227,6 +330,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         required_checks: requiredChecks,
         safe_commands: contract.safe_commands,
         governance: preflightGovernance(),
+        context_policy: contextPolicy,
         redactions: {
           denied_globs: contract.context_egress.denied_globs,
           excluded_file_count: countDeniedFiles(
@@ -291,16 +395,18 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const requestedOffset = optionalMcpNonNegativeInteger(offset, "offset") ?? 0;
       const scanStatus = scanStatusPayload(storage, requestedRepoId);
       assertFreshScanIfRequired(requestedRepoId, scanStatus, Boolean(require_fresh));
-      const allFindings = storage.listFindings(requestedRepoId);
-      const filteredFindings = allFindings.filter((finding) =>
-        (!requestedStatus || finding.status === requestedStatus) &&
-        (!requestedSeverity || finding.severity === requestedSeverity) &&
-        (!requestedDiffStatus || finding.diff_status === requestedDiffStatus) &&
-        (!requestedConventionId || finding.convention_id === requestedConventionId) &&
-        (!requestedPath || findingMatchesPath(finding, requestedPath))
-      );
-      const orderedFindings = orderFindingsForReview(filteredFindings);
-      const findings = paginateFindings(orderedFindings, requestedLimit, requestedOffset);
+      const readModel = buildFindingsReadModel({
+        findings: storage.listFindings(requestedRepoId),
+        filters: {
+          status: requestedStatus,
+          severity: requestedSeverity,
+          diff_status: requestedDiffStatus,
+          convention_id: requestedConventionId,
+          path: requestedPath
+        },
+        limit: requestedLimit,
+        offset: requestedOffset
+      });
       return {
         response_schema: "drift.findings.list.v1",
         repo_id: requestedRepoId,
@@ -312,19 +418,60 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         }),
         policy,
         governance: preflightGovernance(),
-        filters: {
-          status: requestedStatus ?? null,
-          severity: requestedSeverity ?? null,
-          diff_status: requestedDiffStatus ?? null,
-          convention_id: requestedConventionId ?? null,
-          path: requestedPath ?? null
-        },
+        filters: readModel.filters,
         scan_status: scanStatus,
         freshness_requirement: freshnessRequirement(Boolean(require_fresh), scanStatus),
-        summary: findingsSummary(allFindings, filteredFindings),
-        pagination: paginationSummary(filteredFindings.length, findings.length, requestedLimit, requestedOffset),
-        review_items: findings.map(preflightFinding),
-        findings
+        summary: readModel.summary,
+        pagination: readModel.pagination,
+        review_items: readModel.review_items,
+        findings: readModel.findings
+      };
+    }),
+
+    get_required_check_executions: ({ repo_id, command, scan_id, repo_contract_id, limit, offset }) => withStorage(options, (storage) => {
+      const requestedRepoId = requiredMcpString(repo_id, "repo_id");
+      const requestedCommand = optionalMcpString(command, "command");
+      const requestedScanId = optionalMcpString(scan_id, "scan_id");
+      const requestedRepoContractId = optionalMcpString(repo_contract_id, "repo_contract_id");
+      const requestedLimit = optionalMcpPositiveInteger(limit, "limit") ?? 50;
+      const requestedOffset = optionalMcpNonNegativeInteger(offset, "offset") ?? 0;
+      const { contract, policy } = requiredAuthorizedMcpContract(storage, requestedRepoId, "log");
+      const executions = storage.listRequiredCheckExecutions(requestedRepoId, {
+        command: requestedCommand,
+        scan_id: requestedScanId,
+        repo_contract_id: requestedRepoContractId
+      });
+      const page = executions.slice(requestedOffset, requestedOffset + requestedLimit)
+        .map(redactRequiredCheckExecution);
+      const latestByCommand = new Map<string, (typeof executions)[number]>();
+      for (const execution of executions) {
+        if (!latestByCommand.has(execution.command)) {
+          latestByCommand.set(execution.command, execution);
+        }
+      }
+      const latestExecutions = [...latestByCommand.values()];
+      const redactedLatestExecutions = latestExecutions.map(redactRequiredCheckExecution);
+      return {
+        response_schema: "drift.required_check_executions.v1",
+        repo_id: requestedRepoId,
+        policy,
+        governance: preflightGovernance(),
+        filters: {
+          command: requestedCommand ?? null,
+          scan_id: requestedScanId ?? null,
+          repo_contract_id: requestedRepoContractId ?? null
+        },
+        summary: {
+          repo_contract_id: contract.id,
+          total_count: executions.length,
+          returned_count: page.length,
+          limit: requestedLimit,
+          offset: requestedOffset,
+          latest_passed_count: latestExecutions.filter((execution) => execution.status === "passed").length,
+          latest_failed_count: latestExecutions.filter((execution) => execution.status !== "passed").length
+        },
+        latest_by_command: redactedLatestExecutions,
+        executions: page
       };
     }),
 
@@ -339,9 +486,11 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       withStorage(options, (storage) => {
         const requestedRepoId = requiredMcpString(repo_id, "repo_id");
         const requestedPath = requiredRepoRelativeMcpPath(path);
-        requiredMcpRepo(storage, requestedRepoId);
-        const contract = requiredContract(storage.getRepoContract(requestedRepoId), requestedRepoId);
         const requestedSurface = validatePolicySurface(surface);
+        const { contract, ready: contractReady } = mcpContractOrDefault(
+          storage,
+          requestedRepoId
+        );
         const request = {
           path: requestedPath,
           surface: requestedSurface,
@@ -351,6 +500,12 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         };
         const scanStatus = scanStatusPayload(storage, requestedRepoId);
         assertFreshScanIfRequired(requestedRepoId, scanStatus, Boolean(require_fresh));
+        const readiness = readinessForStoredScan(
+          storage,
+          requestedRepoId,
+          scanStatus.latest_scan?.id ?? null,
+          "allowed_context"
+        );
         const freshness = freshnessRequirement(Boolean(require_fresh), scanStatus);
         const fileContext = policyFileContext(storage, requestedRepoId, requestedPath, contract);
         const decision = authorizeContextExport(contract, requestedSurface, {
@@ -358,11 +513,18 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
           requested_snippet_chars,
           request_full_file_content
         });
+        const contextPolicy = createContextPolicyMatrix(contract, decision);
         return {
           response_schema: "drift.allowed-context.v1",
           repo_id: requestedRepoId,
           path: requestedPath,
           request,
+          contract: {
+            ready: contractReady,
+            id: contractReady ? contract.id : null,
+            source: contractReady ? "accepted_contract" : "default_local_policy"
+          },
+          readiness,
           governance: preflightGovernance(),
           scan_status: scanStatus,
           freshness_requirement: freshness,
@@ -379,6 +541,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
             deniedGlobCount: contract.context_egress.denied_globs.length
           }),
           decision,
+          context_policy: contextPolicy,
           next_commands: policyContextNextCommands(requestedRepoId, requestedPath, decision)
         };
       })
@@ -567,12 +730,30 @@ function mcpHelpText(): string {
 
 function withStorage<T>(options: DriftMcpOptions, fn: (storage: ReturnType<typeof openDriftStorage>) => T): T {
   const storage = openDriftStorage({ databasePath: options.databasePath });
-  storage.migrate();
   try {
+    assertMcpReadOnlySchemaReady(storage);
     return fn(storage);
   } finally {
     storage.close();
   }
+}
+
+function assertMcpReadOnlySchemaReady(storage: ReturnType<typeof openDriftStorage>): void {
+  const applied = storage.getAppliedMigrations();
+  const expected = MIGRATIONS.map((migration) => migration.id);
+  const unknown = applied.filter((migrationId) => !expected.includes(migrationId));
+  if (unknown.length > 0) {
+    throw new Error(`Drift read-only MCP database has unsupported migrations: ${unknown.join(", ")}.`);
+  }
+  const missing = expected.filter((migrationId) => !applied.includes(migrationId));
+  if (missing.length > 0) {
+    throw new Error(`Drift read-only MCP database is not migrated; run the Drift CLI migration/scan path first. Missing migrations: ${missing.join(", ")}.`);
+  }
+}
+
+function redactRequiredCheckExecution(execution: RequiredCheckExecution): Omit<RequiredCheckExecution, "stdout_preview" | "stderr_preview"> {
+  const { stdout_preview: _stdoutPreview, stderr_preview: _stderrPreview, ...redacted } = execution;
+  return redacted;
 }
 
 function response(id: JsonRpcRequest["id"], result: unknown): JsonRpcResponse {
@@ -840,6 +1021,18 @@ function authorizedMcpContractOrDefault(
   repoId: string,
   surface: PolicyDecision["surface"] = "mcp"
 ): { contract: RepoContract; policy: PolicyDecision; ready: boolean } {
+  const { contract, ready } = mcpContractOrDefault(storage, repoId);
+  const policy = authorizeContextExport(contract, surface);
+  if (!policy.allowed) {
+    throw new Error(`Policy denied MCP output: ${policy.reason}`);
+  }
+  return { contract, policy, ready };
+}
+
+function mcpContractOrDefault(
+  storage: ReturnType<typeof openDriftStorage>,
+  repoId: string
+): { contract: RepoContract; ready: boolean } {
   const repo = requiredMcpRepoRecord(storage, repoId);
   const storedContract = storage.getRepoContract(repoId);
   const contract = storedContract ?? {
@@ -863,11 +1056,7 @@ function authorizedMcpContractOrDefault(
     },
     agent_permissions: []
   };
-  const policy = authorizeContextExport(contract, surface);
-  if (!policy.allowed) {
-    throw new Error(`Policy denied MCP output: ${policy.reason}`);
-  }
-  return { contract, policy, ready: Boolean(storedContract) };
+  return { contract, ready: Boolean(storedContract) };
 }
 
 function requiredMcpRepo(storage: ReturnType<typeof openDriftStorage>, repoId: string): void {
@@ -904,6 +1093,11 @@ function scanStatusPayload(
   ).length;
   const snapshots = latestScan ? storage.listFileSnapshots(repoId, latestScan.id) : [];
   const scanFileChanges = latestScan ? storage.listScanFileChanges(repoId, latestScan.id) : [];
+  const parserGaps = latestScan ? storage.listParserGaps(repoId, latestScan.id) : [];
+  const capabilityReport = latestScan
+    ? storage.getScanCapabilityReport(repoId, latestScan.id) ?? null
+    : null;
+  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "scan_status", parserGaps);
   const repoRootMissing = !existsSync(repo.root_path);
   const currentBranch = repoRootMissing
     ? "unknown"
@@ -916,7 +1110,7 @@ function scanStatusPayload(
         ...(repoRootMissing ? ["repo_root_missing"] : []),
         ...scanInvalidationReasons(latestScan, { currentBranch, currentResolverInputFingerprint })
       ]
-    : [];
+    : ["scan_missing"];
   const changes = latestScan
     ? repoRootMissing
       ? {
@@ -960,8 +1154,76 @@ function scanStatusPayload(
     stale,
     invalidation_reasons: invalidationReasons,
     changes,
+    parser_gaps: parserGapSummary(parserGaps),
+    readiness,
+    capability_report: capabilityReport,
+    machine_contract_versions: currentMachineContractVersions(latestScan?.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands
+  };
+}
+
+function currentMachineContractVersions(
+  adapterVersions: Record<string, string> = {
+    typescript: DRIFT_TYPESCRIPT_ADAPTER_VERSION,
+    resolver: DRIFT_RESOLVER_VERSION
+  }
+): MachineContractVersions {
+  return {
+    schema_version: "drift.machine_contract_versions.v1",
+    cli_version: DRIFT_CLI_VERSION,
+    core_version: DRIFT_CORE_VERSION,
+    storage_schema_version: MIGRATIONS.length,
+    contract_schema_version: DRIFT_CONTRACT_SCHEMA_VERSION,
+    engine_contract_versions: {
+      scan_request: ENGINE_SCAN_REQUEST_SCHEMA_VERSION,
+      scan_result: ENGINE_SCAN_RESULT_SCHEMA_VERSION,
+      check_request: ENGINE_CHECK_REQUEST_SCHEMA_VERSION,
+      check_result: ENGINE_CHECK_RESULT_SCHEMA_VERSION,
+      candidates_result: ENGINE_CANDIDATES_RESULT_SCHEMA_VERSION,
+      stream_event: ENGINE_STREAM_EVENT_SCHEMA_VERSION
+    },
+    factgraph_schema_version: FACTGRAPH_SCHEMA_VERSION,
+    scanner_version: DRIFT_SCANNER_VERSION,
+    rule_engine_version: DRIFT_RULE_ENGINE_VERSION,
+    adapter_versions: adapterVersions
+  };
+}
+
+function readinessForStoredScan(
+  storage: ReturnType<typeof openDriftStorage>,
+  repoId: string,
+  scanId: string | null,
+  surface: DriftReadinessSurface,
+  parserGaps: ParserGap[] = scanId ? storage.listParserGaps(repoId, scanId) : []
+) {
+  const graphAvailable = Boolean(scanId && storage.getFactGraphArtifact(repoId, scanId));
+  const requiredCapabilities = scanId ? ["fact_graph"] : ["fact_graph", "scan_manifest"];
+  const missingCapabilities = graphAvailable
+    ? []
+    : requiredCapabilities;
+  return buildReadiness({
+    repo_id: repoId,
+    scan_id: scanId,
+    surface,
+    graph_available: graphAvailable,
+    graph_complete: graphAvailable,
+    parser_gaps: parserGaps,
+    completeness_reasons: graphAvailable ? [] : scanId ? ["graph_missing"] : ["scan_missing", "graph_missing"],
+    required_capabilities: requiredCapabilities,
+    missing_capabilities: missingCapabilities
+  });
+}
+
+function parserGapSummary(gaps: ParserGap[]): {
+  total_count: number;
+  by_kind: Record<ParserGapKind, number>;
+  confidence_impact: Record<ParserGapConfidenceImpact, number>;
+} {
+  return {
+    total_count: gaps.length,
+    by_kind: countBy(gaps, (gap) => gap.kind) as Record<ParserGapKind, number>,
+    confidence_impact: countBy(gaps, (gap) => gap.confidence_impact) as Record<ParserGapConfidenceImpact, number>
   };
 }
 
@@ -1149,6 +1411,8 @@ function policyFileContext(
   const findings = storage.listFindings(repoId);
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
   const readModel = buildRepoMapReadModel({
+    repoId,
+    scanId: latestScan?.id ?? null,
     graphFiles: graphMap?.files ?? [],
     factFiles: fallbackFactRepoMapFiles(snapshots, facts),
     contract,
@@ -1199,6 +1463,8 @@ function repoMapPayload(
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
   const offset = options.offset ?? 0;
   const readModel = buildRepoMapReadModel({
+    repoId,
+    scanId: latestScan?.id ?? null,
     graphFiles: graphMap?.files ?? [],
     factFiles: fallbackFactRepoMapFiles(snapshots, facts),
     contract,
@@ -1212,6 +1478,7 @@ function repoMapPayload(
   });
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
+  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "repo_map");
   return {
     response_schema: "drift.repo.map.v1",
     repo_id: repoId,
@@ -1224,6 +1491,7 @@ function repoMapPayload(
       requireFresh: Boolean(options.requireFresh)
     }),
     policy,
+    readiness,
     governance: preflightGovernance(),
     latest_scan: latestScan ?? null,
     scan_fingerprint: latestScan ? scanFingerprint(latestScan, snapshots) : null,
@@ -1234,6 +1502,7 @@ function repoMapPayload(
     },
     summary: readModel.summary,
     impact_summary: readModel.impact_summary,
+    topology: readModel.topology,
     pagination: readModel.pagination,
     freshness_requirement: freshnessRequirement(Boolean(options.requireFresh), scanStatus),
     files: readModel.listed_files,
@@ -1249,26 +1518,6 @@ function repoMapPayload(
       `drift scan status --repo ${repoId} --json`
     ]
   };
-}
-
-function findingMatchesPath(finding: Finding, path: string): boolean {
-  return finding.evidence_refs.some((ref) =>
-    ref.file_path === path ||
-    matchesPolicyGlob(ref.file_path, path)
-  );
-}
-
-function orderFindingsForReview(findings: Finding[]): Finding[] {
-  return [...findings].sort((left, right) =>
-    left.created_at.localeCompare(right.created_at) ||
-    left.id.localeCompare(right.id)
-  );
-}
-
-function paginateFindings(findings: Finding[], limit: number | undefined, offset: number): Finding[] {
-  return limit === undefined
-    ? findings.slice(offset)
-    : findings.slice(offset, offset + limit);
 }
 
 function orderAcceptedConventionsForReview(conventions: AcceptedConvention[]): AcceptedConvention[] {
@@ -1308,6 +1557,73 @@ function paginationSummary(total: number, returnedCount: number, limit: number |
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))].sort();
+}
+
+function uniqueFileRoles(relevantFiles: Array<{ roles: string[] }>): FileRole[] {
+  return uniqueSorted(relevantFiles.flatMap((file) => file.roles)).filter(isFileRole);
+}
+
+function isFileRole(value: string): value is FileRole {
+  return FileRoleSchema.safeParse(value).success;
+}
+
+function graphNodeIdsForPreflight(
+  graphContext: ReturnType<typeof graphPreflightContext>,
+  relevantFiles: Array<{ path: string }>
+): string[] {
+  return uniqueSorted([
+    ...relevantFiles.map((file) => `file:${file.path}`),
+    ...graphContext.route_flows.flatMap((flow) => [
+      flow.route_module_id,
+      ...flow.route_handler_symbol_ids,
+      ...flow.service_module_ids,
+      ...flow.data_access_module_ids,
+      ...flow.module_path
+    ]),
+    ...graphContext.reachable_data_access.flatMap((access) => [
+      ...access.data_access_module_ids,
+      ...access.module_path,
+      ...access.data_operations.flatMap((operation) => [
+        operation.operation_node_id,
+        operation.data_store_node_id
+      ])
+    ])
+  ].filter((id): id is string => Boolean(id)));
+}
+
+function graphConfidence(graphAvailable: boolean, parserGapCount: number): number {
+  if (!graphAvailable) {
+    return 0;
+  }
+  return parserGapCount > 0 ? 0.82 : 1;
+}
+
+function graphConfidenceReasons(graphAvailable: boolean, parserGapCount: number): string[] {
+  const reasons = [];
+  if (!graphAvailable) {
+    reasons.push("graph_unavailable");
+  }
+  if (parserGapCount > 0) {
+    reasons.push("parser_gaps_present");
+  }
+  return reasons;
+}
+
+function routeFlowsForChangeImpact(
+  graphContext: ReturnType<typeof graphPreflightContext>
+): ChangeImpactRouteFlow[] {
+  return graphContext.route_flows.map((flow) => {
+    const route = [flow.method, flow.route_pattern].filter(Boolean).join(" ");
+    return {
+      route: route || flow.path || "unknown route",
+      service_file: flow.module_path.find((path) => path.includes("service")),
+      data_access_file: flow.module_path.find((path) => path.includes("repositories") || path.includes("data") || path.includes("db")),
+      data_operation: graphContext.reachable_data_access
+        .flatMap((access) => access.data_operations)
+        .map((operation) => [operation.receiver_name, operation.operation_name].filter(Boolean).join("."))
+        .find(Boolean)
+    };
+  });
 }
 
 function latestIndexedScan(scans: ScanManifest[]): ScanManifest | undefined {
@@ -1492,10 +1808,6 @@ function fileContentHash(absolutePath: string): string {
   return createHash("sha256").update(readFileSync(absolutePath)).digest("hex");
 }
 
-function contractFingerprint(contract: RepoContract): string {
-  return createHash("sha256").update(canonicalRepoContractJson(contract)).digest("hex");
-}
-
 function scanFingerprint(manifest: ScanManifest, snapshots: FileSnapshot[]): string {
   return createHash("sha256").update(canonicalScanStateJson({ manifest, snapshots })).digest("hex");
 }
@@ -1648,12 +1960,34 @@ function requiredChecksForFiles(
   contract: RepoContract,
   relevantFiles: RelevantFile[]
 ): PreparedRequiredCheck[] {
-  return contract.required_checks.flatMap((check) => {
+  return allRequiredChecks(contract).flatMap((check) => {
     const matchedFiles = relevantFiles
       .filter((file) => requiredCheckMatchesFile(check, file.path, file.roles))
       .map((file) => file.path);
     return matchedFiles.length > 0 ? [{ ...check, matched_files: matchedFiles }] : [];
   });
+}
+
+function allRequiredChecks(contract: RepoContract): RepoContract["required_checks"] {
+  return [
+    ...contract.required_checks,
+    ...(contract.agent_contracts ?? []).flatMap((agentContract) => {
+      if (agentContract.kind !== "required_change_checks") {
+        return [];
+      }
+      return agentContract.rules.flatMap((rule) =>
+        rule.required_checks.map((check) => ({
+          command: check.command,
+          applies_to: {
+            path_globs: rule.applies_to.path_globs ?? [],
+            file_roles: rule.applies_to.file_roles ?? []
+          },
+          reason: check.reason,
+          source: "contract" as const
+        }))
+      );
+    })
+  ];
 }
 
 function requiredChecksFromGraphRisk(input: {
@@ -1881,24 +2215,6 @@ function scopeMatchesFile(
   return pathMatches && roleMatches;
 }
 
-function contractSummary(contract: RepoContract): {
-  convention_count: number;
-  risky_area_count: number;
-  required_check_count: number;
-  safe_command_count: number;
-  waiver_count: number;
-  rejected_inference_count: number;
-} {
-  return {
-    convention_count: contract.conventions.length,
-    risky_area_count: contract.risky_areas.length,
-    required_check_count: contract.required_checks.length,
-    safe_command_count: contract.safe_commands.length,
-    waiver_count: contract.waivers.length,
-    rejected_inference_count: contract.rejected_inferences.length
-  };
-}
-
 function conventionSummary(
   allConventions: AcceptedConvention[],
   filteredConventions: AcceptedConvention[],
@@ -2071,34 +2387,6 @@ function instructionForConvention(convention: AcceptedConvention): string {
   return `${convention.statement} Follow its scope, matcher, and exceptions.`;
 }
 
-function preflightFinding(finding: Finding): Pick<
-  Finding,
-  "id" | "convention_id" | "title" | "severity" | "status" | "diff_status" | "enforcement_result"
-> & {
-  evidence_ref_count: number;
-  first_evidence: Pick<Finding["evidence_refs"][number], "file_path" | "start_line" | "import_source" | "symbol"> | null;
-} {
-  const firstEvidence = finding.evidence_refs[0] ?? null;
-  return {
-    id: finding.id,
-    convention_id: finding.convention_id,
-    title: finding.title,
-    severity: finding.severity,
-    status: finding.status,
-    diff_status: finding.diff_status,
-    enforcement_result: finding.enforcement_result,
-    evidence_ref_count: finding.evidence_refs.length,
-    first_evidence: firstEvidence
-      ? {
-          file_path: firstEvidence.file_path,
-          start_line: firstEvidence.start_line,
-          import_source: firstEvidence.import_source,
-          symbol: firstEvidence.symbol
-        }
-      : null
-  };
-}
-
 function tokenizeTask(task: string): Set<string> {
   return new Set(
     task
@@ -2144,22 +2432,6 @@ function mcpAgentEnvelope(input: {
 function isApiRoutePath(filePath: string): boolean {
   return /(^|\/)(app|pages)\/api\/.+\.(ts|tsx|js|jsx)$/.test(filePath) ||
     /(^|\/)route\.(ts|tsx|js|jsx)$/.test(filePath);
-}
-
-function findingsSummary(allFindings: Finding[], filteredFindings: Finding[]): {
-  total_count: number;
-  filtered_count: number;
-  by_status: Partial<Record<FindingStatus, number>>;
-  by_severity: Partial<Record<Severity, number>>;
-  by_diff_status: Partial<Record<FindingDiffStatus, number>>;
-} {
-  return {
-    total_count: allFindings.length,
-    filtered_count: filteredFindings.length,
-    by_status: countBy(allFindings, (finding) => finding.status),
-    by_severity: countBy(allFindings, (finding) => finding.severity),
-    by_diff_status: countBy(allFindings, (finding) => finding.diff_status)
-  };
 }
 
 function validateFindingStatus(status: FindingStatus | undefined): FindingStatus | undefined {

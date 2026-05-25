@@ -5,7 +5,7 @@ import { optionalChecksKindFlag,optionalNonNegativeIntegerFlag,optionalPositiveI
 import { resolveRepoId } from "../args/repo-flags.js";
 import { preflightGovernance } from "../domain/governance.js";
 import { paginationSummary } from "../domain/pagination.js";
-import { requiredChecksForPath } from "../domain/preflight.js";
+import { allRequiredChecks,requiredChecksForPath } from "../domain/preflight.js";
 import { requiredRepoContract } from "../domain/repo-paths.js";
 import { formatChecksText } from "../formatters/checks.js";
 
@@ -24,7 +24,7 @@ export function listChecks(storage: SqliteDriftStorage, parsed: ParsedArgs): Com
     ? []
     : requestedPath
       ? requiredChecksForPath(contract, requestedPath)
-      : contract.required_checks.map((check) => ({ ...check, matched_files: [] }));
+      : allRequiredChecks(contract).map((check) => ({ ...check, matched_files: [] }));
   const safeCommands = kind === "required" ? [] : contract.safe_commands;
   const checks = [
     ...requiredChecks.map((check) => ({ type: "required" as const, command: check.command, check })),
