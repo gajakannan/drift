@@ -2,6 +2,7 @@ export type ConventionKind =
   | "api_route_no_direct_data_access"
   | "api_route_requires_service_delegation"
   | "api_route_requires_auth_helper"
+  | "middleware_must_cover_routes"
   | "test_expected_for_changed_module"
   | "custom_briefing"
   | AgentContractKind;
@@ -256,7 +257,10 @@ export type FactKind =
   | "test_declared"
   | "auth_guard_called"
   | "route_returns_response"
-  | "callback_boundary_detected";
+  | "callback_boundary_detected"
+  | "middleware_declared"
+  | "middleware_matcher_declared"
+  | "middleware_protects_route";
 
 export type FactEvidenceLevel = "path" | "text" | "ast" | "graph" | "heuristic";
 export type FactResolutionStatus = "resolved" | "unresolved" | "partial" | "unsupported";
@@ -626,6 +630,7 @@ export interface AcceptedConvention {
   rationale?: string;
   scope: ConventionScope;
   matcher: ConventionMatcher;
+  requires?: Record<string, unknown>;
   severity: Severity;
   enforcement_mode: EnforcementMode;
   enforcement_capability: EnforcementCapability;

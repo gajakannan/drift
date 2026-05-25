@@ -32,15 +32,23 @@ pub use rules::{
 pub use security_capabilities::{
     SecurityCapabilityStatus, SecurityScanCapability, security_capabilities,
 };
+pub use security_control_flow::{
+    MatchedMiddleware, MiddlewareMismatch, static_middleware_coverage,
+};
 pub use security_facts::extract_security_facts;
-pub use security_patterns::{AcceptedAuthHelper, AuthGuardBehavior};
+pub use security_patterns::{
+    AcceptedAuthHelper, AuthGuardBehavior, dynamic_middleware_matcher_line,
+};
 pub use security_proof::{
-    AuthBoundaryProof, SecurityBoundaryProof, SecurityParserGap, SecurityProofResult,
-    SecurityProofStatus, build_auth_boundary_proof,
+    AuthBoundaryProof, MiddlewareBoundaryProof, RouteSecurityBoundaryProof, SecurityBoundaryProof,
+    SecurityParserGap, SecurityProofResult, SecurityProofStatus, TrustedGuardCallProof,
+    UndominatedSinkProof, build_auth_boundary_proof, build_auth_boundary_proofs_for_file,
+    build_middleware_coverage_proof,
 };
 pub use security_rules::{
-    SecurityAuthContract, SecurityEnforcementMode, SecurityFinding, SecurityFindingResult,
-    evaluate_api_route_requires_auth_helper,
+    SecurityAuthContract, SecurityContractCapability, SecurityEnforcementMode, SecurityFinding,
+    SecurityFindingResult, SecurityMiddlewareContract, evaluate_api_route_requires_auth_helper,
+    evaluate_api_route_requires_auth_helper_with_middleware, evaluate_middleware_must_cover_routes,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

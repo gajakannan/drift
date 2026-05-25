@@ -94,7 +94,10 @@ export const EngineFactSchema = z.object({
     "test_declared",
     "auth_guard_called",
     "route_returns_response",
-    "callback_boundary_detected"
+    "callback_boundary_detected",
+    "middleware_declared",
+    "middleware_matcher_declared",
+    "middleware_protects_route"
   ]),
   file_path: z.string().min(1),
   name: z.string().min(1),
@@ -148,6 +151,10 @@ const EngineConventionSchema = z.object({
   rule_version: z.string().min(1).optional(),
   kind: z.string().min(1),
   matcher: z.record(z.unknown()),
+  scope: z.record(z.unknown()).optional(),
+  requires: z.record(z.unknown()).optional(),
+  exceptions: z.array(z.record(z.unknown())).optional(),
+  governance: z.record(z.unknown()).optional(),
   severity: z.enum(["info", "warning", "error"]),
   enforcement_mode: z.enum(["off", "brief", "warn", "block"]),
   enforcement_capability: z.enum(["briefing_only", "heuristic_check", "deterministic_check"])
@@ -284,10 +291,33 @@ export const EngineFindingSchema = z.object({
 const EngineSecurityMissingProofCodeSchema = z.enum([
   "missing_auth_guard",
   "auth_guard_not_dominating_sink",
+  "middleware_not_covering_route",
+  "middleware_dynamic_matcher",
   "unsupported_callback_boundary",
+  "unsupported_dynamic_control_flow",
   "route_binding_unresolved",
   "handler_unresolved"
 ]);
+
+const EngineSecurityParserGapSchema = z.object({
+  parser_gap_id: z.string().min(1),
+  capability: z.string().min(1),
+  code: z.enum([
+    "route_binding_unresolved",
+    "handler_unresolved",
+    "unsupported_dynamic_control_flow",
+    "unsupported_dynamic_middleware_matcher",
+    "unsupported_callback_boundary"
+  ]),
+  file_path: z.string().min(1),
+  start_line: z.number().int().positive().optional(),
+  end_line: z.number().int().positive().optional(),
+  reason: z.string().min(1),
+  affected_contract_kinds: z.array(z.string().min(1)),
+  affected_route_ids: z.array(z.string().min(1)),
+  missing_proof_ids: z.array(z.string().min(1)),
+  blocks_enforcement: z.boolean()
+});
 
 const EngineSecurityBoundaryProofSchema = z.object({
   proof_id: z.string().min(1),
@@ -338,6 +368,26 @@ const EngineSecurityBoundaryProofSchema = z.object({
       fact_ids: z.array(z.string().min(1))
     }))
   }),
+  middleware: z.object({
+    required: z.boolean(),
+    proven: z.boolean(),
+    matched_middleware: z.array(z.object({
+      middleware_id: z.string().min(1),
+      matcher_fact_id: z.string().min(1),
+      protects_route_edge_id: z.string().min(1),
+      protection_kind: z.enum(["auth", "csrf", "rate_limit", "cors", "unknown"])
+    })),
+    mismatches: z.array(z.object({
+      middleware_id: z.string().min(1).optional(),
+      reason: z.enum(["path_not_matched", "method_not_matched", "dynamic_matcher", "unknown_framework"]),
+      parser_gap_id: z.string().min(1).optional()
+    }))
+  }).optional().default({
+    required: false,
+    proven: false,
+    matched_middleware: [],
+    mismatches: []
+  }),
   missing_proof: z.array(z.object({
     id: z.string().min(1),
     capability: z.string().min(1),
@@ -346,7 +396,7 @@ const EngineSecurityBoundaryProofSchema = z.object({
     fact_ids: z.array(z.string().min(1)),
     graph_edge_ids: z.array(z.string().min(1))
   })),
-  parser_gaps: z.array(z.record(z.unknown())),
+  parser_gaps: z.array(EngineSecurityParserGapSchema),
   result: z.object({
     proof_status: z.enum(["proven", "violated", "missing_proof", "parser_gap", "advisory_only"]),
     enforcement_result: z.enum(["pass", "brief", "warn", "block"]),

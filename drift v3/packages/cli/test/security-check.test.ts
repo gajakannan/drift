@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach } from "vitest";
 import { openDriftStorage } from "@drift/storage";
 import { runCheck } from "../src/check/run-check.js";
-import { runEngineCheck } from "../src/engine/engine-check.js";
+import { engineCheckRequest, runEngineCheck } from "../src/engine/engine-check.js";
 import { buildSecurityCheckJson } from "../src/check/security-check.js";
 
 const tempDirs: string[] = [];
@@ -50,9 +50,24 @@ describe("security check bridge", () => {
   });
 
   it("receives SecurityBoundaryProof.auth from engine-owned auth checks", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-security-auth-bridge-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const routePath = "app/api/projects/route.ts";
+    await mkdir(join(repoRoot, "app/api/projects"), { recursive: true });
+    await writeFile(join(repoRoot, routePath), [
+      "const db = { project: { findMany: async () => [] } };",
+      "",
+      "export async function GET() {",
+      "  const projects = await db.project.findMany();",
+      "  return Response.json(projects);",
+      "}",
+      ""
+    ].join("\n"));
+
     const result = await runEngineCheck({
       repoId: "repo_abc",
-      repoRoot: process.cwd(),
+      repoRoot,
       scanId: "scan_security_auth",
       snapshots: [{
         repo_id: "repo_abc",
@@ -112,6 +127,69 @@ describe("security check bridge", () => {
     });
   });
 
+  it("sends canonical security contract fields to the Rust check request", () => {
+    const request = engineCheckRequest({
+      repoId: "repo_abc",
+      repoRoot: process.cwd(),
+      scanId: "scan_security_auth",
+      contractId: "contract_abc",
+      contractSchemaVersion: 2,
+      contractWaivers: [{
+        id: "waiver_auth_projects",
+        reason: "accepted temporary drift",
+        path_globs: ["app/api/projects/route.ts"],
+        created_by: "test",
+        created_at: "2026-05-25T00:00:00.000Z"
+      }],
+      snapshots: [],
+      facts: [],
+      conventions: [{
+        id: "security_api_auth_require_user",
+        repo_id: "repo_abc",
+        contract_id: "contract_abc",
+        kind: "api_route_requires_auth_helper",
+        statement: "API routes require accepted auth helper dominance.",
+        scope: { path_globs: ["app/api/**/route.ts"], file_roles: ["api_route"] },
+        matcher: {
+          kind: "api_route_requires_auth_helper",
+          applies_to_file_roles: ["api_route"]
+        },
+        requires: {
+          auth_helpers: [{ guard_id: "auth:requireUser", symbol: "requireUser" }]
+        },
+        severity: "error",
+        enforcement_mode: "block",
+        enforcement_capability: "deterministic_check",
+        exceptions: [{
+          id: "except_public",
+          reason: "public endpoint",
+          path_globs: ["app/api/public/route.ts"],
+          created_by: "test",
+          created_at: "2026-05-25T00:00:00.000Z"
+        }],
+        evidence_refs: [],
+        counterexample_refs: [],
+        accepted_by: "test",
+        accepted_at: "2026-05-25T00:00:00.000Z",
+        updated_at: "2026-05-25T00:00:00.000Z"
+      }],
+      baseline: [],
+      diff: { files: [], deletedFiles: [] },
+      scope: "changed-files"
+    });
+
+    expect(request.contract.contract_schema_version).toBe(2);
+    expect(request.contract.waivers).toHaveLength(1);
+    expect(request.contract.conventions[0]).toMatchObject({
+      scope: { path_globs: ["app/api/**/route.ts"], file_roles: ["api_route"] },
+      requires: {
+        auth_helpers: [{ guard_id: "auth:requireUser", symbol: "requireUser" }]
+      },
+      exceptions: [expect.objectContaining({ id: "except_public" })],
+      governance: expect.objectContaining({ accepted_by: "test" })
+    });
+  });
+
   it("returns SecurityBoundaryProof.auth in drift check JSON output", async () => {
     const { databasePath, repoRoot, diffPath } = await seedAuthCheckDatabase();
     const storage = openDriftStorage({ databasePath });
@@ -147,6 +225,27 @@ describe("security check bridge", () => {
     expect(JSON.stringify(payload)).not.toContain("requireUser()");
     expect(JSON.stringify(payload)).not.toContain("await db.project.findMany()");
     expect(repoRoot).toContain("drift-security-auth-check-");
+  });
+
+  it("returns middleware coverage proof in drift check JSON output", () => {
+    const payload = buildSecurityCheckJson({
+      repo_id: "repo_abc",
+      scope: "changed-files",
+      changed_files: ["app/api/projects/route.ts"],
+      proofs: [middlewareProof("proof_middleware", "app/api/projects/route.ts")],
+      findings: []
+    });
+
+    expect(payload.security_boundary_proofs[0]?.middleware).toMatchObject({
+      required: true,
+      proven: true,
+      matched_middleware: [expect.objectContaining({
+        middleware_id: "middleware:middleware.ts",
+        protection_kind: "auth"
+      })]
+    });
+    expect(payload.summary.middleware_coverage_proven_count).toBe(1);
+    expect(JSON.stringify(payload)).not.toContain("requireUser()");
   });
 });
 
@@ -208,6 +307,59 @@ function securityProof(proofId: string, filePath: string, findingId: string) {
       enforcement_result: "block",
       can_block: true,
       finding_ids: [findingId]
+    }
+  } as const;
+}
+
+function middlewareProof(proofId: string, filePath: string) {
+  return {
+    proof_id: proofId,
+    proof_version: "security-boundary-proof/v1",
+    route: {
+      route_id: proofId.replace("proof", "route"),
+      file_path: filePath,
+      file_role: "api_route"
+    },
+    contracts: [{
+      contract_id: "security_middleware_api_coverage",
+      kind: "middleware_must_cover_routes",
+      enforcement_mode: "block",
+      capability: "deterministic_check",
+      matched: true
+    }],
+    capability_status: [{
+      name: "middleware_coverage",
+      status: "complete",
+      can_block: true,
+      parser_gap_ids: [],
+      missing_proof_ids: []
+    }],
+    auth: {
+      required: true,
+      proven: true,
+      proof_kind: "middleware_guard",
+      trusted_guard_calls: [],
+      dominated_sinks: [],
+      undominated_sinks: []
+    },
+    middleware: {
+      required: true,
+      proven: true,
+      matched_middleware: [{
+        middleware_id: "middleware:middleware.ts",
+        matcher_fact_id: "fact_middleware_matcher",
+        protects_route_edge_id: "edge_middleware_projects",
+        protection_kind: "auth"
+      }],
+      mismatches: []
+    },
+    missing_proof: [],
+    parser_gaps: [],
+    result: {
+      proof_status: "proven",
+      enforcement_result: "pass",
+      can_block: false,
+      finding_ids: []
     }
   } as const;
 }

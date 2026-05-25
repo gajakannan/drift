@@ -1,12 +1,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
     time::Instant,
 };
 
 use drift_engine::{
-    BaselineStatus, BaselineViolation, DiffFile, DiffScope, DirectDataAccessRule, EnforcementMode,
-    Fact, FactKind, FindingStatus, ParsedDiff, RuleFinding, Severity,
-    classify_findings_against_diff, materialize_direct_data_access_findings,
+    AcceptedAuthHelper, AuthGuardBehavior, BaselineStatus, BaselineViolation, DiffFile, DiffScope,
+    DirectDataAccessRule, EnforcementMode, Fact, FactKind, FindingStatus, ParsedDiff,
+    RouteSecurityBoundaryProof, RuleFinding, SecurityProofStatus, Severity,
+    build_auth_boundary_proofs_for_file, classify_findings_against_diff,
+    materialize_direct_data_access_findings,
 };
 use serde_json::json;
 
@@ -18,6 +22,7 @@ use crate::protocol::{
 
 pub fn check_repo(request: CheckRequest) -> CheckResult {
     let started = Instant::now();
+    let repo_root = request.repo.repo_root.clone();
     let mut completeness_reasons = check_limit_reasons(&request);
     completeness_reasons.extend(check_graph_completeness_reasons(&request));
     completeness_reasons.sort();
@@ -49,10 +54,22 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
             })
             .collect(),
     };
+    let _contract_metadata = (
+        &request.contract.contract_id,
+        &request.contract.contract_schema_version,
+        &request.contract.waivers,
+        &request.contract.exceptions,
+    );
 
     let mut findings = Vec::new();
     let mut security_boundary_proofs = Vec::new();
+    let mut required_capabilities = BTreeSet::from(["direct_data_access_check".to_string()]);
     for convention in request.contract.conventions {
+        let _convention_metadata = (
+            &convention.scope,
+            &convention.exceptions,
+            &convention.governance,
+        );
         if convention.enforcement_capability != "deterministic_check"
             || convention.enforcement_mode == "off"
         {
@@ -101,8 +118,14 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
                 &allowed_delegate_imports,
             )
         } else if convention.kind == "api_route_requires_auth_helper" {
+            required_capabilities.extend([
+                "security_facts".to_string(),
+                "auth_boundary_facts".to_string(),
+                "control_flow_guard_dominance".to_string(),
+            ]);
             let auth_result = security_auth_findings_and_proofs(
                 &facts,
+                repo_root.as_deref(),
                 &parsed_diff,
                 diff_scope,
                 &convention,
@@ -171,7 +194,12 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
     stats.graph_nodes = graph_node_count;
     stats.graph_edges = graph_edge_count;
     stats.truncated = !can_block;
-    stats.capabilities = capability_stats(&["direct_data_access_check"], &[]);
+    let required_capabilities_vec = required_capabilities.into_iter().collect::<Vec<_>>();
+    let required_capability_refs = required_capabilities_vec
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    stats.capabilities = capability_stats(&required_capability_refs, &[]);
     let diagnostics = completeness_reasons
         .iter()
         .take(request.limits.max_diagnostics)
@@ -198,7 +226,7 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
         completeness: vec![EngineCompleteness {
             scope: "repo".to_string(),
             complete: can_block,
-            required_capabilities: vec!["direct_data_access_check".to_string()],
+            required_capabilities: required_capabilities_vec,
             missing_capabilities: Vec::new(),
             truncated: !can_block,
             can_block,
@@ -468,18 +496,15 @@ struct SecurityAuthEvaluation {
 
 fn security_auth_findings_and_proofs(
     facts: &[Fact],
+    repo_root: Option<&str>,
     parsed_diff: &ParsedDiff,
     diff_scope: DiffScope,
     convention: &crate::protocol::CheckConvention,
     severity: Severity,
     enforcement_mode: EnforcementMode,
 ) -> SecurityAuthEvaluation {
-    let required_calls = convention
-        .matcher
-        .required_calls
-        .clone()
-        .unwrap_or_default();
-    if required_calls.is_empty() {
+    let accepted_auth_helpers = accepted_auth_helpers_for_convention(convention);
+    if accepted_auth_helpers.is_empty() {
         return SecurityAuthEvaluation {
             findings: Vec::new(),
             proofs: Vec::new(),
@@ -501,154 +526,280 @@ fn security_auth_findings_and_proofs(
     let mut proofs = Vec::new();
 
     for file_path in files {
-        let file_facts = facts
-            .iter()
-            .filter(|fact| fact.file_path == file_path)
-            .collect::<Vec<_>>();
-        let route = file_facts
-            .iter()
-            .find(|fact| fact.kind == FactKind::RouteDeclared)
-            .map(|fact| fact.name.as_str())
-            .unwrap_or("unknown");
-        let route_id = format!("route:{file_path}:{route}");
-        let guard_calls = file_facts
-            .iter()
-            .filter(|fact| {
-                fact.kind == FactKind::AuthGuardCalled
-                    || (fact.kind == FactKind::SymbolCalled && required_calls.contains(&fact.name))
-            })
-            .copied()
-            .collect::<Vec<_>>();
-        let sinks = file_facts
-            .iter()
-            .filter(|fact| {
-                matches!(
-                    fact.kind,
-                    FactKind::DataOperationDetected | FactKind::RouteReturnsResponse
-                )
-            })
-            .copied()
-            .collect::<Vec<_>>();
-        if sinks.is_empty() {
+        let Some(source) = read_repo_file(repo_root, &file_path) else {
             continue;
-        }
-
-        let first_guard_line = guard_calls.iter().map(|fact| fact.start_line).min();
-        let mut dominated_sinks = Vec::new();
-        let mut undominated_sinks = Vec::new();
-        for sink in &sinks {
-            let sink_kind = security_sink_kind(sink.kind);
-            let sink_id = format!("sink:{file_path}:{}:{}", sink.start_line, sink.name);
-            if first_guard_line.is_some_and(|line| line < sink.start_line) {
-                dominated_sinks.push(json!({
-                    "sink_id": sink_id,
-                    "sink_kind": sink_kind,
-                    "edge_id": format!("edge:auth-dominates:{file_path}:{}", sink.start_line)
-                }));
-            } else {
-                undominated_sinks.push(json!({
-                    "sink_id": sink_id,
-                    "sink_kind": sink_kind,
-                    "reason": match first_guard_line {
-                        Some(line) if line > sink.start_line => "guard_after_sink",
-                        _ => "no_guard_call",
-                    },
-                    "fact_ids": [security_fact_id(sink)]
-                }));
-            }
-        }
-
-        let proven = !sinks.is_empty() && undominated_sinks.is_empty();
-        let missing_proof_ids = if proven {
-            Vec::new()
-        } else {
-            vec![format!("missing_proof:{route_id}:auth")]
         };
-        let proof_id = format!("proof:{route_id}:auth");
-        let finding_fingerprint = stable_hash(&format!(
-            "{}:{}:missing_auth_guard:{}",
-            convention.id, route_id, sinks[0].start_line
-        ));
-        let finding_id = format!("finding_{}", &finding_fingerprint[..16]);
-        proofs.push(json!({
-            "proof_id": proof_id,
-            "proof_version": "security-boundary-proof/v1",
-            "route": {
-                "route_id": route_id,
-                "file_path": file_path,
-                "file_role": "api_route",
-                "handler_symbol": route
-            },
-            "contracts": [{
-                "contract_id": convention.id,
-                "kind": "api_route_requires_auth_helper",
-                "enforcement_mode": convention.enforcement_mode,
-                "capability": convention.enforcement_capability,
-                "matched": true
-            }],
-            "capability_status": [{
-                "name": "control_flow_guard_dominance",
-                "status": "partial",
-                "can_block": true,
-                "parser_gap_ids": [],
-                "missing_proof_ids": missing_proof_ids
-            }],
-            "auth": {
-                "required": true,
-                "proven": proven,
-                "proof_kind": if proven { "handler_guard" } else { "none" },
-                "trusted_guard_calls": guard_calls.iter().map(|guard| json!({
-                    "fact_id": security_fact_id(guard),
-                    "guard_id": guard.name,
-                    "symbol": guard.name,
-                    "start_line": guard.start_line,
-                    "end_line": guard.end_line
-                })).collect::<Vec<_>>(),
-                "dominated_sinks": dominated_sinks,
-                "undominated_sinks": undominated_sinks
-            },
-            "missing_proof": if proven {
-                Vec::<serde_json::Value>::new()
-            } else {
-                vec![json!({
-                    "id": missing_proof_ids[0],
-                    "capability": "control_flow_guard_dominance",
-                    "code": "missing_auth_guard",
-                    "blocks_enforcement": true,
-                    "fact_ids": [security_fact_id(sinks[0])],
-                    "graph_edge_ids": []
-                })]
-            },
-            "parser_gaps": [],
-            "result": {
-                "proof_status": if proven { "proven" } else { "missing_proof" },
-                "enforcement_result": if proven { "pass" } else { convention.enforcement_mode.as_str() },
-                "can_block": !proven,
-                "finding_ids": if proven { Vec::<String>::new() } else { vec![finding_id.clone()] }
-            }
-        }));
+        let route_proofs = match build_auth_boundary_proofs_for_file(
+            &file_path,
+            &source,
+            &accepted_auth_helpers,
+        ) {
+            Ok(route_proofs) => route_proofs,
+            Err(_) => continue,
+        };
 
-        if !proven {
-            findings.push(PendingFinding {
-                fingerprint: finding_fingerprint,
-                convention_id: convention.id.clone(),
-                rule_id: "api_route_requires_auth_helper".to_string(),
-                title: "API route missing required auth proof".to_string(),
-                message: "Accepted auth helper must dominate protected route sinks.".to_string(),
-                severity,
-                enforcement_result: enforcement_result_for_mode(enforcement_mode),
-                file_path: file_path.clone(),
-                import_name: "auth_guard".to_string(),
-                import_source: "missing_auth_guard".to_string(),
-                line: sinks[0].start_line,
-                evidence_id: format!("evidence_{}", &finding_id["finding_".len()..]),
-                legacy_fingerprints: Vec::new(),
-                related_node_ids: Vec::new(),
-            });
+        for route_proof in route_proofs {
+            let sink_line = first_sink_line_for_route(facts, &file_path, &route_proof).unwrap_or(1);
+            let missing_code = route_proof
+                .missing_proof_codes
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "missing_auth_guard".to_string());
+            let finding_fingerprint = stable_hash(&format!(
+                "{}:{}:{}:{}",
+                convention.id, route_proof.route_id, missing_code, sink_line
+            ));
+            let finding_id = format!("finding_{}", &finding_fingerprint[..16]);
+            proofs.push(route_security_proof_json(
+                &route_proof,
+                convention,
+                &finding_id,
+            ));
+            if route_proof.result.proof_status != SecurityProofStatus::Proven {
+                findings.push(PendingFinding {
+                    fingerprint: finding_fingerprint,
+                    convention_id: convention.id.clone(),
+                    rule_id: "api_route_requires_auth_helper".to_string(),
+                    title: "API route missing required auth proof".to_string(),
+                    message: "Accepted auth helper must dominate protected route sinks."
+                        .to_string(),
+                    severity,
+                    enforcement_result: enforcement_result_for_mode(enforcement_mode),
+                    file_path: file_path.clone(),
+                    import_name: "auth_guard".to_string(),
+                    import_source: missing_code,
+                    line: sink_line,
+                    evidence_id: format!("evidence_{}", &finding_id["finding_".len()..]),
+                    legacy_fingerprints: Vec::new(),
+                    related_node_ids: Vec::new(),
+                });
+            }
         }
     }
 
     SecurityAuthEvaluation { findings, proofs }
+}
+
+fn accepted_auth_helpers_for_convention(
+    convention: &crate::protocol::CheckConvention,
+) -> Vec<AcceptedAuthHelper> {
+    let mut helpers = BTreeMap::<String, AcceptedAuthHelper>::new();
+    for symbol in convention
+        .matcher
+        .required_calls
+        .as_ref()
+        .into_iter()
+        .flatten()
+    {
+        helpers.insert(
+            symbol.clone(),
+            AcceptedAuthHelper {
+                guard_id: format!("auth:{symbol}"),
+                symbol: symbol.clone(),
+                behavior: AuthGuardBehavior::Unknown,
+            },
+        );
+    }
+    if let Some(auth_helpers) = convention
+        .requires
+        .as_ref()
+        .and_then(|requires| requires.get("auth_helpers"))
+        .and_then(|value| value.as_array())
+    {
+        for helper in auth_helpers {
+            if let Some(symbol) = helper.as_str() {
+                helpers.insert(
+                    symbol.to_string(),
+                    AcceptedAuthHelper {
+                        guard_id: format!("auth:{symbol}"),
+                        symbol: symbol.to_string(),
+                        behavior: AuthGuardBehavior::Unknown,
+                    },
+                );
+            } else if let Some(symbol) = helper
+                .get("symbol")
+                .or_else(|| helper.get("name"))
+                .and_then(|value| value.as_str())
+            {
+                helpers.insert(
+                    symbol.to_string(),
+                    AcceptedAuthHelper {
+                        guard_id: helper
+                            .get("guard_id")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or(symbol)
+                            .to_string(),
+                        symbol: symbol.to_string(),
+                        behavior: AuthGuardBehavior::Unknown,
+                    },
+                );
+            }
+        }
+    }
+    helpers.into_values().collect()
+}
+
+fn read_repo_file(repo_root: Option<&str>, file_path: &str) -> Option<String> {
+    let repo_root = repo_root?;
+    let path = Path::new(repo_root).join(file_path);
+    fs::read_to_string(path).ok()
+}
+
+fn first_sink_line_for_route(
+    facts: &[Fact],
+    file_path: &str,
+    route_proof: &RouteSecurityBoundaryProof,
+) -> Option<usize> {
+    let route = facts.iter().find(|fact| {
+        fact.file_path == file_path
+            && fact.kind == FactKind::RouteDeclared
+            && fact.name == route_proof.handler_symbol
+    })?;
+    facts
+        .iter()
+        .filter(|fact| {
+            fact.file_path == file_path
+                && route.start_line <= fact.start_line
+                && fact.end_line <= route.end_line
+                && matches!(
+                    fact.kind,
+                    FactKind::DataOperationDetected | FactKind::RouteReturnsResponse
+                )
+        })
+        .map(|fact| fact.start_line)
+        .min()
+}
+
+fn route_security_proof_json(
+    proof: &RouteSecurityBoundaryProof,
+    convention: &crate::protocol::CheckConvention,
+    finding_id: &str,
+) -> serde_json::Value {
+    let missing_proof_ids = if proof.result.proof_status == SecurityProofStatus::Proven {
+        Vec::new()
+    } else {
+        proof
+            .missing_proof_codes
+            .iter()
+            .map(|code| format!("missing_proof:{}:{code}", proof.route_id))
+            .collect::<Vec<_>>()
+    };
+    let parser_gap_ids = proof
+        .parser_gaps
+        .iter()
+        .map(|gap| gap.parser_gap_id.clone())
+        .collect::<Vec<_>>();
+    let parser_gaps = proof
+        .parser_gaps
+        .iter()
+        .map(|gap| {
+            json!({
+                "parser_gap_id": gap.parser_gap_id,
+                "capability": "control_flow_guard_dominance",
+                "code": gap.code,
+                "file_path": gap.file_path,
+                "reason": gap.reason,
+                "affected_contract_kinds": ["api_route_requires_auth_helper"],
+                "affected_route_ids": [proof.route_id.clone()],
+                "missing_proof_ids": missing_proof_ids,
+                "blocks_enforcement": gap.blocks_enforcement
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut undominated_fact_ids = proof
+        .undominated_sinks
+        .iter()
+        .flat_map(|sink| sink.fact_ids.iter().cloned())
+        .collect::<Vec<_>>();
+    undominated_fact_ids.sort();
+    undominated_fact_ids.dedup();
+    let missing_proof = proof
+        .missing_proof_codes
+        .iter()
+        .enumerate()
+        .map(|(index, code)| {
+            json!({
+                "id": missing_proof_ids[index],
+                "capability": "control_flow_guard_dominance",
+                "code": code,
+                "blocks_enforcement": true,
+                "fact_ids": undominated_fact_ids.clone(),
+                "graph_edge_ids": []
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "proof_id": format!("proof:{}:auth", proof.route_id),
+        "proof_version": "security-boundary-proof/v1",
+        "route": {
+            "route_id": proof.route_id,
+            "file_path": proof.file_path,
+            "file_role": "api_route",
+            "handler_symbol": proof.handler_symbol
+        },
+        "contracts": [{
+            "contract_id": convention.id,
+            "kind": "api_route_requires_auth_helper",
+            "enforcement_mode": convention.enforcement_mode,
+            "capability": convention.enforcement_capability,
+            "matched": true
+        }],
+        "capability_status": [{
+            "name": "control_flow_guard_dominance",
+            "status": "partial",
+            "can_block": true,
+            "parser_gap_ids": parser_gap_ids,
+            "missing_proof_ids": missing_proof_ids
+        }],
+        "auth": {
+            "required": proof.auth.required,
+            "proven": proof.auth.proven,
+            "proof_kind": if proof.auth.proven { "handler_guard" } else { "none" },
+            "trusted_guard_calls": proof.trusted_guard_calls.iter().map(|guard| json!({
+                "fact_id": guard.fact_id,
+                "guard_id": guard.guard_id,
+                "symbol": guard.symbol,
+                "start_line": guard.start_line,
+                "end_line": guard.end_line
+            })).collect::<Vec<_>>(),
+            "dominated_sinks": proof.auth.dominated_sinks.iter().map(|sink| json!({
+                "sink_id": sink.sink_id,
+                "sink_kind": sink.sink_kind,
+                "edge_id": sink.edge_id
+            })).collect::<Vec<_>>(),
+            "undominated_sinks": proof.undominated_sinks.iter().map(|sink| json!({
+                "sink_id": sink.sink_id,
+                "sink_kind": sink.sink_kind,
+                "reason": sink.reason,
+                "fact_ids": sink.fact_ids
+            })).collect::<Vec<_>>()
+        },
+        "missing_proof": missing_proof,
+        "parser_gaps": parser_gaps,
+        "result": {
+            "proof_status": security_proof_status(&proof.result.proof_status),
+            "enforcement_result": if proof.result.proof_status == SecurityProofStatus::Proven {
+                "pass"
+            } else {
+                convention.enforcement_mode.as_str()
+            },
+            "can_block": proof.result.proof_status != SecurityProofStatus::Proven,
+            "finding_ids": if proof.result.proof_status == SecurityProofStatus::Proven {
+                Vec::<String>::new()
+            } else {
+                vec![finding_id.to_string()]
+            }
+        }
+    })
+}
+
+fn security_proof_status(status: &SecurityProofStatus) -> &'static str {
+    match status {
+        SecurityProofStatus::Proven => "proven",
+        SecurityProofStatus::MissingProof => "missing_proof",
+        SecurityProofStatus::ParserGap => "parser_gap",
+    }
 }
 
 fn security_auth_files(
@@ -673,21 +824,6 @@ fn security_auth_files(
         .into_iter()
         .filter(|file| changed_files.contains(file))
         .collect()
-}
-
-fn security_sink_kind(kind: FactKind) -> &'static str {
-    match kind {
-        FactKind::DataOperationDetected => "data_operation",
-        FactKind::RouteReturnsResponse => "response",
-        _ => "unknown",
-    }
-}
-
-fn security_fact_id(fact: &Fact) -> String {
-    format!(
-        "fact:{}:{}:{}",
-        fact.file_path, fact.kind as u8, fact.start_line
-    )
 }
 
 fn graph_service_delegation_findings(
@@ -997,6 +1133,9 @@ fn fact_kind_from_str(kind: &str) -> Option<FactKind> {
         "auth_guard_called" => Some(FactKind::AuthGuardCalled),
         "route_returns_response" => Some(FactKind::RouteReturnsResponse),
         "callback_boundary_detected" => Some(FactKind::CallbackBoundaryDetected),
+        "middleware_declared" => Some(FactKind::MiddlewareDeclared),
+        "middleware_matcher_declared" => Some(FactKind::MiddlewareMatcherDeclared),
+        "middleware_protects_route" => Some(FactKind::MiddlewareProtectsRoute),
         _ => None,
     }
 }

@@ -3,13 +3,17 @@ import { z } from "zod";
 export const SecurityCapabilityNameSchema = z.enum([
   "security_facts",
   "auth_boundary_facts",
-  "control_flow_guard_dominance"
+  "control_flow_guard_dominance",
+  "middleware_coverage"
 ]);
 
 export const SecurityMissingProofCodeSchema = z.enum([
   "missing_auth_guard",
   "auth_guard_not_dominating_sink",
+  "middleware_not_covering_route",
+  "middleware_dynamic_matcher",
   "unsupported_callback_boundary",
+  "unsupported_dynamic_control_flow",
   "route_binding_unresolved",
   "handler_unresolved"
 ]);
@@ -18,12 +22,18 @@ export const SecurityParserGapCodeSchema = z.enum([
   "route_binding_unresolved",
   "handler_unresolved",
   "unsupported_dynamic_control_flow",
+  "unsupported_dynamic_middleware_matcher",
   "unsupported_callback_boundary"
+]);
+
+const SecurityContractKindSchema = z.enum([
+  "api_route_requires_auth_helper",
+  "middleware_must_cover_routes"
 ]);
 
 export const SecurityConventionSchema = z.object({
   contract_id: z.string().min(1),
-  kind: z.literal("api_route_requires_auth_helper"),
+  kind: SecurityContractKindSchema,
   capability: z.enum(["briefing_only", "heuristic_check", "deterministic_check"]),
   enforcement_mode: z.enum(["off", "brief", "warn", "block"]),
   matcher: z.object({
@@ -110,6 +120,22 @@ const SecurityAuthProofSchema = z.object({
   }))
 });
 
+const SecurityMiddlewareProofSchema = z.object({
+  required: z.boolean(),
+  proven: z.boolean(),
+  matched_middleware: z.array(z.object({
+    middleware_id: z.string().min(1),
+    matcher_fact_id: z.string().min(1),
+    protects_route_edge_id: z.string().min(1),
+    protection_kind: z.enum(["auth", "csrf", "rate_limit", "cors", "unknown"])
+  })),
+  mismatches: z.array(z.object({
+    middleware_id: z.string().min(1).optional(),
+    reason: z.enum(["path_not_matched", "method_not_matched", "dynamic_matcher", "unknown_framework"]),
+    parser_gap_id: z.string().min(1).optional()
+  }))
+});
+
 const SecurityMissingProofSchema = z.object({
   id: z.string().min(1),
   capability: z.string().min(1),
@@ -153,6 +179,12 @@ export const SecurityBoundaryProofSchema = z.object({
   contracts: z.array(SecurityContractMatchSchema),
   capability_status: z.array(SecurityCapabilityStatusSchema),
   auth: SecurityAuthProofSchema,
+  middleware: SecurityMiddlewareProofSchema.optional().default({
+    required: false,
+    proven: false,
+    matched_middleware: [],
+    mismatches: []
+  }),
   missing_proof: z.array(SecurityMissingProofSchema),
   parser_gaps: z.array(SecurityParserGapSchema),
   result: z.object({
