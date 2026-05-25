@@ -1,6 +1,8 @@
 use serde_json::json;
 
-use crate::security_patterns::{AcceptedAuthHelper, accepted_auth_helper_for_call};
+use crate::security_patterns::{
+    AcceptedAuthHelper, accepted_auth_helper_for_call, static_middleware_matchers,
+};
 use crate::{Fact, FactExtractError, FactKind, extract_typescript_facts};
 
 pub fn extract_security_facts(
@@ -8,6 +10,7 @@ pub fn extract_security_facts(
     source: &str,
     accepted_auth_helpers: &[AcceptedAuthHelper],
 ) -> Result<Vec<Fact>, FactExtractError> {
+    let normalized_file_path = file_path.as_ref().to_string_lossy().replace('\\', "/");
     let facts = extract_typescript_facts(file_path, source)?;
     let source_lines: Vec<&str> = source.lines().collect();
     let mut security_facts = Vec::new();
@@ -76,8 +79,76 @@ pub fn extract_security_facts(
             });
         }
     }
+    if is_middleware_file(
+        facts
+            .first()
+            .map(|fact| fact.file_path.as_str())
+            .unwrap_or_default(),
+    ) && let Some(middleware_line) = middleware_declaration_line(&source_lines)
+    {
+        let file_path = facts
+            .first()
+            .map(|fact| fact.file_path.clone())
+            .unwrap_or_else(|| normalized_file_path.clone());
+        let middleware_id = format!("middleware:{file_path}");
+        let protection_kind = if security_facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::AuthGuardCalled)
+        {
+            "auth"
+        } else {
+            "unknown"
+        };
+        security_facts.push(Fact {
+            kind: FactKind::MiddlewareDeclared,
+            file_path: file_path.clone(),
+            name: "middleware".to_string(),
+            value: Some(
+                json!({
+                    "middleware_id": middleware_id,
+                    "protection_kind": protection_kind,
+                })
+                .to_string(),
+            ),
+            imported_name: None,
+            start_line: middleware_line,
+            end_line: middleware_line,
+        });
+        for matcher in static_middleware_matchers(source) {
+            security_facts.push(Fact {
+                kind: FactKind::MiddlewareMatcherDeclared,
+                file_path: file_path.clone(),
+                name: matcher.path_pattern.clone(),
+                value: Some(
+                    json!({
+                        "middleware_id": middleware_id,
+                        "matcher_kind": if matcher.excluded { "excluded_path" } else { "static_path" },
+                        "path_pattern": matcher.path_pattern,
+                    })
+                    .to_string(),
+                ),
+                imported_name: None,
+                start_line: matcher.start_line,
+                end_line: matcher.end_line,
+            });
+        }
+    }
 
     Ok(security_facts)
+}
+
+fn is_middleware_file(file_path: &str) -> bool {
+    file_path == "middleware.ts"
+        || file_path == "middleware.js"
+        || file_path.ends_with("/middleware.ts")
+        || file_path.ends_with("/middleware.js")
+}
+
+fn middleware_declaration_line(lines: &[&str]) -> Option<usize> {
+    lines
+        .iter()
+        .position(|line| line.contains("function middleware") || line.contains("middleware ="))
+        .map(|index| index + 1)
 }
 
 fn protected_sink_after_line(facts: &[Fact], line: usize) -> bool {

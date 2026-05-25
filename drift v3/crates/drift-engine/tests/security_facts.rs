@@ -101,3 +101,57 @@ export default async function handler(req, res) {
         "missing res.json sink: {pages_facts:#?}"
     );
 }
+
+#[test]
+fn extracts_static_middleware_matcher_fact() {
+    let source = r#"
+import { NextResponse } from "next/server";
+import { requireUser } from "@/server/auth";
+
+export async function middleware(request: Request) {
+  await requireUser();
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/api/projects/:path*"],
+};
+"#;
+
+    let facts = extract_security_facts(
+        "middleware.ts",
+        source,
+        &[AcceptedAuthHelper {
+            guard_id: "auth_require_user".to_string(),
+            symbol: "requireUser".to_string(),
+            behavior: AuthGuardBehavior::ReturnsUser,
+        }],
+    )
+    .expect("security facts");
+
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::MiddlewareDeclared
+                && fact.name == "middleware"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"middleware_id\":\"middleware:middleware.ts\"")
+                        && value.contains("\"protection_kind\":\"auth\"")
+                })
+                && fact.start_line == 5),
+        "missing middleware declaration fact: {facts:#?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::MiddlewareMatcherDeclared
+                && fact.name == "/api/projects/:path*"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"middleware_id\":\"middleware:middleware.ts\"")
+                        && value.contains("\"matcher_kind\":\"static_path\"")
+                        && value.contains("\"path_pattern\":\"/api/projects/:path*\"")
+                })
+                && fact.start_line == 11),
+        "missing static middleware matcher fact: {facts:#?}"
+    );
+}

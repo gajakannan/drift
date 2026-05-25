@@ -77,6 +77,10 @@ describe("security boundary proof read model", () => {
       file_path: "app/api/projects/route.ts",
       auth_required: true,
       auth_proven: false,
+      middleware_required: false,
+      middleware_proven: false,
+      middleware_protection_kinds: [],
+      middleware_mismatch_reasons: [],
       proof_status: "parser_gap",
       enforcement_result: "block",
       missing_proof_codes: ["missing_auth_guard"],
@@ -85,6 +89,71 @@ describe("security boundary proof read model", () => {
       lifecycle: ["new"]
     }]);
     expect(JSON.stringify(model)).not.toContain("const projects");
+    expect(JSON.stringify(model)).not.toContain("requireUser()");
+  });
+
+  it("summarizes middleware coverage proof without snippets", () => {
+    const model = buildSecurityBoundaryProofReadModel({
+      proofs: [{
+        proof_id: "proof_route_projects_get_middleware",
+        proof_version: "security-boundary-proof/v1",
+        route: {
+          route_id: "route_projects_get",
+          file_path: "app/api/projects/route.ts",
+          file_role: "api_route"
+        },
+        contracts: [{
+          contract_id: "security_middleware_api_coverage",
+          kind: "middleware_must_cover_routes",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }],
+        capability_status: [{
+          name: "middleware_coverage",
+          status: "complete",
+          can_block: true,
+          parser_gap_ids: [],
+          missing_proof_ids: []
+        }],
+        auth: {
+          required: true,
+          proven: true,
+          proof_kind: "middleware_guard",
+          trusted_guard_calls: [],
+          dominated_sinks: [],
+          undominated_sinks: []
+        },
+        middleware: {
+          required: true,
+          proven: true,
+          matched_middleware: [{
+            middleware_id: "middleware:middleware.ts",
+            matcher_fact_id: "fact_middleware_matcher",
+            protects_route_edge_id: "edge_middleware_projects",
+            protection_kind: "auth"
+          }],
+          mismatches: []
+        },
+        missing_proof: [],
+        parser_gaps: [],
+        result: {
+          proof_status: "proven",
+          enforcement_result: "pass",
+          can_block: false,
+          finding_ids: []
+        }
+      }],
+      findings: []
+    });
+
+    expect(model.routes).toEqual([expect.objectContaining({
+      route_id: "route_projects_get",
+      middleware_required: true,
+      middleware_proven: true,
+      middleware_protection_kinds: ["auth"],
+      middleware_mismatch_reasons: []
+    })]);
     expect(JSON.stringify(model)).not.toContain("requireUser()");
   });
 });

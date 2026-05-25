@@ -23,6 +23,7 @@ export interface SecurityCheckJson {
   summary: {
     security_findings_count: number;
     security_blocking_count: number;
+    middleware_coverage_proven_count: number;
   };
 }
 
@@ -41,7 +42,11 @@ export function buildSecurityCheckJson(input: BuildSecurityCheckJsonInput): Secu
       security_findings_count: scopedFindings.length,
       security_blocking_count: scopedFindings.filter((finding) =>
         finding.enforcement_result === "block"
-      ).length
+      ).length,
+      middleware_coverage_proven_count: input.proofs.filter((proof) => {
+        const middleware = proof.middleware;
+        return Boolean(middleware && middleware.required && middleware.proven);
+      }).length
     }
   };
 }

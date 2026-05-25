@@ -13,7 +13,8 @@ mod protocol;
 use candidate_command::infer_candidates;
 use check_command::check_repo;
 use drift_engine::{
-    Fact, FactKind, extract_security_facts, extract_typescript_facts, should_index_path,
+    Fact, FactKind, dynamic_middleware_matcher_line, extract_security_facts,
+    extract_typescript_facts, should_index_path, static_middleware_coverage,
 };
 use protocol::*;
 use serde_json::json;
@@ -154,6 +155,8 @@ fn scan_repo(
     let mut graph_edge_count = 0_usize;
     let scanned = scan_files(repo_root, &files, &mut diagnostics, reuse_index.as_ref())?;
     let files_reused = scanned.files_reused;
+    let mut scanned = scanned;
+    add_middleware_coverage_facts(&mut scanned.scanned);
     resolver.exported_symbols = exported_symbols_by_file(&scanned.scanned);
     for (file, file_facts) in scanned.scanned {
         let graph = graph_for_file(&repo_id, &scan_id, &file, &file_facts, &resolver);
@@ -223,12 +226,13 @@ fn stream_scan_repo(
     let mut graph_edges_emitted = 0_usize;
     let mut diagnostics_emitted = 0_usize;
     let mut scan_diagnostics = Vec::new();
-    let scanned = scan_files(
+    let mut scanned = scan_files(
         repo_root,
         &files,
         &mut scan_diagnostics,
         reuse_index.as_ref(),
     )?;
+    add_middleware_coverage_facts(&mut scanned.scanned);
     files_skipped += scan_diagnostics.len();
     if !scan_diagnostics.is_empty() {
         diagnostics_emitted += scan_diagnostics.len();
@@ -408,6 +412,14 @@ fn scan_file_with_reuse(
         return Ok(Some((file, reused_facts, true)));
     }
     let source = fs::read_to_string(&absolute_path)?;
+    if is_middleware_path(&normalized) && dynamic_middleware_matcher_line(&source).is_some() {
+        diagnostics.push(EngineDiagnostic {
+            severity: "warning".to_string(),
+            code: "unsupported_dynamic_middleware_matcher".to_string(),
+            message: "unsupported_dynamic_middleware_matcher".to_string(),
+            file_path: Some(normalized.clone()),
+        });
+    }
     let mut facts = extract_typescript_facts(file_path, &source)?;
     facts.extend(extract_security_facts(file_path, &source, &[])?);
     let facts = facts.into_iter().map(engine_fact).collect();
@@ -450,6 +462,106 @@ fn reusable_facts_for_file(
             .cloned()
             .unwrap_or_default(),
     )
+}
+
+fn add_middleware_coverage_facts(scanned: &mut [(ScannedFile, Vec<EngineFact>)]) {
+    let middleware_fact_sets = scanned
+        .iter()
+        .filter_map(|(_, facts)| {
+            if !facts.iter().any(|fact| fact.kind == "middleware_declared") {
+                return None;
+            }
+            Some(
+                facts
+                    .iter()
+                    .filter_map(middleware_fact_from_engine)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .filter(|facts| !facts.is_empty())
+        .collect::<Vec<_>>();
+    if middleware_fact_sets.is_empty() {
+        return;
+    }
+
+    for (_, route_facts) in scanned.iter_mut() {
+        if !route_facts
+            .iter()
+            .any(|fact| fact.kind == "file_role_detected" && fact.name == "api_route")
+        {
+            continue;
+        }
+        let route_file_path = route_facts
+            .iter()
+            .find(|fact| fact.kind == "route_declared")
+            .map(|fact| fact.file_path.clone())
+            .unwrap_or_else(|| {
+                route_facts
+                    .first()
+                    .map(|fact| fact.file_path.clone())
+                    .unwrap_or_default()
+            });
+        let route_method = route_facts
+            .iter()
+            .find(|fact| fact.kind == "route_declared")
+            .map(|fact| fact.name.as_str())
+            .unwrap_or("GET");
+        let route_line = route_facts
+            .iter()
+            .find(|fact| fact.kind == "route_declared")
+            .map(|fact| fact.start_line)
+            .unwrap_or(1);
+        let route_id = format!("route:{route_file_path}:{route_method}");
+        let mut new_facts = Vec::new();
+        for middleware_facts in &middleware_fact_sets {
+            let (matched, _) =
+                static_middleware_coverage(middleware_facts, &route_file_path, route_method);
+            for middleware in matched {
+                let protection_kind = middleware.protection_kind.clone();
+                new_facts.push(EngineFact {
+                    kind: "middleware_protects_route".to_string(),
+                    file_path: route_file_path.clone(),
+                    name: middleware.middleware_id.clone(),
+                    value: Some(
+                        json!({
+                            "route_id": route_id,
+                            "middleware_id": middleware.middleware_id,
+                            "protection_kind": protection_kind,
+                        })
+                        .to_string(),
+                    ),
+                    imported_name: Some(protection_kind),
+                    start_line: route_line,
+                    end_line: route_line,
+                });
+            }
+        }
+        route_facts.extend(new_facts);
+    }
+}
+
+fn middleware_fact_from_engine(fact: &EngineFact) -> Option<Fact> {
+    let kind = match fact.kind.as_str() {
+        "middleware_declared" => FactKind::MiddlewareDeclared,
+        "middleware_matcher_declared" => FactKind::MiddlewareMatcherDeclared,
+        _ => return None,
+    };
+    Some(Fact {
+        kind,
+        file_path: fact.file_path.clone(),
+        name: fact.name.clone(),
+        value: fact.value.clone(),
+        imported_name: fact.imported_name.clone(),
+        start_line: fact.start_line,
+        end_line: fact.end_line,
+    })
+}
+
+fn is_middleware_path(path: &str) -> bool {
+    path == "middleware.ts"
+        || path == "middleware.js"
+        || path.ends_with("/middleware.ts")
+        || path.ends_with("/middleware.js")
 }
 
 fn reused_file(file: &ScannedFile, reuse: Option<&ReuseIndex>) -> bool {
@@ -622,6 +734,9 @@ fn fact_kind(kind: FactKind) -> &'static str {
         FactKind::AuthGuardCalled => "auth_guard_called",
         FactKind::RouteReturnsResponse => "route_returns_response",
         FactKind::CallbackBoundaryDetected => "callback_boundary_detected",
+        FactKind::MiddlewareDeclared => "middleware_declared",
+        FactKind::MiddlewareMatcherDeclared => "middleware_matcher_declared",
+        FactKind::MiddlewareProtectsRoute => "middleware_protects_route",
     }
 }
 

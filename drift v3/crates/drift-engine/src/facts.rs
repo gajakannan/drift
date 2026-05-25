@@ -16,6 +16,9 @@ pub enum FactKind {
     AuthGuardCalled,
     RouteReturnsResponse,
     CallbackBoundaryDetected,
+    MiddlewareDeclared,
+    MiddlewareMatcherDeclared,
+    MiddlewareProtectsRoute,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

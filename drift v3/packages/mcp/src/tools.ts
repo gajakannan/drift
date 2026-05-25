@@ -75,6 +75,11 @@ export const DRIFT_READ_ONLY_MCP_TOOLS: DriftMcpTool[] = [
     }
   },
   {
+    name: "get_security_context",
+    description: "Return accepted security contract context and middleware coverage summaries without source snippets.",
+    inputSchema: repoOnlySchema()
+  },
+  {
     name: "get_task_preflight",
     description: "Return policy-filtered conventions and findings relevant to a task.",
     inputSchema: {
@@ -103,6 +108,7 @@ export const DRIFT_READ_ONLY_MCP_TOOLS: DriftMcpTool[] = [
             "api_route_no_direct_data_access",
             "api_route_requires_service_delegation",
             "api_route_requires_auth_helper",
+            "middleware_must_cover_routes",
             "test_expected_for_changed_module",
             "custom_briefing"
           ]

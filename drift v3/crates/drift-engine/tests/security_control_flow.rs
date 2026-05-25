@@ -1,6 +1,6 @@
 use drift_engine::{
     AcceptedAuthHelper, AuthGuardBehavior, FactKind, SecurityProofStatus,
-    build_auth_boundary_proof, extract_security_facts,
+    build_auth_boundary_proof, build_middleware_coverage_proof, extract_security_facts,
 };
 
 #[test]
@@ -219,6 +219,116 @@ export async function GET(request: Request) {
             .iter()
             .any(|gap| gap.code == "unsupported_dynamic_control_flow" && gap.blocks_enforcement),
         "missing parser gap: {proof:#?}"
+    );
+    assert_eq!(proof.result.proof_status, SecurityProofStatus::ParserGap);
+}
+
+#[test]
+fn static_middleware_matcher_protects_route() {
+    let middleware_source = r#"
+import { NextResponse } from "next/server";
+import { requireUser } from "@/server/auth";
+
+export async function middleware(request: Request) {
+  await requireUser();
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/api/projects/:path*"],
+};
+"#;
+    let route_source = r#"
+import { db } from "@/server/db";
+
+export async function GET() {
+  const projects = await db.project.findMany();
+  return Response.json({ projects });
+}
+"#;
+
+    let proof = build_middleware_coverage_proof(
+        "middleware.ts",
+        middleware_source,
+        "app/api/projects/route.ts",
+        route_source,
+        &[AcceptedAuthHelper {
+            guard_id: "auth_require_user".to_string(),
+            symbol: "requireUser".to_string(),
+            behavior: AuthGuardBehavior::ReturnsUser,
+        }],
+    )
+    .expect("middleware proof");
+
+    assert!(proof.middleware.required);
+    assert!(
+        proof.middleware.proven,
+        "static matcher should prove middleware coverage: {proof:#?}"
+    );
+    assert_eq!(proof.result.proof_status, SecurityProofStatus::Proven);
+    assert!(
+        proof
+            .middleware
+            .matched_middleware
+            .iter()
+            .any(|middleware| middleware.protection_kind == "auth"
+                && middleware
+                    .protects_route_edge_id
+                    .contains("middleware-protects")),
+        "missing matched middleware proof: {proof:#?}"
+    );
+}
+
+#[test]
+fn dynamic_middleware_matcher_emits_parser_gap_and_blocks() {
+    let middleware_source = r#"
+import { NextResponse } from "next/server";
+import { requireUser } from "@/server/auth";
+
+const protectedPaths = ["/api/projects/:path*"];
+
+export async function middleware(request: Request) {
+  await requireUser();
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: protectedPaths,
+};
+"#;
+    let route_source = r#"
+import { db } from "@/server/db";
+
+export async function GET() {
+  const projects = await db.project.findMany();
+  return Response.json({ projects });
+}
+"#;
+
+    let proof = build_middleware_coverage_proof(
+        "middleware.ts",
+        middleware_source,
+        "app/api/projects/route.ts",
+        route_source,
+        &[AcceptedAuthHelper {
+            guard_id: "auth_require_user".to_string(),
+            symbol: "requireUser".to_string(),
+            behavior: AuthGuardBehavior::ReturnsUser,
+        }],
+    )
+    .expect("middleware proof");
+
+    assert!(
+        !proof.middleware.proven,
+        "dynamic matcher should not prove coverage: {proof:#?}"
+    );
+    assert!(
+        proof
+            .parser_gaps
+            .iter()
+            .any(|gap| gap.code == "unsupported_dynamic_middleware_matcher"
+                && gap.blocks_enforcement),
+        "missing dynamic middleware parser gap: {proof:#?}"
     );
     assert_eq!(proof.result.proof_status, SecurityProofStatus::ParserGap);
 }

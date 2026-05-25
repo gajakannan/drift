@@ -67,6 +67,15 @@ export interface GraphRepoMapFile {
   graph_node_ids: string[];
   evidence_ids: string[];
   fact_count: number;
+  route_security?: RepoMapRouteSecurity;
+}
+
+export interface RepoMapRouteSecurity {
+  middleware_coverage: {
+    proven: boolean;
+    protection_kinds: string[];
+    middleware_ids: string[];
+  };
 }
 
 export interface GraphRepoMap {
@@ -787,7 +796,8 @@ export function mergeGraphAndFactRepoMapFiles(
       calls: unique([...graphFile.calls, ...factFile.calls]),
       graph_node_ids: unique([...graphFile.graph_node_ids, ...factFile.graph_node_ids]),
       evidence_ids: unique([...graphFile.evidence_ids, ...factFile.evidence_ids]),
-      fact_count: Math.max(graphFile.fact_count, factFile.fact_count)
+      fact_count: Math.max(graphFile.fact_count, factFile.fact_count),
+      route_security: mergeRouteSecurity(graphFile.route_security, factFile.route_security)
     };
   });
 }
@@ -943,10 +953,74 @@ export function fallbackFactRepoMapFiles(
           .map((fact) => fact.name)),
         graph_node_ids: [],
         evidence_ids: [],
-        fact_count: fileFacts.length
+        fact_count: fileFacts.length,
+        route_security: routeSecurityFromFacts(fileFacts)
       };
     })
     .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function routeSecurityFromFacts(fileFacts: FactRecord[]): RepoMapRouteSecurity | undefined {
+  const middlewareProtectionFacts = fileFacts.filter((fact) =>
+    fact.kind === "middleware_protects_route"
+  );
+  if (middlewareProtectionFacts.length === 0) {
+    return undefined;
+  }
+  const middlewareIds = middlewareProtectionFacts.map((fact) => {
+    const metadata = parseFactValue(fact.value);
+    return typeof metadata.middleware_id === "string" ? metadata.middleware_id : fact.name;
+  });
+  const protectionKinds = middlewareProtectionFacts.map((fact) => {
+    const metadata = parseFactValue(fact.value);
+    return typeof metadata.protection_kind === "string"
+      ? metadata.protection_kind
+      : fact.imported_name ?? "unknown";
+  });
+  return {
+    middleware_coverage: {
+      proven: true,
+      protection_kinds: unique(protectionKinds),
+      middleware_ids: unique(middlewareIds)
+    }
+  };
+}
+
+function mergeRouteSecurity(
+  left: RepoMapRouteSecurity | undefined,
+  right: RepoMapRouteSecurity | undefined
+): RepoMapRouteSecurity | undefined {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  return {
+    middleware_coverage: {
+      proven: left.middleware_coverage.proven || right.middleware_coverage.proven,
+      protection_kinds: unique([
+        ...left.middleware_coverage.protection_kinds,
+        ...right.middleware_coverage.protection_kinds
+      ]),
+      middleware_ids: unique([
+        ...left.middleware_coverage.middleware_ids,
+        ...right.middleware_coverage.middleware_ids
+      ])
+    }
+  };
+}
+
+function parseFactValue(value: string | undefined): Record<string, unknown> {
+  if (!value) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function groupEvidenceByFile(evidence: GraphEvidence[]): Map<string, Set<string>> {
