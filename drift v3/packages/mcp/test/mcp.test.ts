@@ -1697,6 +1697,7 @@ describe("read-only MCP handlers", () => {
           route_id: string;
           file_path: string;
           proof_status: string;
+          proven: boolean;
           input_sources: string[];
           validated_sink_kinds: string[];
         }>;
@@ -1710,10 +1711,12 @@ describe("read-only MCP handlers", () => {
     expect(securityContext.request_validation.routes).toEqual([{
       route_id: "route:apps/web/app/api/projects/route.ts:POST",
       file_path: "apps/web/app/api/projects/route.ts",
-      proof_status: "proven",
+      proof_status: "not_evaluated",
+      proven: false,
       input_sources: ["body"],
       validated_sink_kinds: ["data_operation"]
     }]);
+    expect(securityContext.request_validation.routes[0]?.proof_status).not.toBe("proven");
     expect(securityContext.request_validation.parser_gaps).toEqual([
       { reason: "unsupported_request_input_spread", blocking: true }
     ]);

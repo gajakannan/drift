@@ -100,12 +100,7 @@ pub fn accepted_request_validator_for_call<'a>(
             RequestValidatorKind::Schema => {
                 matches!(call.name.as_str(), "parse" | "safeParse")
                     && call.value.as_deref().is_some_and(|receiver| {
-                        receiver_root(receiver) == validator.symbol
-                            || imported_symbol_matches(
-                                facts,
-                                receiver_root(receiver),
-                                &validator.symbol,
-                            )
+                        schema_receiver_matches(facts, receiver, &validator.symbol)
                     })
             }
         })
@@ -121,6 +116,28 @@ fn imported_symbol_matches(facts: &[Fact], local_name: &str, accepted_symbol: &s
 
 fn receiver_root(receiver: &str) -> &str {
     receiver.split('.').next().unwrap_or(receiver)
+}
+
+fn schema_receiver_matches(facts: &[Fact], receiver: &str, accepted_symbol: &str) -> bool {
+    if receiver_root(receiver) == accepted_symbol
+        || imported_symbol_matches(facts, receiver_root(receiver), accepted_symbol)
+    {
+        return true;
+    }
+    let mut parts = receiver.split('.');
+    let Some(namespace) = parts.next() else {
+        return false;
+    };
+    let Some(symbol) = parts.next() else {
+        return false;
+    };
+    symbol == accepted_symbol
+        && parts.next().is_none()
+        && facts.iter().any(|fact| {
+            fact.kind == FactKind::ImportUsed
+                && fact.name == namespace
+                && fact.imported_name.as_deref() == Some("*")
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

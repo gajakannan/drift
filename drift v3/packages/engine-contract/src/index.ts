@@ -314,6 +314,7 @@ const EngineSecurityParserGapSchema = z.object({
     "unsupported_dynamic_control_flow",
     "unsupported_dynamic_middleware_matcher",
     "unsupported_request_input_spread",
+    "unsupported_request_input_destructure",
     "unsupported_callback_boundary"
   ]),
   file_path: z.string().min(1),
@@ -447,6 +448,42 @@ const EngineSecurityBoundaryProofSchema = z.object({
     can_block: z.boolean(),
     finding_ids: z.array(z.string().min(1))
   })
+}).superRefine((proof, context) => {
+  const requestValidationMissingProof = proof.missing_proof.filter((entry) =>
+    entry.capability === "request_validation_facts" ||
+    ["request_input_not_validated", "validation_result_not_used", "unknown_validator"].includes(entry.code)
+  );
+  const blockingRequestValidationParserGaps = proof.parser_gaps.filter((gap) =>
+    gap.blocks_enforcement &&
+    (gap.capability === "request_validation_facts" ||
+      gap.affected_contract_kinds.includes("api_route_requires_request_validation"))
+  );
+
+  if (proof.request_validation.required && proof.request_validation.proven) {
+    if (
+      proof.request_validation.unvalidated_uses.length > 0 ||
+      requestValidationMissingProof.length > 0 ||
+      blockingRequestValidationParserGaps.length > 0 ||
+      proof.request_validation.validated_uses.length === 0 ||
+      proof.result.proof_status !== "proven" ||
+      proof.result.enforcement_result !== "pass"
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "request validation proven proof cannot include missing proof, parser gaps, or unvalidated uses"
+      });
+    }
+  }
+
+  if (
+    proof.request_validation.unvalidated_uses.length > 0 &&
+    (proof.request_validation.proven || proof.result.proof_status === "proven")
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "request validation unvalidated uses require a non-proven proof status"
+    });
+  }
 });
 
 export const EngineSecurityProofEventSchema = z.object({

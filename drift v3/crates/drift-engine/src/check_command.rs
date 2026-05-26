@@ -618,6 +618,15 @@ fn security_request_validation_findings_and_proofs(
             proofs: Vec::new(),
         };
     }
+    let proof_scope = request_validation_proof_scope_for_convention(convention);
+    let allowed_methods = convention
+        .matcher
+        .methods
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|method| method.to_uppercase())
+        .collect::<Vec<_>>();
     if convention
         .matcher
         .applies_to_file_roles
@@ -635,17 +644,28 @@ fn security_request_validation_findings_and_proofs(
     let mut proofs = Vec::new();
 
     for file_path in files {
+        if !allowed_methods.is_empty()
+            && !route_methods_for_file(facts, &file_path)
+                .iter()
+                .any(|method| allowed_methods.contains(method))
+        {
+            continue;
+        }
         let Some(source) = read_repo_file(repo_root, &file_path) else {
             continue;
         };
-        let proof = match drift_engine::build_request_validation_proof(
+        let proof = match drift_engine::build_request_validation_proof_with_scope(
             &file_path,
             &source,
             &accepted_validators,
+            &proof_scope,
         ) {
             Ok(proof) => proof,
             Err(_) => continue,
         };
+        if !proof.request_validation.required {
+            continue;
+        }
         let (route_id, handler_symbol) = route_identity_for_file(facts, &file_path)
             .unwrap_or_else(|| (format!("route:{file_path}:unknown"), "unknown".to_string()));
         let missing_code = request_validation_missing_code(&proof);
@@ -750,17 +770,6 @@ fn accepted_request_validators_for_convention(
     convention: &crate::protocol::CheckConvention,
 ) -> Vec<AcceptedRequestValidator> {
     let mut validators = BTreeMap::<String, AcceptedRequestValidator>::new();
-    if let Some(required_calls) = &convention.matcher.required_calls {
-        for symbol in required_calls {
-            insert_request_validator(
-                &mut validators,
-                symbol,
-                RequestValidatorKind::Helper,
-                RequestValidatorBehavior::ReturnsParsed,
-                None,
-            );
-        }
-    }
     if let Some(requires) = &convention.requires {
         if let Some(helper_values) = requires
             .get("validators")
@@ -787,6 +796,28 @@ fn accepted_request_validators_for_convention(
         }
     }
     validators.into_values().collect()
+}
+
+fn request_validation_proof_scope_for_convention(
+    convention: &crate::protocol::CheckConvention,
+) -> drift_engine::RequestValidationProofScope {
+    let Some(requires) = &convention.requires else {
+        return drift_engine::RequestValidationProofScope::default();
+    };
+    drift_engine::RequestValidationProofScope {
+        input_sources: string_array_field(requires, "input_sources"),
+        sink_kinds: string_array_field(requires, "sinks"),
+    }
+}
+
+fn string_array_field(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(|field| field.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.as_str().map(str::to_string))
+        .collect()
 }
 
 fn insert_request_validator_value(
@@ -898,6 +929,14 @@ fn route_identity_for_file(facts: &[Fact], file_path: &str) -> Option<(String, S
                 fact.name.clone(),
             )
         })
+}
+
+fn route_methods_for_file(facts: &[Fact], file_path: &str) -> Vec<String> {
+    facts
+        .iter()
+        .filter(|fact| fact.file_path == file_path && fact.kind == FactKind::RouteDeclared)
+        .map(|fact| fact.name.to_uppercase())
+        .collect()
 }
 
 fn request_validation_missing_code(proof: &SecurityBoundaryProof) -> String {

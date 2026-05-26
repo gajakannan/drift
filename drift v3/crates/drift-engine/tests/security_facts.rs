@@ -152,6 +152,62 @@ export async function POST(request: Request) {
 }
 
 #[test]
+fn extracts_request_validation_called_for_namespace_imported_schema() {
+    let source = r#"
+import * as validation from "@/server/validation";
+export async function POST(request: Request) {
+  const body = await request.json();
+  const input = validation.ProjectInputSchema.parse(body);
+  return Response.json(input);
+}
+"#;
+    let validators = vec![AcceptedRequestValidator {
+        validator_id: "schema_project_input".to_string(),
+        symbol: "ProjectInputSchema".to_string(),
+        kind: RequestValidatorKind::Schema,
+        behavior: RequestValidatorBehavior::ReturnsParsed,
+    }];
+    let facts = extract_security_facts_with_validation(
+        "app/api/projects/route.ts",
+        source,
+        &[],
+        &validators,
+    )
+    .expect("security facts");
+
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::RequestValidationCalled),
+        "missing namespace-imported schema validation fact: {facts:#?}"
+    );
+}
+
+#[test]
+fn extracts_destructured_params_as_request_input_read() {
+    let source = r#"
+export async function GET(_request: Request, { params }: { params: { projectId: string } }) {
+  const { projectId } = params;
+  return Response.json({ projectId });
+}
+"#;
+    let facts =
+        extract_security_facts("app/api/projects/route.ts", source, &[]).expect("security facts");
+
+    assert!(
+        facts.iter().any(|fact| {
+            fact.kind == FactKind::RequestInputRead
+                && fact.name == "projectId"
+                && fact
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("\"source\":\"params\""))
+        }),
+        "missing destructured params request input read: {facts:#?}"
+    );
+}
+
+#[test]
 fn extracts_validated_input_used_when_parsed_result_reaches_sink() {
     let source = r#"
 import { ProjectInputSchema } from "@/server/validation";

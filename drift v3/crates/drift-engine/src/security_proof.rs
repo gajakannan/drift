@@ -504,6 +504,26 @@ pub fn build_request_validation_proof(
     source: &str,
     accepted_validators: &[AcceptedRequestValidator],
 ) -> Result<SecurityBoundaryProof, FactExtractError> {
+    build_request_validation_proof_with_scope(
+        file_path,
+        source,
+        accepted_validators,
+        &RequestValidationProofScope::default(),
+    )
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RequestValidationProofScope {
+    pub input_sources: Vec<String>,
+    pub sink_kinds: Vec<String>,
+}
+
+pub fn build_request_validation_proof_with_scope(
+    file_path: impl AsRef<std::path::Path>,
+    source: &str,
+    accepted_validators: &[AcceptedRequestValidator],
+    scope: &RequestValidationProofScope,
+) -> Result<SecurityBoundaryProof, FactExtractError> {
     let base_facts = extract_typescript_facts(&file_path, source)?;
     let security_facts =
         extract_security_facts_with_validation(file_path, source, &[], accepted_validators)?;
@@ -515,6 +535,13 @@ pub fn build_request_validation_proof(
         .iter()
         .filter(|fact| fact.kind == crate::FactKind::RequestInputRead)
         .filter_map(request_input_read_proof)
+        .filter(|input| {
+            scope.input_sources.is_empty() || scope.input_sources.contains(&input.source)
+        })
+        .collect::<Vec<_>>();
+    let input_variables = input_reads
+        .iter()
+        .map(|input| input.variable.clone())
         .collect::<Vec<_>>();
     let validations = facts
         .iter()
@@ -525,9 +552,41 @@ pub fn build_request_validation_proof(
         .iter()
         .filter(|fact| fact.kind == crate::FactKind::ValidatedInputUsed)
         .filter_map(request_validated_use_proof)
+        .filter(|validated| {
+            (scope.sink_kinds.is_empty() || scope.sink_kinds.contains(&validated.sink_kind))
+                && input_variables.contains(&validated.source_input_var)
+        })
         .collect::<Vec<_>>();
     let parser_gaps = request_input_parser_gaps(&file_path_string(&facts), &lines, &input_reads);
-    let unvalidated_uses = request_unvalidated_uses(&facts, &lines, &input_reads, &validated_uses);
+    if input_reads.is_empty() {
+        return Ok(SecurityBoundaryProof {
+            auth: AuthBoundaryProof {
+                required: false,
+                proven: false,
+                dominated_sinks: Vec::new(),
+                undominated_sinks: Vec::new(),
+            },
+            middleware: MiddlewareBoundaryProof {
+                required: false,
+                proven: false,
+                matched_middleware: Vec::new(),
+                mismatches: Vec::new(),
+            },
+            request_validation: RequestValidationProof::not_required(),
+            parser_gaps,
+            result: SecurityProofResult {
+                proof_status: SecurityProofStatus::Proven,
+            },
+        });
+    }
+    let unvalidated_uses = request_unvalidated_uses(
+        &facts,
+        &lines,
+        &input_reads,
+        &validations,
+        &validated_uses,
+        &scope.sink_kinds,
+    );
     let proven = parser_gaps.is_empty()
         && !input_reads.is_empty()
         && !validated_uses.is_empty()
@@ -597,6 +656,22 @@ fn request_input_parser_gaps(
                     blocks_enforcement: true,
                 });
             }
+            let destructure_marker = format!("}} = {}", input.variable);
+            if line.contains('{') && line.contains(&destructure_marker) {
+                gaps.push(SecurityParserGap {
+                    parser_gap_id: format!(
+                        "parser_gap:{}:{}:unsupported_request_input_destructure",
+                        file_path,
+                        index + 1
+                    ),
+                    code: "unsupported_request_input_destructure".to_string(),
+                    file_path: file_path.to_string(),
+                    reason:
+                        "Destructuring from request input prevents deterministic validation proof"
+                            .to_string(),
+                    blocks_enforcement: true,
+                });
+            }
         }
     }
     gaps
@@ -619,27 +694,58 @@ fn request_unvalidated_uses(
     facts: &[Fact],
     lines: &[&str],
     input_reads: &[RequestInputReadProof],
+    validations: &[RequestValidationCallProof],
     validated_uses: &[RequestValidatedUseProof],
+    allowed_sink_kinds: &[String],
 ) -> Vec<RequestUnvalidatedUseProof> {
     let mut uses = Vec::new();
     for input in input_reads {
-        uses.extend(unknown_validator_uses(facts, lines, input));
+        uses.extend(unknown_validator_uses(
+            facts,
+            lines,
+            input,
+            allowed_sink_kinds,
+        ));
         for sink in protected_sinks(facts) {
+            if !allowed_sink_kinds.is_empty()
+                && !allowed_sink_kinds
+                    .iter()
+                    .any(|kind| kind == sink_kind(sink))
+            {
+                continue;
+            }
             if sink.start_line <= input_line_from_fact_id(&input.fact_id) {
                 continue;
             }
-            let Some(line) = lines.get(sink.start_line.saturating_sub(1)) else {
-                continue;
-            };
-            if !line_uses_identifier(line, &input.variable) {
-                continue;
-            }
-            let sink_fact_id = fact_id(sink);
+            let sink_text = source_text_for_sink(lines, sink);
+            let sink_fact_id = sink_id(sink);
             let validated = validated_uses.iter().any(|validated| {
                 validated.source_input_var == input.variable
                     && validated.sink_fact_id == sink_fact_id
             });
-            if !validated {
+            let raw_input_validated = validated_uses.iter().any(|validated| {
+                validated.source_input_var == input.variable
+                    && validated.validated_var == input.variable
+                    && validated.sink_fact_id == sink_fact_id
+            });
+            if validation_result_used_without_validated_use(
+                validations,
+                &input.variable,
+                &sink_text,
+                validated,
+            ) {
+                uses.push(RequestUnvalidatedUseProof {
+                    input_fact_id: input.fact_id.clone(),
+                    sink_fact_id,
+                    sink_kind: sink_kind(sink).to_string(),
+                    reason: "validation_result_not_used".to_string(),
+                });
+                continue;
+            }
+            if !line_uses_identifier(&sink_text, &input.variable) {
+                continue;
+            }
+            if !raw_input_validated {
                 uses.push(RequestUnvalidatedUseProof {
                     input_fact_id: input.fact_id.clone(),
                     sink_fact_id,
@@ -652,10 +758,27 @@ fn request_unvalidated_uses(
     uses
 }
 
+fn validation_result_used_without_validated_use(
+    validations: &[RequestValidationCallProof],
+    input_var: &str,
+    sink_text: &str,
+    validated: bool,
+) -> bool {
+    !validated
+        && validations.iter().any(|validation| {
+            validation.input_var.as_deref() == Some(input_var)
+                && validation
+                    .result_var
+                    .as_deref()
+                    .is_some_and(|result_var| line_uses_identifier(sink_text, result_var))
+        })
+}
+
 fn unknown_validator_uses(
     facts: &[Fact],
     lines: &[&str],
     input: &RequestInputReadProof,
+    allowed_sink_kinds: &[String],
 ) -> Vec<RequestUnvalidatedUseProof> {
     let input_line = input_line_from_fact_id(&input.fact_id);
     let mut uses = Vec::new();
@@ -690,14 +813,18 @@ fn unknown_validator_uses(
         for sink in protected_sinks(facts)
             .into_iter()
             .filter(|sink| sink.start_line > call.start_line)
+            .filter(|sink| {
+                allowed_sink_kinds.is_empty()
+                    || allowed_sink_kinds
+                        .iter()
+                        .any(|kind| kind == sink_kind(sink))
+            })
         {
-            let Some(sink_line) = lines.get(sink.start_line.saturating_sub(1)) else {
-                continue;
-            };
-            if line_uses_identifier(sink_line, &result_var) {
+            let sink_text = source_text_for_sink(lines, sink);
+            if line_uses_identifier(&sink_text, &result_var) {
                 uses.push(RequestUnvalidatedUseProof {
                     input_fact_id: input.fact_id.clone(),
-                    sink_fact_id: fact_id(sink),
+                    sink_fact_id: sink_id(sink),
                     sink_kind: sink_kind(sink).to_string(),
                     reason: "unknown_validator".to_string(),
                 });
@@ -705,6 +832,25 @@ fn unknown_validator_uses(
         }
     }
     uses
+}
+
+fn source_text_for_sink(lines: &[&str], sink: &Fact) -> String {
+    let start_line = sink.start_line;
+    let end_line = if sink.kind == crate::FactKind::RouteReturnsResponse {
+        sink.start_line
+    } else {
+        sink.end_line
+    };
+    if start_line == 0 {
+        return String::new();
+    }
+    lines
+        .iter()
+        .skip(start_line.saturating_sub(1))
+        .take(end_line.saturating_sub(start_line).saturating_add(1))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn assigned_variable(line: &str) -> Option<String> {

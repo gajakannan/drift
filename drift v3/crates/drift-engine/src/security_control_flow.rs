@@ -182,10 +182,8 @@ pub fn validated_input_uses(facts: &[Fact], lines: &[&str]) -> Vec<ValidatedInpu
             .into_iter()
             .filter(|sink| sink.start_line > validation.validation_line)
         {
-            let Some(line) = lines.get(sink.start_line.saturating_sub(1)) else {
-                continue;
-            };
-            if line_uses_identifier(line, &validation.validated_var) {
+            let sink_text = sink_source_text(lines, sink);
+            let sink_uses_validated_input = if validation.requires_success_guard {
                 if validation.requires_success_guard
                     && !safe_parse_success_guard_dominates(
                         lines,
@@ -196,15 +194,29 @@ pub fn validated_input_uses(facts: &[Fact], lines: &[&str]) -> Vec<ValidatedInpu
                 {
                     continue;
                 }
-                uses.push(ValidatedInputUse {
-                    source_input_var: validation.source_input_var.clone(),
-                    validated_var: validation.validated_var.clone(),
-                    sink_fact_id: sink_id(sink),
-                    sink_kind: sink_kind(sink).to_string(),
-                    start_line: sink.start_line,
-                    end_line: sink.end_line,
-                });
+                sink_text.contains(&format!("{}.data", validation.validated_var))
+                    || safe_parse_aliases(
+                        lines,
+                        &validation.validated_var,
+                        validation.validation_line,
+                        sink.start_line,
+                    )
+                    .iter()
+                    .any(|alias| line_uses_identifier(&sink_text, alias))
+            } else {
+                line_uses_identifier(&sink_text, &validation.validated_var)
+            };
+            if !sink_uses_validated_input {
+                continue;
             }
+            uses.push(ValidatedInputUse {
+                source_input_var: validation.source_input_var.clone(),
+                validated_var: validation.validated_var.clone(),
+                sink_fact_id: sink_id(sink),
+                sink_kind: sink_kind(sink).to_string(),
+                start_line: sink.start_line,
+                end_line: sink.end_line,
+            });
         }
     }
     uses
@@ -220,7 +232,12 @@ struct ValidationMetadata {
 fn validation_metadata(fact: &Fact) -> Option<ValidationMetadata> {
     let value = serde_json::from_str::<serde_json::Value>(fact.value.as_deref()?).ok()?;
     let source_input_var = value.get("input_var")?.as_str()?.to_string();
-    let validated_var = value.get("result_var")?.as_str()?.to_string();
+    let behavior = value.get("behavior")?.as_str()?.to_string();
+    let validated_var = value
+        .get("result_var")
+        .and_then(|result| result.as_str())
+        .map(str::to_string)
+        .or_else(|| (behavior == "throws").then(|| source_input_var.clone()))?;
     Some(ValidationMetadata {
         source_input_var,
         validated_var,
@@ -239,23 +256,26 @@ fn safe_parse_success_guard_dominates(
     let failure_check = format!("!{result_var}.success");
     for (index, line) in lines.iter().enumerate() {
         let line_number = index + 1;
-        if line_number <= validation_line || line_number >= sink_line || !line.contains("if") {
+        let stripped = strip_strings_and_line_comment(line);
+        if line_number <= validation_line || line_number >= sink_line || !stripped.contains("if") {
             continue;
         }
-        if line.contains(&failure_check) {
-            let Some(block_end) = closing_block_line(lines, line_number) else {
-                continue;
-            };
-            let guard_exits = lines
-                .iter()
-                .take(block_end)
-                .skip(line_number)
-                .any(|candidate| candidate.contains("return") || candidate.contains("throw"));
-            if guard_exits && block_end < sink_line {
+        if stripped.contains(&failure_check) {
+            if line_has_exit_after_condition(&stripped, &failure_check) {
                 return true;
             }
+            if let Some(block_end) = closing_block_line(lines, line_number) {
+                let guard_exits = lines
+                    .iter()
+                    .take(block_end.saturating_sub(1))
+                    .skip(line_number)
+                    .any(|candidate| line_is_exit_statement(candidate));
+                if guard_exits && block_end < sink_line {
+                    return true;
+                }
+            }
         }
-        if line.contains(&success_check) && !line.contains(&failure_check) {
+        if stripped.contains(&success_check) && !stripped.contains(&failure_check) {
             let Some(block_end) = closing_block_line(lines, line_number) else {
                 continue;
             };
@@ -265,6 +285,97 @@ fn safe_parse_success_guard_dominates(
         }
     }
     false
+}
+
+fn safe_parse_aliases(
+    lines: &[&str],
+    result_var: &str,
+    validation_line: usize,
+    sink_line: usize,
+) -> Vec<String> {
+    let data_expr = format!("{result_var}.data");
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(index, line)| {
+            let line_number = index + 1;
+            validation_line < line_number && line_number < sink_line && line.contains(&data_expr)
+        })
+        .filter_map(|(_, line)| assigned_variable(line))
+        .collect()
+}
+
+fn sink_source_text(lines: &[&str], sink: &Fact) -> String {
+    let start_line = sink.start_line;
+    let end_line = if sink.kind == FactKind::RouteReturnsResponse {
+        sink.start_line
+    } else {
+        sink.end_line
+    };
+    if start_line == 0 {
+        return String::new();
+    }
+    lines
+        .iter()
+        .skip(start_line.saturating_sub(1))
+        .take(end_line.saturating_sub(start_line).saturating_add(1))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn line_has_exit_after_condition(line: &str, condition: &str) -> bool {
+    line.split(condition)
+        .nth(1)
+        .is_some_and(|after| after.contains("return") || after.contains("throw"))
+}
+
+fn line_is_exit_statement(line: &str) -> bool {
+    let stripped = strip_strings_and_line_comment(line);
+    let trimmed = stripped.trim();
+    trimmed.starts_with("return ") || trimmed == "return" || trimmed.starts_with("throw ")
+}
+
+fn strip_strings_and_line_comment(line: &str) -> String {
+    let mut stripped = String::new();
+    let mut chars = line.chars().peekable();
+    let mut quote: Option<char> = None;
+    while let Some(current) = chars.next() {
+        if quote.is_none() && current == '/' && chars.peek() == Some(&'/') {
+            break;
+        }
+        if let Some(active_quote) = quote {
+            if current == '\\' {
+                let _ = chars.next();
+                continue;
+            }
+            if current == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(current, '"' | '\'' | '`') {
+            quote = Some(current);
+            continue;
+        }
+        stripped.push(current);
+    }
+    stripped
+}
+
+fn assigned_variable(line: &str) -> Option<String> {
+    let before_equals = line.split_once('=')?.0.trim();
+    let variable = before_equals
+        .strip_prefix("const ")
+        .or_else(|| before_equals.strip_prefix("let "))
+        .or_else(|| before_equals.strip_prefix("var "))
+        .unwrap_or(before_equals)
+        .trim();
+    (!variable.is_empty()
+        && variable.chars().all(|character| {
+            character == '_' || character == '$' || character.is_ascii_alphanumeric()
+        }))
+    .then(|| variable.to_string())
 }
 
 fn line_uses_identifier(line: &str, identifier: &str) -> bool {

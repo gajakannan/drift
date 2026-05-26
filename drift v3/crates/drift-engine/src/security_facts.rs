@@ -304,6 +304,17 @@ fn request_input_read_facts(file_path: &str, facts: &[Fact], lines: &[&str]) -> 
                 variable,
                 key,
             ));
+        } else if line.contains("} = params") {
+            for variable in destructured_names(line) {
+                request_facts.push(request_input_fact(
+                    file_path,
+                    line_number,
+                    route_id.clone(),
+                    "params",
+                    variable.clone(),
+                    Some(variable),
+                ));
+            }
         }
     }
     request_facts
@@ -363,6 +374,28 @@ fn identifier_prefix(value: &str) -> &str {
         .split(|character: char| !is_identifier_char(character))
         .next()
         .unwrap_or("")
+}
+
+fn destructured_names(line: &str) -> Vec<String> {
+    let Some(start) = line.find('{') else {
+        return Vec::new();
+    };
+    let Some(end) = line[start + 1..].find('}') else {
+        return Vec::new();
+    };
+    line[start + 1..start + 1 + end]
+        .split(',')
+        .filter_map(|part| {
+            let name = part
+                .split(':')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_start_matches("...")
+                .trim();
+            (!name.is_empty() && name.chars().all(is_identifier_char)).then(|| name.to_string())
+        })
+        .collect()
 }
 
 fn is_identifier_char(value: char) -> bool {

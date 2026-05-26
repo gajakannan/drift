@@ -2,7 +2,8 @@ use drift_engine::{
     AcceptedAuthHelper, AcceptedRequestValidator, AuthGuardBehavior, RequestValidatorBehavior,
     RequestValidatorKind, SecurityAuthContract, SecurityContractCapability,
     SecurityEnforcementMode, SecurityFindingResult, SecurityMiddlewareContract,
-    SecurityRequestValidationContract, evaluate_api_route_requires_auth_helper,
+    SecurityRequestValidationContract, build_request_validation_proof,
+    evaluate_api_route_requires_auth_helper,
     evaluate_api_route_requires_auth_helper_with_middleware,
     evaluate_api_route_requires_request_validation, evaluate_middleware_must_cover_routes,
 };
@@ -59,6 +60,9 @@ export async function POST(request: Request) {
             contract_id: "security_api_request_validation".to_string(),
             capability: SecurityContractCapability::DeterministicCheck,
             enforcement_mode: SecurityEnforcementMode::Block,
+            methods: Vec::new(),
+            input_sources: Vec::new(),
+            sinks: Vec::new(),
             accepted_validators: vec![AcceptedRequestValidator {
                 validator_id: "schema_project_input".to_string(),
                 symbol: "ProjectInputSchema".to_string(),
@@ -83,6 +87,77 @@ export async function POST(request: Request) {
 }
 
 #[test]
+fn route_without_request_input_does_not_require_request_validation() {
+    let source = r#"
+const db = { project: { findMany: async () => [] } };
+export async function GET() {
+  const projects = await db.project.findMany();
+  return Response.json(projects);
+}
+"#;
+    let findings = evaluate_api_route_requires_request_validation(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityRequestValidationContract {
+            contract_id: "security_api_request_validation".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            methods: Vec::new(),
+            input_sources: Vec::new(),
+            sinks: Vec::new(),
+            accepted_validators: vec![AcceptedRequestValidator {
+                validator_id: "schema_project_input".to_string(),
+                symbol: "ProjectInputSchema".to_string(),
+                kind: RequestValidatorKind::Schema,
+                behavior: RequestValidatorBehavior::ReturnsParsed,
+            }],
+        },
+    )
+    .expect("request validation findings");
+
+    assert!(
+        findings.is_empty(),
+        "no request input should not block: {findings:#?}"
+    );
+}
+
+#[test]
+fn request_validation_contract_applies_only_to_configured_methods() {
+    let source = r#"
+const db = { project: { create: async (input) => input } };
+export async function GET(request: Request) {
+  const body = await request.json();
+  await db.project.create({ data: body });
+  return Response.json({ ok: true });
+}
+"#;
+    let findings = evaluate_api_route_requires_request_validation(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityRequestValidationContract {
+            contract_id: "security_api_request_validation".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            methods: vec!["POST".to_string()],
+            input_sources: Vec::new(),
+            sinks: Vec::new(),
+            accepted_validators: vec![AcceptedRequestValidator {
+                validator_id: "schema_project_input".to_string(),
+                symbol: "ProjectInputSchema".to_string(),
+                kind: RequestValidatorKind::Schema,
+                behavior: RequestValidatorBehavior::ReturnsParsed,
+            }],
+        },
+    )
+    .expect("request validation findings");
+
+    assert!(
+        findings.is_empty(),
+        "POST-only request validation should not apply to GET: {findings:#?}"
+    );
+}
+
+#[test]
 fn validator_called_but_raw_input_used_blocks() {
     let source = r#"
 import { ProjectInputSchema } from "@/server/validation";
@@ -103,6 +178,9 @@ export async function POST(request: Request) {
             contract_id: "security_api_request_validation".to_string(),
             capability: SecurityContractCapability::DeterministicCheck,
             enforcement_mode: SecurityEnforcementMode::Block,
+            methods: Vec::new(),
+            input_sources: Vec::new(),
+            sinks: Vec::new(),
             accepted_validators: vec![AcceptedRequestValidator {
                 validator_id: "schema_project_input".to_string(),
                 symbol: "ProjectInputSchema".to_string(),
@@ -139,6 +217,9 @@ export async function POST(request: Request) {
             contract_id: "security_api_request_validation".to_string(),
             capability: SecurityContractCapability::DeterministicCheck,
             enforcement_mode: SecurityEnforcementMode::Block,
+            methods: Vec::new(),
+            input_sources: Vec::new(),
+            sinks: Vec::new(),
             accepted_validators: vec![AcceptedRequestValidator {
                 validator_id: "schema_project_input".to_string(),
                 symbol: "ProjectInputSchema".to_string(),
@@ -176,6 +257,9 @@ export async function POST(request: Request) {
             contract_id: "security_api_request_validation".to_string(),
             capability: SecurityContractCapability::DeterministicCheck,
             enforcement_mode: SecurityEnforcementMode::Block,
+            methods: Vec::new(),
+            input_sources: Vec::new(),
+            sinks: Vec::new(),
             accepted_validators: vec![AcceptedRequestValidator {
                 validator_id: "schema_project_input".to_string(),
                 symbol: "ProjectInputSchema".to_string(),
@@ -210,6 +294,9 @@ export async function POST(request: Request) {
             contract_id: "candidate_request_validation".to_string(),
             capability: SecurityContractCapability::HeuristicCheck,
             enforcement_mode: SecurityEnforcementMode::Block,
+            methods: Vec::new(),
+            input_sources: Vec::new(),
+            sinks: Vec::new(),
             accepted_validators: vec![AcceptedRequestValidator {
                 validator_id: "schema_project_input".to_string(),
                 symbol: "ProjectInputSchema".to_string(),
@@ -223,6 +310,58 @@ export async function POST(request: Request) {
     assert!(
         findings.is_empty(),
         "candidate-only validation evidence must not block: {findings:#?}"
+    );
+}
+
+#[test]
+fn throwing_validator_dominating_sink_allows_original_input_use() {
+    let source = r#"
+const db = { project: { create: async (input) => input } };
+export async function POST(request: Request) {
+  const body = await request.json();
+  assertProjectInput(body);
+  await db.project.create({ data: body });
+  return Response.json({ ok: true });
+}
+"#;
+    let validators = vec![AcceptedRequestValidator {
+        validator_id: "assert_project_input".to_string(),
+        symbol: "assertProjectInput".to_string(),
+        kind: RequestValidatorKind::Helper,
+        behavior: RequestValidatorBehavior::Throws,
+    }];
+    let proof = build_request_validation_proof("app/api/projects/route.ts", source, &validators)
+        .expect("request validation proof");
+
+    assert!(
+        proof.request_validation.proven,
+        "throwing validator before sink should prove original input"
+    );
+}
+
+#[test]
+fn returns_parsed_validator_does_not_allow_raw_input_use() {
+    let source = r#"
+const db = { project: { create: async (input) => input } };
+export async function POST(request: Request) {
+  const body = await request.json();
+  validateProjectInput(body);
+  await db.project.create({ data: body });
+  return Response.json({ ok: true });
+}
+"#;
+    let validators = vec![AcceptedRequestValidator {
+        validator_id: "validate_project_input".to_string(),
+        symbol: "validateProjectInput".to_string(),
+        kind: RequestValidatorKind::Helper,
+        behavior: RequestValidatorBehavior::ReturnsParsed,
+    }];
+    let proof = build_request_validation_proof("app/api/projects/route.ts", source, &validators)
+        .expect("request validation proof");
+
+    assert!(
+        !proof.request_validation.proven,
+        "returns-parsed validator must not bless raw input"
     );
 }
 

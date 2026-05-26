@@ -77,7 +77,7 @@ export interface RepoMapRouteSecurity {
     middleware_ids: string[];
   };
   request_validation: {
-    status: "not_required" | "proven" | "missing_proof";
+    status: "not_required" | "not_evaluated" | "missing_proof";
     input_sources: string[];
   };
 }
@@ -992,9 +992,7 @@ function routeSecurityFromFacts(fileFacts: FactRecord[]): RepoMapRouteSecurity |
     request_validation: {
       status: requestInputFacts.length === 0
         ? "not_required"
-        : validatedUseFacts.length > 0
-          ? "proven"
-          : "missing_proof",
+        : "not_evaluated",
       input_sources: unique(requestInputFacts.map((fact) => {
         const metadata = parseFactValue(fact.value);
         return typeof metadata.source === "string" ? metadata.source : fact.name;
@@ -1026,11 +1024,11 @@ function mergeRouteSecurity(
       ])
     },
     request_validation: {
-      status: left.request_validation.status === "proven" || right.request_validation.status === "proven"
-        ? "proven"
-        : left.request_validation.status === "missing_proof" || right.request_validation.status === "missing_proof"
+      status: left.request_validation.status === "missing_proof" || right.request_validation.status === "missing_proof"
           ? "missing_proof"
-          : "not_required",
+          : left.request_validation.status === "not_evaluated" || right.request_validation.status === "not_evaluated"
+            ? "not_evaluated"
+            : "not_required",
       input_sources: unique([
         ...left.request_validation.input_sources,
         ...right.request_validation.input_sources

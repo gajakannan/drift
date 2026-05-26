@@ -45,10 +45,11 @@ pub use security_patterns::{
 pub use security_proof::{
     AuthBoundaryProof, MiddlewareBoundaryProof, RequestInputReadProof, RequestUnvalidatedUseProof,
     RequestValidatedUseProof, RequestValidationCallProof, RequestValidationProof,
-    RouteSecurityBoundaryProof, SecurityBoundaryProof, SecurityParserGap, SecurityProofResult,
-    SecurityProofStatus, TrustedGuardCallProof, UndominatedSinkProof, build_auth_boundary_proof,
-    build_auth_boundary_proofs_for_file, build_middleware_coverage_proof,
-    build_request_validation_proof,
+    RequestValidationProofScope, RouteSecurityBoundaryProof, SecurityBoundaryProof,
+    SecurityParserGap, SecurityProofResult, SecurityProofStatus, TrustedGuardCallProof,
+    UndominatedSinkProof, build_auth_boundary_proof, build_auth_boundary_proofs_for_file,
+    build_middleware_coverage_proof, build_request_validation_proof,
+    build_request_validation_proof_with_scope,
 };
 pub use security_rules::{
     SecurityAuthContract, SecurityContractCapability, SecurityEnforcementMode, SecurityFinding,

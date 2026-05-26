@@ -219,4 +219,65 @@ describe("engine security contract schemas", () => {
     expect(event.proofs[0]?.parser_gaps[0]?.code).toBe("unsupported_request_input_spread");
     expect(JSON.stringify(event)).not.toContain("cookie=");
   });
+
+  it("rejects impossible request validation proof states", () => {
+    const event = {
+      event: "SecurityProof",
+      schema_version: "engine.security.proof/v1",
+      proofs: [{
+        proof_id: "proof_route_projects_post_validation",
+        proof_version: "security-boundary-proof/v1",
+        route: {
+          route_id: "route_projects_post",
+          file_path: "app/api/projects/route.ts",
+          file_role: "api_route"
+        },
+        contracts: [{
+          contract_id: "security_api_request_validation",
+          kind: "api_route_requires_request_validation",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }],
+        capability_status: [{
+          name: "request_validation_facts",
+          status: "complete",
+          can_block: true,
+          parser_gap_ids: [],
+          missing_proof_ids: []
+        }],
+        auth: {
+          required: false,
+          proven: false,
+          proof_kind: "none",
+          trusted_guard_calls: [],
+          dominated_sinks: [],
+          undominated_sinks: []
+        },
+        request_validation: {
+          required: true,
+          proven: true,
+          input_reads: [{ fact_id: "fact_body", source: "body", variable: "body" }],
+          validations: [],
+          validated_uses: [],
+          unvalidated_uses: [{
+            input_fact_id: "fact_body",
+            sink_fact_id: "sink_create",
+            sink_kind: "data_operation",
+            reason: "request_input_not_validated"
+          }]
+        },
+        missing_proof: [],
+        parser_gaps: [],
+        result: {
+          proof_status: "proven",
+          enforcement_result: "pass",
+          can_block: false,
+          finding_ids: []
+        }
+      }]
+    };
+
+    expect(EngineSecurityProofEventSchema.safeParse(event).success).toBe(false);
+  });
 });

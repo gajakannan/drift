@@ -247,6 +247,83 @@ describe("engine contract schemas", () => {
     expect(parsed.graph.graph_evidence).toHaveLength(1);
   });
 
+  it("validates request validation method and requires scope in check requests", () => {
+    const parsed = EngineCheckRequestSchema.parse({
+      schema_version: "engine.check.request.v1",
+      repo: {
+        repo_id: "repo_abc",
+        repo_root: "/repo",
+        branch: "main",
+        commit: "abc123",
+        dirty: false
+      },
+      graph: {
+        require_fresh: false,
+        graph_nodes: [],
+        graph_edges: [],
+        graph_evidence: [],
+        graph_diagnostics: []
+      },
+      scan: {
+        scan_id: "scan_check_abc",
+        file_snapshots: [{
+          file_path: "app/api/projects/route.ts",
+          content_hash: "a".repeat(64),
+          byte_size: 100,
+          indexed: true
+        }],
+        facts: []
+      },
+      contract: {
+        contract_id: "contract_abc",
+        contract_schema_version: 1,
+        conventions: [{
+          id: "security_api_request_validation",
+          rule_id: "api_route_requires_request_validation",
+          kind: "api_route_requires_request_validation",
+          matcher: {
+            methods: ["POST"],
+            applies_to_file_roles: ["api_route"]
+          },
+          requires: {
+            input_sources: ["body"],
+            sinks: ["data_operation"],
+            schemas: ["ProjectInputSchema"]
+          },
+          severity: "error",
+          enforcement_mode: "block",
+          enforcement_capability: "deterministic_check"
+        }],
+        waivers: [],
+        exceptions: []
+      },
+      baseline: [],
+      diff: {
+        mode: "changed-hunks",
+        files: [{
+          path: "app/api/projects/route.ts",
+          changed_lines: [1]
+        }]
+      },
+      limits: {
+        max_files_seen: 100,
+        max_files_parsed: 100,
+        max_file_bytes: 1000000,
+        max_facts: 1000,
+        max_graph_nodes: 0,
+        max_graph_edges: 0,
+        max_diagnostics: 100,
+        follow_symlinks: false
+      }
+    });
+
+    expect(parsed.contract.conventions[0]?.requires).toMatchObject({
+      input_sources: ["body"],
+      sinks: ["data_operation"],
+      schemas: ["ProjectInputSchema"]
+    });
+  });
+
   it("validates engine-owned check results", () => {
     const result = parseEngineCheckResult({
       schema_version: "engine.check.result.v1",

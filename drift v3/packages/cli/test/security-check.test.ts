@@ -228,6 +228,43 @@ describe("security check bridge", () => {
     });
   });
 
+  it("does not convert matcher.required_calls into request validation requires", () => {
+    const request = engineCheckRequest({
+      repoId: "repo_abc",
+      repoRoot: "/tmp/repo",
+      scanId: "scan_abc",
+      snapshots: [],
+      facts: [],
+      conventions: [{
+        id: "security_api_request_validation",
+        repo_id: "repo_abc",
+        contract_id: "contract_abc",
+        kind: "api_route_requires_request_validation",
+        statement: "API request input must be validated.",
+        scope: { path_globs: ["app/api/**/route.ts"], file_roles: ["api_route"] },
+        matcher: {
+          kind: "api_route_requires_request_validation",
+          required_calls: ["validateInput"],
+          applies_to_file_roles: ["api_route"]
+        },
+        severity: "error",
+        enforcement_mode: "block",
+        enforcement_capability: "deterministic_check",
+        exceptions: [],
+        evidence_refs: [],
+        counterexample_refs: [],
+        accepted_by: "test",
+        accepted_at: "2026-05-26T00:00:00.000Z",
+        updated_at: "2026-05-26T00:00:00.000Z"
+      }],
+      baseline: [],
+      diff: { files: [], deletedFiles: [] },
+      scope: "full"
+    });
+
+    expect(request.contract.conventions[0]?.requires).toBeUndefined();
+  });
+
   it("returns SecurityBoundaryProof.auth in drift check JSON output", async () => {
     const { databasePath, repoRoot, diffPath } = await seedAuthCheckDatabase();
     const storage = openDriftStorage({ databasePath });
@@ -263,6 +300,41 @@ describe("security check bridge", () => {
     expect(JSON.stringify(payload)).not.toContain("requireUser()");
     expect(JSON.stringify(payload)).not.toContain("await db.project.findMany()");
     expect(repoRoot).toContain("drift-security-auth-check-");
+  });
+
+  it("maps request validation parser gap reason into finding actual_layer", async () => {
+    const { databasePath, diffPath } = await seedRequestValidationGapCheckDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+
+    const result = await runCheck(storage, {
+      positional: ["check"],
+      flags: new Map<string, string | true>([
+        ["repo", "repo_abc"],
+        ["scope", "changed-hunks"],
+        ["diff-file", diffPath],
+        ["now", "2026-05-26T00:00:00.000Z"],
+        ["json", true]
+      ])
+    });
+    storage.close();
+
+    expect(result.exitCode).toBe(1);
+    const payload = result.payload as {
+      findings?: Array<{
+        convention_id: string;
+        expected_layer?: string;
+        actual_layer?: string;
+        message: string;
+      }>;
+    };
+    const finding = payload.findings?.[0];
+
+    expect(finding?.message).toContain("Accepted request validation");
+    expect(finding).toMatchObject({
+      expected_layer: "request_validation",
+      actual_layer: "unsupported_request_input_spread"
+    });
   });
 
   it("returns middleware coverage proof in drift check JSON output", () => {
@@ -497,6 +569,103 @@ async function seedAuthCheckDatabase(): Promise<{
       forbidden_edges: [],
       soft_edges: []
     },
+    safe_commands: [],
+    required_checks: [],
+    context_egress: {
+      default_mode: "local_only",
+      denied_globs: [".env*", "**/*.pem"],
+      max_snippet_chars: 1200,
+      allow_full_file_content: false
+    },
+    agent_permissions: []
+  });
+  storage.close();
+  return { databasePath, repoRoot, diffPath };
+}
+
+async function seedRequestValidationGapCheckDatabase(): Promise<{
+  databasePath: string;
+  repoRoot: string;
+  diffPath: string;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), "drift-security-validation-gap-check-"));
+  tempDirs.push(dir);
+  const repoRoot = join(dir, "repo");
+  const routePath = "app/api/projects/route.ts";
+  await mkdir(join(repoRoot, "app/api/projects"), { recursive: true });
+  await writeFile(join(repoRoot, routePath), [
+    "const db = { project: { create: async (input) => input } };",
+    "",
+    "export async function POST(request: Request) {",
+    "  const body = await request.json();",
+    "  await db.project.create({ data: { ...body } });",
+    "  return Response.json({ ok: true });",
+    "}",
+    ""
+  ].join("\n"));
+  const diffPath = join(dir, "diff.patch");
+  await writeFile(diffPath, [
+    "diff --git a/app/api/projects/route.ts b/app/api/projects/route.ts",
+    "--- a/app/api/projects/route.ts",
+    "+++ b/app/api/projects/route.ts",
+    "@@ -0,0 +1,7 @@",
+    "+const db = { project: { create: async (input) => input } };",
+    "+",
+    "+export async function POST(request: Request) {",
+    "+  const body = await request.json();",
+    "+  await db.project.create({ data: { ...body } });",
+    "+  return Response.json({ ok: true });",
+    "+}",
+    ""
+  ].join("\n"));
+  const databasePath = join(dir, "drift.sqlite");
+  const storage = openDriftStorage({ databasePath });
+  storage.migrate();
+  storage.upsertRepo({
+    id: "repo_abc",
+    root_path: repoRoot,
+    fingerprint: "repo-fp",
+    created_at: "2026-05-26T00:00:00.000Z",
+    updated_at: "2026-05-26T00:00:00.000Z"
+  });
+  const validationConvention = {
+    id: "security_api_request_validation",
+    contract_id: "contract_abc",
+    kind: "api_route_requires_request_validation",
+    statement: "API request input must be validated before protected sinks.",
+    scope: { path_globs: ["app/api/**/route.ts"], file_roles: ["api_route"] },
+    matcher: {
+      kind: "api_route_requires_request_validation",
+      applies_to_file_roles: ["api_route"],
+      methods: ["POST"]
+    },
+    requires: {
+      input_sources: ["body"],
+      sinks: ["data_operation"],
+      schemas: ["ProjectInputSchema"]
+    },
+    severity: "error",
+    enforcement_mode: "block",
+    enforcement_capability: "deterministic_check",
+    exceptions: [],
+    evidence_refs: [],
+    counterexample_refs: [],
+    accepted_by: "test",
+    accepted_at: "2026-05-26T00:00:00.000Z",
+    updated_at: "2026-05-26T00:00:00.000Z"
+  } as const;
+  storage.upsertAcceptedConvention("repo_abc", validationConvention);
+  storage.upsertRepoContract({
+    id: "contract_abc",
+    repo_id: "repo_abc",
+    contract_schema_version: 1,
+    repo_fingerprint: "repo-fp",
+    created_at: "2026-05-26T00:00:00.000Z",
+    updated_at: "2026-05-26T00:00:00.000Z",
+    conventions: [validationConvention],
+    rejected_inferences: [],
+    waivers: [],
+    risky_areas: [],
     safe_commands: [],
     required_checks: [],
     context_egress: {

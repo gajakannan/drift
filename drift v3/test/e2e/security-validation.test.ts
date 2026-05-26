@@ -49,27 +49,42 @@ describe("security validation fixture matrix", () => {
         exitCode: 1,
         proven: false,
         parserGap: false,
-        missingReason: "request_input_not_validated"
+        missingReason: "request_input_not_validated",
+        proofStatus: "missing_proof",
+        blockingCount: 1,
+        findingsCount: 1,
+        actualLayer: "request_input_not_validated"
       },
       {
         name: "security-validation-result-unused",
         exitCode: 1,
         proven: false,
         parserGap: false,
-        missingReason: "request_input_not_validated"
+        missingReason: "request_input_not_validated",
+        proofStatus: "missing_proof",
+        blockingCount: 1,
+        findingsCount: 1,
+        actualLayer: "request_input_not_validated"
       },
       {
         name: "security-validation-before-data",
         exitCode: 0,
         proven: true,
-        parserGap: false
+        parserGap: false,
+        proofStatus: "proven",
+        blockingCount: 0,
+        findingsCount: 0
       },
       {
         name: "security-validation-dynamic-body-parser-gap",
         exitCode: 1,
         proven: false,
         parserGap: true,
-        missingReason: "unsupported_request_input_spread"
+        missingReason: "unsupported_request_input_spread",
+        proofStatus: "parser_gap",
+        blockingCount: 1,
+        findingsCount: 1,
+        actualLayer: "unsupported_request_input_spread"
       }
     ];
 
@@ -98,6 +113,8 @@ describe("security validation fixture matrix", () => {
           applies_to_file_roles: ["api_route" as const]
         },
         requires: {
+          input_sources: ["body"],
+          sinks: ["data_operation"],
           schemas: ["ProjectInputSchema"],
           validators: ["validateProjectInput"]
         },
@@ -146,13 +163,23 @@ describe("security validation fixture matrix", () => {
       ]);
       expect(check.exitCode, `${entry.name} check stderr:\n${check.stderr}\nstdout:\n${check.stdout}`).toBe(entry.exitCode);
       const payload = JSON.parse(check.stdout);
+      expect(payload.check.status, `${entry.name} check status`).toBe(entry.exitCode === 0 ? "pass" : "fail");
+      expect(payload.summary.blocking_count, `${entry.name} blocking count`).toBe(entry.blockingCount);
+      expect(payload.summary.findings_count, `${entry.name} findings count`).toBe(entry.findingsCount);
       const proof = payload.security_boundary_proofs?.[0];
       expect(proof?.request_validation, `${entry.name} payload:\n${JSON.stringify(payload)}`).toMatchObject({
         required: true,
         proven: entry.proven
       });
+      expect(proof?.result?.proof_status, `${entry.name} proof status`).toBe(entry.proofStatus);
       if (entry.missingReason) {
         expect(JSON.stringify(proof)).toContain(entry.missingReason);
+        expect(payload.findings?.[0]).toMatchObject({
+          expected_layer: "request_validation",
+          actual_layer: entry.actualLayer
+        });
+      } else {
+        expect(payload.summary.findings_count, `${entry.name} pass findings`).toBe(0);
       }
       const hasParserGap = (proof?.parser_gaps ?? []).some((gap: { code?: string; blocks_enforcement?: boolean }) =>
         gap.code === "unsupported_request_input_spread" &&
@@ -160,7 +187,8 @@ describe("security validation fixture matrix", () => {
       );
       expect(hasParserGap, `${entry.name} parser gap`).toBe(entry.parserGap);
       expect(JSON.stringify(payload)).not.toContain("request.json()");
-      expect(JSON.stringify(payload)).not.toContain("SECRET_VALUE");
+      expect(JSON.stringify(payload)).not.toContain("SECRET_VALUE_SHOULD_NOT_LEAK");
+      expect(JSON.stringify(payload)).not.toContain("session=");
     }
   }, 30_000);
 });

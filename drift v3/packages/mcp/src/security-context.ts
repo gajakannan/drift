@@ -115,9 +115,8 @@ function requestValidationRoutes(inputFacts: FactRecord[], validatedUseFacts: Fa
     .map((entry) => ({
       route_id: entry.route_id,
       file_path: entry.file_path,
-      proof_status: entry.input_sources.size > 0 && entry.validated_sink_kinds.size > 0
-        ? "proven"
-        : "missing_proof",
+      proof_status: "not_evaluated",
+      proven: false,
       input_sources: [...entry.input_sources].sort(),
       validated_sink_kinds: [...entry.validated_sink_kinds].sort()
     }));

@@ -10279,7 +10279,7 @@ describe("drift CLI convention review", () => {
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout);
     expect(payload.files[0].route_security.request_validation).toMatchObject({
-      status: "missing_proof",
+      status: "not_evaluated",
       input_sources: ["body"]
     });
     expect(result.stdout).not.toContain("request.json()");

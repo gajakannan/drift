@@ -131,21 +131,7 @@ function securityRequires(convention: AcceptedConvention): Record<string, unknow
     return conventionWithRequires.requires;
   }
   if (convention.kind === "api_route_requires_request_validation") {
-    const matcher = convention.matcher as {
-      validators?: unknown;
-      schemas?: unknown;
-      required_calls?: string[];
-    };
-    const requires: Record<string, unknown> = {};
-    if (Array.isArray(matcher.validators)) {
-      requires.validators = matcher.validators;
-    } else if (Array.isArray(matcher.required_calls)) {
-      requires.validators = matcher.required_calls;
-    }
-    if (Array.isArray(matcher.schemas)) {
-      requires.schemas = matcher.schemas;
-    }
-    return Object.keys(requires).length > 0 ? requires : undefined;
+    return undefined;
   }
   if (convention.kind !== "api_route_requires_auth_helper" || !convention.matcher.required_calls?.length) {
     return undefined;

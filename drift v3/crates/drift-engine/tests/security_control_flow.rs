@@ -386,6 +386,158 @@ export async function POST(request: Request) {
 }
 
 #[test]
+fn safe_parse_bare_result_is_not_validated_input() {
+    let source = r#"
+const db = { project: { create: async (input) => input } };
+export async function POST(request: Request) {
+  const body = await request.json();
+  const result = ProjectInputSchema.safeParse(body);
+  if (!result.success) {
+    return Response.json({ ok: false }, { status: 400 });
+  }
+  await db.project.create({ data: result });
+  return Response.json({ ok: true });
+}
+"#;
+    let validators = vec![AcceptedRequestValidator {
+        validator_id: "schema_project_input".to_string(),
+        symbol: "ProjectInputSchema".to_string(),
+        kind: RequestValidatorKind::Schema,
+        behavior: RequestValidatorBehavior::ReturnsParsed,
+    }];
+    let proof = build_request_validation_proof("app/api/projects/route.ts", source, &validators)
+        .expect("request validation proof");
+
+    assert!(
+        !proof.request_validation.proven,
+        "bare safeParse result must not prove validation"
+    );
+    assert!(
+        proof
+            .request_validation
+            .unvalidated_uses
+            .iter()
+            .any(|use_proof| use_proof.reason == "validation_result_not_used"
+                || use_proof.reason == "request_input_not_validated")
+    );
+}
+
+#[test]
+fn safe_parse_guard_must_exit_not_contain_return_string() {
+    let source = r#"
+const db = { project: { create: async (input) => input } };
+export async function POST(request: Request) {
+  const body = await request.json();
+  const result = ProjectInputSchema.safeParse(body);
+  if (!result.success) {
+    console.log("return later");
+  }
+  await db.project.create({ data: result.data });
+  return Response.json({ ok: true });
+}
+"#;
+    let validators = vec![AcceptedRequestValidator {
+        validator_id: "schema_project_input".to_string(),
+        symbol: "ProjectInputSchema".to_string(),
+        kind: RequestValidatorKind::Schema,
+        behavior: RequestValidatorBehavior::ReturnsParsed,
+    }];
+    let proof = build_request_validation_proof("app/api/projects/route.ts", source, &validators)
+        .expect("request validation proof");
+
+    assert!(
+        !proof.request_validation.proven,
+        "fake success guard must not prove validation"
+    );
+}
+
+#[test]
+fn safe_parse_data_alias_after_exit_guard_is_validated_input() {
+    let source = r#"
+const db = { project: { create: async (input) => input } };
+export async function POST(request: Request) {
+  const body = await request.json();
+  const result = ProjectInputSchema.safeParse(body);
+  if (!result.success) {
+    throw new Error("bad input");
+  }
+  const input = result.data;
+  await db.project.create({ data: input });
+  return Response.json({ ok: true });
+}
+"#;
+    let validators = vec![AcceptedRequestValidator {
+        validator_id: "schema_project_input".to_string(),
+        symbol: "ProjectInputSchema".to_string(),
+        kind: RequestValidatorKind::Schema,
+        behavior: RequestValidatorBehavior::ReturnsParsed,
+    }];
+    let proof = build_request_validation_proof("app/api/projects/route.ts", source, &validators)
+        .expect("request validation proof");
+
+    assert!(
+        proof.request_validation.proven,
+        "guarded safeParse .data alias should prove validation"
+    );
+}
+
+#[test]
+fn multiline_sink_with_validated_and_raw_values_blocks() {
+    let source = r#"
+const db = { project: { create: async (input) => input } };
+export async function POST(request: Request) {
+  const body = await request.json();
+  const input = ProjectInputSchema.parse(body);
+  await db.project.create({
+    data: input,
+    audit: body
+  });
+  return Response.json({ ok: true });
+}
+"#;
+    let validators = vec![AcceptedRequestValidator {
+        validator_id: "schema_project_input".to_string(),
+        symbol: "ProjectInputSchema".to_string(),
+        kind: RequestValidatorKind::Schema,
+        behavior: RequestValidatorBehavior::ReturnsParsed,
+    }];
+    let proof = build_request_validation_proof("app/api/projects/route.ts", source, &validators)
+        .expect("request validation proof");
+
+    assert!(
+        !proof.request_validation.proven,
+        "raw body in multi-line sink must block"
+    );
+    assert!(
+        proof
+            .request_validation
+            .unvalidated_uses
+            .iter()
+            .any(|use_proof| use_proof.reason == "request_input_not_validated")
+    );
+}
+
+#[test]
+fn destructured_body_input_emits_parser_gap() {
+    let source = r#"
+const db = { project: { create: async (input) => input } };
+export async function POST(request: Request) {
+  const body = await request.json();
+  const { name } = body;
+  await db.project.create({ data: { name } });
+  return Response.json({ ok: true });
+}
+"#;
+    let proof = build_request_validation_proof("app/api/projects/route.ts", source, &[])
+        .expect("request validation proof");
+
+    assert_eq!(proof.result.proof_status, SecurityProofStatus::ParserGap);
+    assert!(proof.parser_gaps.iter().any(|gap| {
+        gap.code == "unsupported_request_input_destructure" && gap.blocks_enforcement
+    }));
+}
+
+#[test]
 fn request_input_spread_emits_parser_gap_and_blocks() {
     let source = r#"
 import { ProjectInputSchema } from "@/server/validation";

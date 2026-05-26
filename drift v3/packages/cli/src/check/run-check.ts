@@ -1972,6 +1972,9 @@ async function runEngineOwnedAuthCheck(input: {
         .map((fact) => fact.id);
       const preserved = preservedGovernanceStatus(input.existingFindings.get(engineFinding.fingerprint));
       const isRequestValidationFinding = engineFinding.rule_id === "api_route_requires_request_validation";
+      const proofForFinding = result.security_boundary_proofs.find((proof) =>
+        proof.result.finding_ids.includes(engineFinding.id)
+      );
       findings.push({
         id: engineFinding.id,
         repo_id: input.repoId,
@@ -1997,7 +2000,9 @@ async function runEngineOwnedAuthCheck(input: {
           redaction_state: "none"
         }],
         expected_layer: isRequestValidationFinding ? "request_validation" : "auth_guard",
-        actual_layer: isRequestValidationFinding ? "request_input_not_validated" : "missing_auth_guard",
+        actual_layer: isRequestValidationFinding
+          ? requestValidationActualLayer(proofForFinding)
+          : "missing_auth_guard",
         graph_path: [evidence.file_path],
         suggested_fix: isRequestValidationFinding
           ? "Validate request input with an accepted validator before using it at protected route sinks."
@@ -2009,6 +2014,35 @@ async function runEngineOwnedAuthCheck(input: {
   }
 
   return { findings, securityBoundaryProofs };
+}
+
+function requestValidationActualLayer(proof: unknown): string {
+  if (!proof || typeof proof !== "object") {
+    return "request_input_not_validated";
+  }
+  const candidate = proof as {
+    parser_gaps?: Array<{ code?: unknown }>;
+    missing_proof?: Array<{ code?: unknown }>;
+    request_validation?: {
+      unvalidated_uses?: Array<{ reason?: unknown }>;
+    };
+  };
+  const parserGapCode = candidate.parser_gaps?.find((gap) =>
+    typeof gap.code === "string"
+  )?.code;
+  if (typeof parserGapCode === "string") {
+    return parserGapCode;
+  }
+  const missingProofCode = candidate.missing_proof?.find((missing) =>
+    typeof missing.code === "string"
+  )?.code;
+  if (typeof missingProofCode === "string") {
+    return missingProofCode;
+  }
+  const unvalidatedReason = candidate.request_validation?.unvalidated_uses?.find((use) =>
+    typeof use.reason === "string"
+  )?.reason;
+  return typeof unvalidatedReason === "string" ? unvalidatedReason : "request_input_not_validated";
 }
 
 function graphForEngineCheck(

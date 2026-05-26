@@ -1,6 +1,7 @@
 use crate::{
-    AcceptedAuthHelper, AcceptedRequestValidator, FactExtractError, SecurityProofStatus,
-    build_auth_boundary_proof, build_middleware_coverage_proof, build_request_validation_proof,
+    AcceptedAuthHelper, AcceptedRequestValidator, FactExtractError, RequestValidationProofScope,
+    SecurityProofStatus, build_auth_boundary_proof, build_middleware_coverage_proof,
+    build_request_validation_proof_with_scope,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,9 @@ pub struct SecurityRequestValidationContract {
     pub contract_id: String,
     pub capability: SecurityContractCapability,
     pub enforcement_mode: SecurityEnforcementMode,
+    pub methods: Vec<String>,
+    pub input_sources: Vec<String>,
+    pub sinks: Vec<String>,
     pub accepted_validators: Vec<AcceptedRequestValidator>,
 }
 
@@ -202,8 +206,24 @@ pub fn evaluate_api_route_requires_request_validation(
     {
         return Ok(Vec::new());
     }
+    if !contract.methods.is_empty() {
+        let route_method = first_route_method(source);
+        if route_method
+            .is_none_or(|method| !contract.methods.iter().any(|allowed| allowed == &method))
+        {
+            return Ok(Vec::new());
+        }
+    }
 
-    let proof = build_request_validation_proof(file_path, source, &contract.accepted_validators)?;
+    let proof = build_request_validation_proof_with_scope(
+        file_path,
+        source,
+        &contract.accepted_validators,
+        &RequestValidationProofScope {
+            input_sources: contract.input_sources.clone(),
+            sink_kinds: contract.sinks.clone(),
+        },
+    )?;
     if proof.result.proof_status == SecurityProofStatus::Proven {
         return Ok(Vec::new());
     }
@@ -227,6 +247,19 @@ pub fn evaluate_api_route_requires_request_validation(
         drift_category: "missing_proof".to_string(),
         confidence_label: "certain".to_string(),
     }])
+}
+
+fn first_route_method(source: &str) -> Option<String> {
+    source.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        let rest = trimmed.strip_prefix("export async function ")?;
+        let method = rest.split('(').next()?.trim();
+        if method.is_empty() {
+            None
+        } else {
+            Some(method.to_uppercase())
+        }
+    })
 }
 
 fn route_path_from_file(file_path: &str) -> Option<String> {

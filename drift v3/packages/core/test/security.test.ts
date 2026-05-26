@@ -216,6 +216,7 @@ describe("security domain schemas", () => {
       },
       requires: {
         input_sources: ["body", "query", "params"],
+        sinks: ["data_operation"],
         validators: ["validateProjectInput"],
         schemas: ["ProjectInputSchema"]
       },
@@ -290,4 +291,93 @@ describe("security domain schemas", () => {
     expect(proof.request_validation.required).toBe(true);
     expect(JSON.stringify(proof)).not.toContain("secret");
   });
+
+  it("rejects impossible request validation proof states", () => {
+    const proof = validSecurityBoundaryProof({
+      request_validation: {
+        required: true,
+        proven: true,
+        input_reads: [{ fact_id: "fact_body", source: "body", variable: "body" }],
+        validations: [],
+        validated_uses: [],
+        unvalidated_uses: [{
+          input_fact_id: "fact_body",
+          sink_fact_id: "fact_sink",
+          sink_kind: "data_operation",
+          reason: "request_input_not_validated"
+        }]
+      },
+      result: {
+        proof_status: "proven",
+        enforcement_result: "pass",
+        can_block: false,
+        finding_ids: []
+      }
+    });
+
+    expect(() => SecurityBoundaryProofSchema.parse(proof)).toThrow(/request validation/i);
+  });
 });
+
+function validSecurityBoundaryProof(overrides: Record<string, unknown> = {}) {
+  return {
+    proof_id: "proof_route_projects_post_validation",
+    proof_version: "security-boundary-proof/v1",
+    route: {
+      route_id: "route_projects_post",
+      file_path: "app/api/projects/route.ts",
+      file_role: "api_route"
+    },
+    contracts: [{
+      contract_id: "security_api_request_validation",
+      kind: "api_route_requires_request_validation",
+      enforcement_mode: "block",
+      capability: "deterministic_check",
+      matched: true
+    }],
+    capability_status: [{
+      name: "request_validation_facts",
+      status: "complete",
+      can_block: true,
+      parser_gap_ids: [],
+      missing_proof_ids: []
+    }],
+    auth: {
+      required: false,
+      proven: false,
+      proof_kind: "none",
+      trusted_guard_calls: [],
+      dominated_sinks: [],
+      undominated_sinks: []
+    },
+    request_validation: {
+      required: true,
+      proven: true,
+      input_reads: [{ fact_id: "fact_body", source: "body", variable: "body" }],
+      validations: [{
+        fact_id: "fact_validation",
+        validator_symbol: "ProjectInputSchema",
+        schema_symbol: "ProjectInputSchema",
+        input_var: "body",
+        result_var: "input"
+      }],
+      validated_uses: [{
+        fact_id: "fact_validated_use",
+        source_input_var: "body",
+        validated_var: "input",
+        sink_fact_id: "sink_create",
+        sink_kind: "data_operation"
+      }],
+      unvalidated_uses: []
+    },
+    missing_proof: [],
+    parser_gaps: [],
+    result: {
+      proof_status: "proven",
+      enforcement_result: "pass",
+      can_block: false,
+      finding_ids: []
+    },
+    ...overrides
+  };
+}

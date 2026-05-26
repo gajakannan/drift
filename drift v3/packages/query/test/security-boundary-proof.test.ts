@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSecurityBoundaryProofReadModel } from "../src/index.js";
+import { buildSecurityBoundaryProofReadModel, fallbackFactRepoMapFiles } from "../src/index.js";
 
 describe("security boundary proof read model", () => {
   it("renders proof, findings, and parser gaps without snippets", () => {
@@ -166,6 +166,49 @@ describe("security boundary proof read model", () => {
       request_validation_unvalidated_reasons: ["request_input_not_validated"]
     });
     expect(JSON.stringify(model)).not.toContain("request.json()");
+  });
+
+  it("does not report request validation proven from raw scan facts", () => {
+    const files = fallbackFactRepoMapFiles([{
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      file_path: "app/api/projects/route.ts",
+      content_hash: "hash_projects_route",
+      byte_size: 120,
+      indexed: true
+    }], [{
+      id: "fact_request_body",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "request_input_read",
+      file_path: "app/api/projects/route.ts",
+      name: "body",
+      value: JSON.stringify({
+        route_id: "route:app/api/projects/route.ts:POST",
+        source: "body",
+        variable: "body"
+      }),
+      start_line: 3,
+      end_line: 3
+    }, {
+      id: "fact_validated_use",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "validated_input_used",
+      file_path: "app/api/projects/route.ts",
+      name: "input",
+      value: JSON.stringify({
+        route_id: "route:app/api/projects/route.ts:POST",
+        sink_kind: "data_operation"
+      }),
+      start_line: 5,
+      end_line: 5
+    }] as never);
+
+    expect(files[0]?.route_security?.request_validation).toMatchObject({
+      status: "not_evaluated",
+      input_sources: ["body"]
+    });
   });
 
   it("summarizes middleware coverage proof without snippets", () => {
