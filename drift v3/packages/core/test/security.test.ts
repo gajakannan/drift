@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   SecurityBoundaryProofSchema,
   SecurityConventionSchema,
-  SecurityMissingProofCodeSchema
+  SecurityMissingProofCodeSchema,
+  SecurityParserGapCodeSchema
 } from "../src/index.js";
 
 describe("security domain schemas", () => {
@@ -106,5 +107,90 @@ describe("security domain schemas", () => {
 
     expect(JSON.stringify(proof)).not.toContain("const projects");
     expect(proof.auth.required).toBe(true);
+  });
+
+  it("validates middleware_must_cover_routes contracts and parser gaps", () => {
+    expect(SecurityMissingProofCodeSchema.parse("middleware_not_covering_route")).toBe("middleware_not_covering_route");
+    expect(SecurityMissingProofCodeSchema.parse("middleware_dynamic_matcher")).toBe("middleware_dynamic_matcher");
+    expect(SecurityParserGapCodeSchema.parse("unsupported_dynamic_middleware_matcher")).toBe("unsupported_dynamic_middleware_matcher");
+
+    const contract = SecurityConventionSchema.parse({
+      contract_id: "security_middleware_api_coverage",
+      kind: "middleware_must_cover_routes",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: {
+        route_paths: ["/api/projects"],
+        methods: ["GET"]
+      },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "route",
+        diff_status: ["added", "modified", "renamed"]
+      },
+      requires: {
+        middleware_symbols: ["middleware"],
+        protection_kinds: ["auth"]
+      },
+      exceptions: []
+    });
+
+    expect(contract.kind).toBe("middleware_must_cover_routes");
+  });
+
+  it("validates middleware SecurityBoundaryProof fields from engine output", () => {
+    const proof = SecurityBoundaryProofSchema.parse({
+      proof_id: "proof_route_projects_get_middleware",
+      proof_version: "security-boundary-proof/v1",
+      route: {
+        route_id: "route_projects_get",
+        file_path: "app/api/projects/route.ts",
+        file_role: "api_route"
+      },
+      contracts: [{
+        contract_id: "security_middleware_api_coverage",
+        kind: "middleware_must_cover_routes",
+        enforcement_mode: "block",
+        capability: "deterministic_check",
+        matched: true
+      }],
+      capability_status: [{
+        name: "middleware_coverage",
+        status: "complete",
+        can_block: true,
+        parser_gap_ids: [],
+        missing_proof_ids: []
+      }],
+      auth: {
+        required: true,
+        proven: true,
+        proof_kind: "middleware_guard",
+        trusted_guard_calls: [],
+        dominated_sinks: [],
+        undominated_sinks: []
+      },
+      middleware: {
+        required: true,
+        proven: true,
+        matched_middleware: [{
+          middleware_id: "middleware:middleware.ts",
+          matcher_fact_id: "fact_middleware_matcher",
+          protects_route_edge_id: "edge_middleware_projects",
+          protection_kind: "auth"
+        }],
+        mismatches: []
+      },
+      missing_proof: [],
+      parser_gaps: [],
+      result: {
+        proof_status: "proven",
+        enforcement_result: "pass",
+        can_block: false,
+        finding_ids: []
+      }
+    });
+
+    expect(proof.middleware.proven).toBe(true);
+    expect(JSON.stringify(proof)).not.toContain("requireUser()");
   });
 });

@@ -10103,6 +10103,97 @@ describe("drift CLI convention review", () => {
     expect(mapped.stderr).toContain("omit --require-fresh");
   });
 
+  it("scan status reports middleware_coverage capability", async () => {
+    const { databasePath, repoId } = await seedStartedDoctorState("drift-scan-status-middleware-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const scanId = storage.listScanManifests(repoId)
+      .find((scan) => scan.status === "completed" && !scan.id.startsWith("scan_baseline_"))!.id;
+    storage.upsertScanCapabilityReport({
+      schema_version: "drift.scan_capability_report.v1",
+      repo_id: repoId,
+      scan_id: scanId,
+      engine_source: "rust",
+      engine_version: "0.1.0",
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      certified_capabilities: ["file_discovery", "syntax_facts", "middleware_coverage"],
+      required_capabilities: ["file_discovery", "syntax_facts", "middleware_coverage"],
+      missing_capabilities: [],
+      completeness: [{
+        scope: "route-flow",
+        rule_id: "middleware_must_cover_routes",
+        complete: true,
+        can_block: true,
+        reasons: []
+      }],
+      parser_gap_count: 0,
+      parser_gap_kinds: {},
+      fallback_used: false,
+      enforcement_degraded: false,
+      created_at: "2026-05-25T00:00:00.000Z"
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", repoId,
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.security_capabilities.middleware_coverage).toMatchObject({
+      certified: true,
+      can_block: true,
+      missing: false
+    });
+  });
+
+  it("repo map reports route middleware coverage summary", async () => {
+    const { databasePath, repoId } = await seedStartedDoctorState("drift-repo-map-middleware-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const scanId = storage.listScanManifests(repoId)
+      .find((scan) => scan.status === "completed" && !scan.id.startsWith("scan_baseline_"))!.id;
+    storage.upsertFacts([{
+      id: "fact_middleware_protects_users",
+      repo_id: repoId,
+      scan_id: scanId,
+      kind: "middleware_protects_route",
+      file_path: "apps/web/app/api/users/route.ts",
+      name: "middleware:middleware.ts",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/users/route.ts:GET",
+        middleware_id: "middleware:middleware.ts",
+        protection_kind: "auth"
+      }),
+      imported_name: "auth",
+      start_line: 1,
+      end_line: 1,
+      ...factQuality(scanId)
+    }]);
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "repo", "map",
+      "--repo", repoId,
+      "--path", "apps/web/app/api/users/route.ts",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.files[0].route_security.middleware_coverage).toMatchObject({
+      proven: true,
+      protection_kinds: ["auth"],
+      middleware_ids: ["middleware:middleware.ts"]
+    });
+    expect(result.stdout).not.toContain("requireUser()");
+  });
+
   it("prints prepare summary and governance in human output", async () => {
     const { databasePath } = await seedAcceptedDatabase();
 

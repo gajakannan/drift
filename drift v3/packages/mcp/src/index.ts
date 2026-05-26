@@ -15,6 +15,7 @@ import type {
   RepoContract,
   RepoRecord,
   RequiredCheckExecution,
+  ScanCapabilityReport,
   ScanFileChange,
   ScanManifest,
   Severity
@@ -70,6 +71,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { createInterface } from "node:readline";
+import { buildSecurityContextPayload } from "./security-context.js";
 import { DRIFT_READ_ONLY_MCP_TOOLS } from "./tools.js";
 import type {
   DriftMcpHandlers,
@@ -156,6 +158,12 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         limit: requestedLimit,
         offset: requestedOffset
       });
+    }),
+
+    get_security_context: ({ repo_id }) => withStorage(options, (storage) => {
+      const requestedRepoId = requiredMcpString(repo_id, "repo_id");
+      const { contract } = requiredAuthorizedMcpContract(storage, requestedRepoId, "mcp");
+      return buildSecurityContextPayload(storage, requestedRepoId, contract);
     }),
 
     get_task_preflight: ({ repo_id, task, path, require_fresh, now }) => withStorage(options, (storage) => {
@@ -1157,6 +1165,7 @@ function scanStatusPayload(
     parser_gaps: parserGapSummary(parserGaps),
     readiness,
     capability_report: capabilityReport,
+    security_capabilities: securityCapabilitySummary(capabilityReport),
     machine_contract_versions: currentMachineContractVersions(latestScan?.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands
@@ -1224,6 +1233,24 @@ function parserGapSummary(gaps: ParserGap[]): {
     total_count: gaps.length,
     by_kind: countBy(gaps, (gap) => gap.kind) as Record<ParserGapKind, number>,
     confidence_impact: countBy(gaps, (gap) => gap.confidence_impact) as Record<ParserGapConfidenceImpact, number>
+  };
+}
+
+function securityCapabilitySummary(capabilityReport: ScanCapabilityReport | null | undefined) {
+  const certified = new Set(capabilityReport?.certified_capabilities ?? []);
+  const required = new Set(capabilityReport?.required_capabilities ?? []);
+  const missing = new Set(capabilityReport?.missing_capabilities ?? []);
+  const completenessByRule = new Map((capabilityReport?.completeness ?? [])
+    .map((entry) => [entry.rule_id, entry]));
+  const middlewareCompleteness = completenessByRule.get("middleware_must_cover_routes");
+  return {
+    middleware_coverage: {
+      certified: certified.has("middleware_coverage"),
+      required: required.has("middleware_coverage"),
+      missing: missing.has("middleware_coverage"),
+      can_block: Boolean(middlewareCompleteness?.can_block),
+      complete: Boolean(middlewareCompleteness?.complete)
+    }
   };
 }
 

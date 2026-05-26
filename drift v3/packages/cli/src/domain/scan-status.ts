@@ -631,11 +631,30 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     parser_gaps: parserGapSummary(parserGaps),
     readiness,
     capability_report: capabilityReport,
+    security_capabilities: securityCapabilitySummary(capabilityReport),
     machine_contract_versions: currentMachineContractVersions(latestScan.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands
   };
   return payload;
+}
+
+function securityCapabilitySummary(capabilityReport: ReturnType<SqliteDriftStorage["getScanCapabilityReport"]> | null) {
+  const certified = new Set(capabilityReport?.certified_capabilities ?? []);
+  const required = new Set(capabilityReport?.required_capabilities ?? []);
+  const missing = new Set(capabilityReport?.missing_capabilities ?? []);
+  const completenessByRule = new Map((capabilityReport?.completeness ?? [])
+    .map((entry) => [entry.rule_id, entry]));
+  const middlewareCompleteness = completenessByRule.get("middleware_must_cover_routes");
+  return {
+    middleware_coverage: {
+      certified: certified.has("middleware_coverage"),
+      required: required.has("middleware_coverage"),
+      missing: missing.has("middleware_coverage"),
+      can_block: Boolean(middlewareCompleteness?.can_block),
+      complete: Boolean(middlewareCompleteness?.complete)
+    }
+  };
 }
 
 export function readinessForStoredScan(
@@ -763,6 +782,7 @@ function parserGapKindForDiagnostic(code: string): ParserGapKind | null {
       return "unsupported_framework_pattern";
     case "typescript_fallback_used":
     case "file_too_large":
+    case "unsupported_dynamic_middleware_matcher":
       return "partial_parse";
     default:
       return null;

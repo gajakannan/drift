@@ -1524,6 +1524,69 @@ describe("read-only MCP handlers", () => {
     expect(proof.executions[0]).not.toHaveProperty("stderr_preview");
   });
 
+  it("exposes middleware coverage proof summaries without snippets", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertFacts([{
+      id: "fact_middleware_protects_users",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "middleware_protects_route",
+      file_path: "apps/web/app/api/users/route.ts",
+      name: "middleware:middleware.ts",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/users/route.ts:GET",
+        middleware_id: "middleware:middleware.ts",
+        protection_kind: "auth"
+      }),
+      imported_name: "auth",
+      start_line: 1,
+      end_line: 1,
+      ...factQuality("scan_abc")
+    }]);
+    storage.upsertParserGaps([{
+      schema_version: "drift.parser_gap.v1",
+      gap_id: "parser_gap_dynamic_middleware",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "partial_parse",
+      file_path: "middleware.ts",
+      start_line: 10,
+      end_line: 10,
+      confidence_impact: "blocks_enforcement",
+      message: "unsupported_dynamic_middleware_matcher",
+      evidence_refs: ["parser_gap_dynamic_middleware"],
+      created_at: "2026-05-25T00:00:00.000Z"
+    }]);
+    storage.close();
+
+    const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
+      repo_id: "repo_abc"
+    } as never) as {
+      middleware_coverage: {
+        routes: Array<{
+          file_path: string;
+          proven: boolean;
+          protection_kinds: string[];
+          middleware_ids: string[];
+        }>;
+        parser_gaps: Array<{ reason: string; blocking: boolean }>;
+      };
+    };
+
+    expect(securityContext.middleware_coverage.routes).toEqual([{
+      file_path: "apps/web/app/api/users/route.ts",
+      proven: true,
+      protection_kinds: ["auth"],
+      middleware_ids: ["middleware:middleware.ts"]
+    }]);
+    expect(securityContext.middleware_coverage.parser_gaps).toEqual([
+      { reason: "unsupported_dynamic_middleware_matcher", blocking: true }
+    ]);
+    expect(JSON.stringify(securityContext)).not.toContain("requireUser()");
+  });
+
   it("includes scan symbol identities in MCP change impact", async () => {
     const databasePath = await seedMcpDatabase();
     const storage = openDriftStorage({ databasePath });
@@ -2466,6 +2529,7 @@ describe("read-only MCP handlers", () => {
       "get_scan_status",
       "get_repo_contract",
       "get_repo_map",
+      "get_security_context",
       "get_task_preflight",
       "get_conventions",
       "get_findings",
