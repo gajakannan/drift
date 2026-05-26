@@ -2252,10 +2252,766 @@ Required RED tests:
 - Unknown validator is missing proof.
 - Unsupported destructuring/spread emits parser gap or missing proof.
 
+### Phase 3 Non-Negotiable Scope
+
+Phase 3 implements request-input validation only. Do not implement or change:
+
+- SSRF enforcement.
+- SQL injection enforcement.
+- Tenant, role, IDOR, or session trust enforcement.
+- Sensitive response or secret exposure enforcement.
+- CORS, CSRF, or rate limit enforcement.
+- Candidate election UX beyond preventing validation candidates from blocking.
+
+The only accepted contract kind added in this phase is:
+
+- `api_route_requires_request_validation`
+
+The only new facts added in this phase are:
+
+- `request_input_read`
+- `request_validation_called`
+- `validated_input_used`
+
+The only new proof section added in this phase is:
+
+- `SecurityBoundaryProof.request_validation`
+
+Do not add monolithic validation files. Keep responsibilities split:
+
+- `security_facts.rs`: extract request-input reads, validation calls, and validated-result use facts only.
+- `security_patterns.rs`: accepted validator/schema/helper normalization only.
+- `security_control_flow.rs`: local variable/source-to-sink summaries only.
+- `security_proof.rs`: validation proof, parser-gap, and missing-proof construction only.
+- `security_rules.rs`: deterministic accepted-contract evaluation only.
+- `security_capabilities.rs`: capability truth only.
+- `check_command.rs`: engine request/response wiring only.
+- `security-check.ts`: CLI orchestration/output mapping only, no deterministic validation logic.
+- `security-boundary-proof.ts`: query/read model only.
+- `security-context.ts`: MCP read model only.
+
+### Phase 3 Deterministic Model
+
+Supported request input reads:
+
+- `await request.json()`
+- `await request.formData()`
+- `await request.text()`
+- `request.nextUrl.searchParams.get("key")`
+- `new URL(request.url).searchParams.get("key")`
+- `request.headers.get("key")`
+- `cookies().get("key")`
+- Next route context params through `params.id`, `context.params.id`, or destructured `{ params }`.
+
+Supported accepted validators:
+
+- Accepted schema methods: `schema.parse(input)`, `schema.safeParse(input)`.
+- Accepted helper calls configured by contract: `validateProjectInput(input)`.
+- Accepted imported aliases of configured validators or schemas.
+
+Supported validated result use:
+
+- Throwing validators: the original input variable is considered validated after an accepted throwing parse/helper dominates the sink.
+- Parsed-result validators: only the returned parsed variable is trusted.
+- `safeParse`: only the `.data` value is trusted after a local `success` guard dominates the sink.
+
+Unsupported shapes must not silently pass:
+
+- Object spread from raw request input into sink payload.
+- Dynamic property access on request input, for example `body[field]`.
+- Aliasing through arrays/maps/callbacks before validation.
+- Validation inside a callback when the outer sink uses request input.
+- Unknown validation helpers or helpers accepted only as candidates.
+
+Unsupported deterministic shapes must emit `parser_gaps` or `missing_proof` evidence. They must never satisfy validation.
+
+### Phase 3 Accepted Contract Shape
+
+Minimum accepted deterministic contract:
+
+```json
+{
+  "contract_id": "security_api_request_validation",
+  "kind": "api_route_requires_request_validation",
+  "capability": "deterministic_check",
+  "enforcement_mode": "block",
+  "matcher": {
+    "file_roles": ["api_route"],
+    "path_globs": ["**/app/api/**/route.ts", "**/pages/api/**/*.ts"],
+    "methods": ["POST", "PUT", "PATCH", "DELETE"]
+  },
+  "requires": {
+    "input_sources": ["body", "query", "params", "headers", "cookies", "formData"],
+    "sinks": ["data_operation", "response"],
+    "validators": ["validateProjectInput"],
+    "schemas": ["ProjectInputSchema"],
+    "allow_throwing_parse": true,
+    "allow_safe_parse_success_guard": true
+  },
+  "exceptions": [],
+  "governance": {
+    "accepted_by": "test",
+    "accepted_at": "2026-05-25T00:00:00.000Z",
+    "rationale": "API request input must be validated before reaching protected sinks"
+  }
+}
+```
+
+Accepted contract behavior:
+
+- Blocking is allowed only when `enforcement_capability` is `deterministic_check`.
+- `enforcement_mode="off"` produces no findings.
+- Candidate-only validators cannot block.
+- A helper named `validate*` cannot satisfy proof unless it is accepted by contract.
+- A schema named `*Schema` cannot satisfy proof unless it is accepted by contract.
+- A validation call does not pass unless the validated variable or dominated original input reaches the sink.
+
+Expected blocking finding:
+
+```json
+{
+  "title": "API route uses unvalidated request input",
+  "expected_layer": "request_validation",
+  "actual_layer": "request_input_not_validated",
+  "enforcement_result": "block",
+  "drift_category": "missing_proof",
+  "confidence_label": "certain"
+}
+```
+
+Expected ignored/candidate-only behavior:
+
+```json
+{
+  "security_findings": [],
+  "summary": {
+    "security_blocking_count": 0
+  }
+}
+```
+
+Expected proof shape:
+
+```json
+{
+  "request_validation": {
+    "required": true,
+    "proven": false,
+    "input_reads": [
+      {
+        "fact_id": "fact:app/api/projects/route.ts:request_input_read:3",
+        "source": "body",
+        "variable": "body",
+        "key": null
+      }
+    ],
+    "validations": [],
+    "validated_uses": [],
+    "unvalidated_uses": [
+      {
+        "sink_id": "sink:app/api/projects/route.ts:6:db.project.create",
+        "input_fact_id": "fact:app/api/projects/route.ts:request_input_read:3",
+        "reason": "request_input_not_validated"
+      }
+    ]
+  },
+  "missing_proof": [
+    {
+      "code": "request_input_not_validated",
+      "blocks_enforcement": true
+    }
+  ],
+  "parser_gaps": []
+}
+```
+
+### Phase 3 Executable Task Ledger
+
+Execute these tasks in order. For every RED task, add only the failing test first,
+run the focused command, and record the exact expected failure before editing
+implementation files.
+
+- [ ] **Task 3.1: RED request input fact extraction**
+
+  Test file: `crates/drift-engine/tests/security_facts.rs`
+
+  Test name: `extracts_request_input_read_facts`
+
+  Add source fixtures covering `await request.json()`,
+  `request.nextUrl.searchParams.get("projectId")`, and `params.projectId`.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_request_input_read_facts -- --nocapture
+  ```
+
+  Expected RED: fail because Rust does not emit `request_input_read`.
+
+- [ ] **Task 3.2: GREEN request input fact extraction**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/facts.rs`
+  - `crates/drift-engine/src/security_facts.rs`
+  - `crates/drift-engine/src/main.rs`
+
+  Implement extraction only. Do not evaluate validation rules.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_request_input_read_facts -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.3: RED accepted validator call facts**
+
+  Test file: `crates/drift-engine/tests/security_facts.rs`
+
+  Test name: `extracts_request_validation_called_for_accepted_schema_and_helper`
+
+  Add source fixtures for:
+
+  - `ProjectInputSchema.parse(body)`
+  - `ProjectInputSchema.safeParse(body)`
+  - `validateProjectInput(body)`
+  - imported alias of `validateProjectInput`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_request_validation_called_for_accepted_schema_and_helper -- --nocapture
+  ```
+
+  Expected RED: fail because accepted validation helpers/schemas are not
+  normalized and no `request_validation_called` fact is emitted.
+
+- [ ] **Task 3.4: GREEN accepted validator call facts**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/security_facts.rs`
+
+  Add accepted validator/schema normalization. Emit facts only for accepted
+  validators supplied by test/contract input.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_request_validation_called_for_accepted_schema_and_helper -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.5: RED validated result use facts**
+
+  Test file: `crates/drift-engine/tests/security_facts.rs`
+
+  Test name: `extracts_validated_input_used_when_parsed_result_reaches_sink`
+
+  Add fixtures where:
+
+  - `const input = ProjectInputSchema.parse(body);`
+  - `await db.project.create({ data: input });`
+  - raw `body` is not used at the sink.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_validated_input_used_when_parsed_result_reaches_sink -- --nocapture
+  ```
+
+  Expected RED: fail because Rust does not emit `validated_input_used`.
+
+- [ ] **Task 3.6: GREEN validated result use facts**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_facts.rs`
+
+  Implement simple local variable tracking from accepted validation result to
+  data operation or response sink.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_validated_input_used_when_parsed_result_reaches_sink -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.7: RED missing validation blocks**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `request_body_reaches_data_operation_without_validation_blocks`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine request_body_reaches_data_operation_without_validation_blocks -- --nocapture
+  ```
+
+  Expected RED: fail because `api_route_requires_request_validation` is not
+  evaluated.
+
+- [ ] **Task 3.8: GREEN missing validation rule**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+  - `crates/drift-engine/src/check_command.rs`
+
+  Build validation proof and emit blocking finding only for accepted
+  deterministic contracts.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine request_body_reaches_data_operation_without_validation_blocks -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.9: RED validator called but raw input used blocks**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `validator_called_but_raw_input_used_blocks`
+
+  Fixture shape:
+
+  ```ts
+  const body = await request.json();
+  const parsed = ProjectInputSchema.parse(body);
+  await db.project.create({ data: body });
+  ```
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine validator_called_but_raw_input_used_blocks -- --nocapture
+  ```
+
+  Expected RED: fail because validation call existence is treated as enough or
+  raw/validated variable identity is not tracked.
+
+- [ ] **Task 3.10: GREEN raw input still blocks**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+
+  Require sink use to come from the validated variable, not the raw input
+  variable, unless the accepted validator is a throwing validator that dominates
+  the sink.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine validator_called_but_raw_input_used_blocks -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.11: RED parsed result passes**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `validated_parsed_result_reaches_data_operation_passes`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine validated_parsed_result_reaches_data_operation_passes -- --nocapture
+  ```
+
+  Expected RED: fail because validated result use is not accepted as proof.
+
+- [ ] **Task 3.12: GREEN parsed result proof**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+
+  Mark proof as `proven` only when accepted parsed result reaches the protected
+  sink.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine validated_parsed_result_reaches_data_operation_passes -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.13: RED safeParse success guard**
+
+  Test file: `crates/drift-engine/tests/security_control_flow.rs`
+
+  Test name: `safe_parse_data_is_validated_only_after_success_guard`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine safe_parse_data_is_validated_only_after_success_guard -- --nocapture
+  ```
+
+  Expected RED: fail because `safeParse` `.data` is not tied to a dominating
+  `success` guard.
+
+- [ ] **Task 3.14: GREEN safeParse success guard**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+
+  Accept `result.data` only when a local `if (!result.success) return/throw`
+  or `if (result.success) { sink(result.data) }` dominates the sink.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine safe_parse_data_is_validated_only_after_success_guard -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.15: RED unknown validator is missing proof**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `unknown_validator_name_does_not_satisfy_request_validation`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine unknown_validator_name_does_not_satisfy_request_validation -- --nocapture
+  ```
+
+  Expected RED: fail because a name-shaped validator such as `validateInput`
+  is accepted without contract evidence.
+
+- [ ] **Task 3.16: GREEN unknown validator missing proof**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+
+  Emit missing proof code `unknown_validator` or
+  `validation_result_not_used`; do not pass.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine unknown_validator_name_does_not_satisfy_request_validation -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.17: RED spread/destructuring parser gap**
+
+  Test file: `crates/drift-engine/tests/security_control_flow.rs`
+
+  Test name: `request_input_spread_emits_parser_gap_and_blocks`
+
+  Fixture shape:
+
+  ```ts
+  const body = await request.json();
+  await db.project.create({ data: { ...body, ownerId } });
+  ```
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine request_input_spread_emits_parser_gap_and_blocks -- --nocapture
+  ```
+
+  Expected RED: fail because unsupported spread/destructuring is not emitted
+  as parser-gap-backed proof evidence.
+
+- [ ] **Task 3.18: GREEN spread/destructuring parser gap**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_capabilities.rs`
+
+  Emit parser gap `unsupported_request_input_spread` with
+  `blocks_enforcement=true`.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine request_input_spread_emits_parser_gap_and_blocks -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.19: RED candidate-only validation cannot block**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `candidate_only_validation_evidence_does_not_block`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine candidate_only_validation_evidence_does_not_block -- --nocapture
+  ```
+
+  Expected RED: fail because validation-looking candidate evidence is not
+  separated from accepted deterministic contracts.
+
+- [ ] **Task 3.20: GREEN candidate-only validation boundary**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_rules.rs`
+  - `packages/cli/src/domain/convention-candidates.ts`
+
+  Allow candidate generation, but never blocking findings, from candidate-only
+  validator evidence.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine candidate_only_validation_evidence_does_not_block -- --nocapture
+  pnpm --filter @drift/cli test -- convention-candidates
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.21: RED TypeScript schemas and engine contract**
+
+  Test files:
+
+  - `packages/core/test/security.test.ts`
+  - `packages/engine-contract/test/security-contract.test.ts`
+
+  Test names:
+
+  - `validates api_route_requires_request_validation contracts and proof fields`
+  - `validates request validation parser gaps from engine output`
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/core test -- security
+  pnpm --filter @drift/engine-contract test -- security-contract
+  ```
+
+  Expected RED: fail because validation contract kind, fact kinds, proof
+  fields, and parser-gap/missing-proof codes are not in TypeScript schemas.
+
+- [ ] **Task 3.22: GREEN TypeScript schemas and engine contract**
+
+  Implementation files:
+
+  - `packages/core/src/security.ts`
+  - `packages/core/src/domain.ts`
+  - `packages/core/src/schemas.ts`
+  - `packages/engine-contract/src/index.ts`
+  - `crates/drift-engine/src/protocol.rs`
+
+  Add only normalized validation contract/proof/event fields. Do not add rule
+  evaluation logic in TypeScript.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/core test -- security
+  pnpm --filter @drift/engine-contract test -- security-contract
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.23: RED query, CLI, scan status, and repo map output**
+
+  Test files:
+
+  - `packages/query/test/security-boundary-proof.test.ts`
+  - `packages/cli/test/security-check.test.ts`
+  - `packages/cli/test/cli.test.ts`
+
+  Test names:
+
+  - `summarizes request validation proof without snippets`
+  - `returns request validation proof in drift check JSON output`
+  - `scan status reports request_validation capability`
+  - `repo map reports route request validation summary`
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/query test -- security-boundary-proof
+  pnpm --filter @drift/cli test -- security-check
+  pnpm --filter @drift/cli test -- "scan status reports request_validation"
+  pnpm --filter @drift/cli test -- "repo map reports route request validation summary"
+  ```
+
+  Expected RED: fail because query/read models and CLI output do not expose
+  request-validation proof truth.
+
+- [ ] **Task 3.24: GREEN query, CLI, scan status, and repo map output**
+
+  Implementation files:
+
+  - `packages/query/src/security-boundary-proof.ts`
+  - `packages/query/src/index.ts`
+  - `packages/cli/src/check/security-check.ts`
+  - `packages/cli/src/check/run-check.ts`
+  - `packages/cli/src/domain/scan-status.ts`
+  - `packages/cli/src/commands/scan.ts`
+  - `packages/cli/src/commands/repo-map.ts`
+
+  Wire read models and output formatting only. Do not duplicate deterministic
+  request-validation logic in TypeScript.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/query test -- security-boundary-proof
+  pnpm --filter @drift/cli test -- security-check
+  pnpm --filter @drift/cli test -- "scan status reports request_validation"
+  pnpm --filter @drift/cli test -- "repo map reports route request validation summary"
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.25: RED MCP request validation output**
+
+  Test file: `packages/mcp/test/mcp.test.ts`
+
+  Test name: `exposes request validation proof summaries without snippets`
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/mcp test -- "request validation"
+  ```
+
+  Expected RED: fail because MCP read-only security context does not include
+  request-validation proof summaries.
+
+- [ ] **Task 3.26: GREEN MCP request validation output**
+
+  Implementation files:
+
+  - `packages/mcp/src/security-context.ts`
+  - `packages/mcp/src/index.ts`
+  - `packages/mcp/src/tools.ts`
+  - `packages/query/src/security-boundary-proof.ts`
+
+  Expose accepted contracts, proof status, missing proof, and parser gaps
+  without snippets or duplicated rule logic.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/mcp test -- "request validation"
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.27: RED e2e validation fixture matrix**
+
+  Fixture names:
+
+  - `test/fixtures/security-validation-missing`
+  - `test/fixtures/security-validation-result-unused`
+  - `test/fixtures/security-validation-before-data`
+  - `test/fixtures/security-validation-dynamic-body-parser-gap`
+
+  Test file: `test/e2e/security-validation.test.ts`
+
+  Test name: `security validation fixture matrix proves request input validation and gaps`
+
+  Run:
+
+  ```bash
+  pnpm test:e2e -- security-validation
+  ```
+
+  Expected RED: fail because fixtures and end-to-end validation expectations
+  do not exist.
+
+- [ ] **Task 3.28: GREEN e2e validation fixture matrix**
+
+  Implementation files:
+
+  - `test/e2e/security-validation.test.ts`
+  - `test/fixtures/security-validation-missing/package.json`
+  - `test/fixtures/security-validation-missing/app/api/projects/route.ts`
+  - `test/fixtures/security-validation-result-unused/package.json`
+  - `test/fixtures/security-validation-result-unused/app/api/projects/route.ts`
+  - `test/fixtures/security-validation-before-data/package.json`
+  - `test/fixtures/security-validation-before-data/app/api/projects/route.ts`
+  - `test/fixtures/security-validation-dynamic-body-parser-gap/package.json`
+  - `test/fixtures/security-validation-dynamic-body-parser-gap/app/api/projects/route.ts`
+
+  Fixture expectations:
+
+  - Missing validation blocks.
+  - Validation result unused blocks.
+  - Validated parsed result before data operation passes.
+  - Dynamic body/spread/destructuring emits parser-gap-backed evidence.
+  - No fixture includes source snippets, secret values, tokens, cookies, or raw
+    request payload values in expected outputs.
+
+  Run:
+
+  ```bash
+  pnpm test:e2e -- security-validation
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 3.29: Phase 3 full gate**
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine security_
+  cargo test -p drift-engine
+  pnpm --filter @drift/core test
+  pnpm --filter @drift/engine-contract test
+  pnpm --filter @drift/query test
+  pnpm --filter @drift/cli test
+  pnpm --filter @drift/mcp test
+  pnpm test:e2e
+  pnpm typecheck
+  cargo fmt --all -- --check
+  cargo clippy -p drift-engine --all-targets -- -D warnings
+  git diff --check
+  ```
+
+  Expected: all pass.
+
 Done when:
 
 - Validation proof ties input variable to validated variable to sink.
 - Name-only `validate*` helpers cannot satisfy deterministic proof unless accepted.
+- `drift scan status --json` reports `request_validation`.
+- `drift check --json` exposes `SecurityBoundaryProof.request_validation`.
+- MCP `get_security_context` exposes request-validation summaries without snippets.
+- Candidate-only validation evidence never blocks.
+- Dynamic or unsupported request-input shapes produce parser-gap-backed proof
+  evidence and do not silently pass.
 
 ## Phase 4: Tenant, Role, IDOR, And Session Trust
 

@@ -49,6 +49,44 @@ describe("security check bridge", () => {
     expect(JSON.stringify(payload)).not.toContain("requireUser()");
   });
 
+  it("returns request validation proof in drift check JSON output", () => {
+    const payload = buildSecurityCheckJson({
+      repo_id: "repo_abc",
+      scope: "changed-files",
+      changed_files: ["app/api/projects/route.ts"],
+      proofs: [
+        securityProof("proof_validation", "app/api/projects/route.ts", "finding_validation", {
+          request_validation: {
+            required: true,
+            proven: false,
+            input_reads: [{ fact_id: "fact_body", source: "body", variable: "body" }],
+            validations: [],
+            validated_uses: [],
+            unvalidated_uses: [{
+              input_fact_id: "fact_body",
+              sink_fact_id: "sink_create",
+              sink_kind: "data_operation",
+              reason: "request_input_not_validated"
+            }]
+          }
+        })
+      ],
+      findings: [{
+        finding_id: "finding_validation",
+        title: "API route uses unvalidated request input",
+        file_path: "app/api/projects/route.ts",
+        enforcement_result: "block"
+      }]
+    });
+
+    expect(payload.security_boundary_proofs[0]?.request_validation).toMatchObject({
+      required: true,
+      proven: false
+    });
+    expect(payload.summary.request_validation_failed_count).toBe(1);
+    expect(JSON.stringify(payload)).not.toContain("request.json()");
+  });
+
   it("receives SecurityBoundaryProof.auth from engine-owned auth checks", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-security-auth-bridge-"));
     tempDirs.push(dir);
@@ -263,7 +301,12 @@ function fact(kind: string, name: string, line: number, value?: string) {
   } as const;
 }
 
-function securityProof(proofId: string, filePath: string, findingId: string) {
+function securityProof(
+  proofId: string,
+  filePath: string,
+  findingId: string,
+  overrides: Record<string, unknown> = {}
+) {
   return {
     proof_id: proofId,
     proof_version: "security-boundary-proof/v1",
@@ -307,7 +350,8 @@ function securityProof(proofId: string, filePath: string, findingId: string) {
       enforcement_result: "block",
       can_block: true,
       finding_ids: [findingId]
-    }
+    },
+    ...overrides
   } as const;
 }
 

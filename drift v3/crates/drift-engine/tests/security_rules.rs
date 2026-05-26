@@ -1,8 +1,10 @@
 use drift_engine::{
-    AcceptedAuthHelper, AuthGuardBehavior, SecurityAuthContract, SecurityContractCapability,
+    AcceptedAuthHelper, AcceptedRequestValidator, AuthGuardBehavior, RequestValidatorBehavior,
+    RequestValidatorKind, SecurityAuthContract, SecurityContractCapability,
     SecurityEnforcementMode, SecurityFindingResult, SecurityMiddlewareContract,
-    evaluate_api_route_requires_auth_helper,
-    evaluate_api_route_requires_auth_helper_with_middleware, evaluate_middleware_must_cover_routes,
+    SecurityRequestValidationContract, evaluate_api_route_requires_auth_helper,
+    evaluate_api_route_requires_auth_helper_with_middleware,
+    evaluate_api_route_requires_request_validation, evaluate_middleware_must_cover_routes,
 };
 
 #[test]
@@ -15,7 +17,6 @@ export async function GET() {
   return Response.json({ projects });
 }
 "#;
-
     let findings = evaluate_api_route_requires_auth_helper(
         "app/api/projects/route.ts",
         source,
@@ -37,6 +38,192 @@ export async function GET() {
     assert_eq!(findings[0].enforcement_result, SecurityFindingResult::Block);
     assert_eq!(findings[0].drift_category, "missing_proof");
     assert_eq!(findings[0].confidence_label, "certain");
+}
+
+#[test]
+fn request_body_reaches_data_operation_without_validation_blocks() {
+    let source = r#"
+import { db } from "@/server/db";
+
+export async function POST(request: Request) {
+  const body = await request.json();
+  await db.project.create({ data: body });
+  return Response.json({ ok: true });
+}
+"#;
+
+    let findings = evaluate_api_route_requires_request_validation(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityRequestValidationContract {
+            contract_id: "security_api_request_validation".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_validators: vec![AcceptedRequestValidator {
+                validator_id: "schema_project_input".to_string(),
+                symbol: "ProjectInputSchema".to_string(),
+                kind: RequestValidatorKind::Schema,
+                behavior: RequestValidatorBehavior::ReturnsParsed,
+            }],
+        },
+    )
+    .expect("security findings");
+
+    assert_eq!(findings.len(), 1, "expected one finding: {findings:#?}");
+    assert_eq!(findings[0].contract_id, "security_api_request_validation");
+    assert_eq!(
+        findings[0].title,
+        "API route uses unvalidated request input"
+    );
+    assert_eq!(findings[0].expected_layer, "request_validation");
+    assert_eq!(findings[0].actual_layer, "request_input_not_validated");
+    assert_eq!(findings[0].enforcement_result, SecurityFindingResult::Block);
+    assert_eq!(findings[0].drift_category, "missing_proof");
+    assert_eq!(findings[0].confidence_label, "certain");
+}
+
+#[test]
+fn validator_called_but_raw_input_used_blocks() {
+    let source = r#"
+import { ProjectInputSchema } from "@/server/validation";
+import { db } from "@/server/db";
+
+export async function POST(request: Request) {
+  const body = await request.json();
+  const parsed = ProjectInputSchema.parse(body);
+  await db.project.create({ data: body });
+  return Response.json({ parsed });
+}
+"#;
+
+    let findings = evaluate_api_route_requires_request_validation(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityRequestValidationContract {
+            contract_id: "security_api_request_validation".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_validators: vec![AcceptedRequestValidator {
+                validator_id: "schema_project_input".to_string(),
+                symbol: "ProjectInputSchema".to_string(),
+                kind: RequestValidatorKind::Schema,
+                behavior: RequestValidatorBehavior::ReturnsParsed,
+            }],
+        },
+    )
+    .expect("security findings");
+
+    assert_eq!(findings.len(), 1, "expected one finding: {findings:#?}");
+    assert_eq!(findings[0].actual_layer, "request_input_not_validated");
+    assert_eq!(findings[0].enforcement_result, SecurityFindingResult::Block);
+}
+
+#[test]
+fn validated_parsed_result_reaches_data_operation_passes() {
+    let source = r#"
+import { ProjectInputSchema } from "@/server/validation";
+import { db } from "@/server/db";
+
+export async function POST(request: Request) {
+  const body = await request.json();
+  const input = ProjectInputSchema.parse(body);
+  await db.project.create({ data: input });
+  return Response.json({ ok: true });
+}
+"#;
+
+    let findings = evaluate_api_route_requires_request_validation(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityRequestValidationContract {
+            contract_id: "security_api_request_validation".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_validators: vec![AcceptedRequestValidator {
+                validator_id: "schema_project_input".to_string(),
+                symbol: "ProjectInputSchema".to_string(),
+                kind: RequestValidatorKind::Schema,
+                behavior: RequestValidatorBehavior::ReturnsParsed,
+            }],
+        },
+    )
+    .expect("security findings");
+
+    assert!(
+        findings.is_empty(),
+        "validated parsed result should satisfy request validation: {findings:#?}"
+    );
+}
+
+#[test]
+fn unknown_validator_name_does_not_satisfy_request_validation() {
+    let source = r#"
+import { validateInput } from "@/server/validation";
+import { db } from "@/server/db";
+
+export async function POST(request: Request) {
+  const body = await request.json();
+  const input = validateInput(body);
+  await db.project.create({ data: input });
+  return Response.json({ ok: true });
+}
+"#;
+
+    let findings = evaluate_api_route_requires_request_validation(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityRequestValidationContract {
+            contract_id: "security_api_request_validation".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_validators: vec![AcceptedRequestValidator {
+                validator_id: "schema_project_input".to_string(),
+                symbol: "ProjectInputSchema".to_string(),
+                kind: RequestValidatorKind::Schema,
+                behavior: RequestValidatorBehavior::ReturnsParsed,
+            }],
+        },
+    )
+    .expect("security findings");
+
+    assert_eq!(findings.len(), 1, "expected one finding: {findings:#?}");
+    assert_eq!(findings[0].actual_layer, "unknown_validator");
+    assert_eq!(findings[0].enforcement_result, SecurityFindingResult::Block);
+}
+
+#[test]
+fn candidate_only_validation_evidence_does_not_block() {
+    let source = r#"
+import { db } from "@/server/db";
+
+export async function POST(request: Request) {
+  const body = await request.json();
+  await db.project.create({ data: body });
+  return Response.json({ ok: true });
+}
+"#;
+
+    let findings = evaluate_api_route_requires_request_validation(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityRequestValidationContract {
+            contract_id: "candidate_request_validation".to_string(),
+            capability: SecurityContractCapability::HeuristicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_validators: vec![AcceptedRequestValidator {
+                validator_id: "schema_project_input".to_string(),
+                symbol: "ProjectInputSchema".to_string(),
+                kind: RequestValidatorKind::Schema,
+                behavior: RequestValidatorBehavior::ReturnsParsed,
+            }],
+        },
+    )
+    .expect("security findings");
+
+    assert!(
+        findings.is_empty(),
+        "candidate-only validation evidence must not block: {findings:#?}"
+    );
 }
 
 #[test]

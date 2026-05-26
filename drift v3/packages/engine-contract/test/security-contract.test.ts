@@ -139,4 +139,84 @@ describe("engine security contract schemas", () => {
     expect(event.proofs[0]?.parser_gaps[0]?.code).toBe("unsupported_dynamic_middleware_matcher");
     expect(JSON.stringify(event)).not.toContain("requireUser()");
   });
+
+  it("validates request validation parser gaps from engine output", () => {
+    const event = parseEngineSecurityProofEvent({
+      event: "SecurityProof",
+      schema_version: "engine.security.proof/v1",
+      proofs: [{
+        proof_id: "proof_route_projects_post_validation",
+        proof_version: "security-boundary-proof/v1",
+        route: {
+          route_id: "route_projects_post",
+          file_path: "app/api/projects/route.ts",
+          file_role: "api_route"
+        },
+        contracts: [{
+          contract_id: "security_api_request_validation",
+          kind: "api_route_requires_request_validation",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }],
+        capability_status: [{
+          name: "request_validation_facts",
+          status: "partial",
+          can_block: true,
+          parser_gap_ids: ["gap_spread"],
+          missing_proof_ids: ["missing_validation"]
+        }],
+        auth: {
+          required: false,
+          proven: false,
+          proof_kind: "none",
+          trusted_guard_calls: [],
+          dominated_sinks: [],
+          undominated_sinks: []
+        },
+        request_validation: {
+          required: true,
+          proven: false,
+          input_reads: [{ fact_id: "fact_body", source: "body", variable: "body" }],
+          validations: [],
+          validated_uses: [],
+          unvalidated_uses: [{
+            input_fact_id: "fact_body",
+            sink_fact_id: "sink_create",
+            sink_kind: "data_operation",
+            reason: "request_input_not_validated"
+          }]
+        },
+        missing_proof: [{
+          id: "missing_validation",
+          capability: "request_validation_facts",
+          code: "request_input_not_validated",
+          blocks_enforcement: true,
+          fact_ids: ["fact_body"],
+          graph_edge_ids: []
+        }],
+        parser_gaps: [{
+          parser_gap_id: "gap_spread",
+          capability: "request_validation_facts",
+          code: "unsupported_request_input_spread",
+          file_path: "app/api/projects/route.ts",
+          reason: "Request input spread prevents deterministic validation proof",
+          affected_contract_kinds: ["api_route_requires_request_validation"],
+          affected_route_ids: ["route_projects_post"],
+          missing_proof_ids: ["missing_validation"],
+          blocks_enforcement: true
+        }],
+        result: {
+          proof_status: "parser_gap",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: ["finding_validation"]
+        }
+      }]
+    });
+
+    expect(event.proofs[0]?.request_validation.required).toBe(true);
+    expect(event.proofs[0]?.parser_gaps[0]?.code).toBe("unsupported_request_input_spread");
+    expect(JSON.stringify(event)).not.toContain("cookie=");
+  });
 });

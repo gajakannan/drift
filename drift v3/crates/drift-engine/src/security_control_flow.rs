@@ -22,6 +22,16 @@ pub struct MiddlewareMismatch {
     pub parser_gap_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedInputUse {
+    pub source_input_var: String,
+    pub validated_var: String,
+    pub sink_fact_id: String,
+    pub sink_kind: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
 pub fn guard_dominates_straight_line_sinks(facts: &[Fact]) -> Vec<DominatedSink> {
     let Some(first_guard_line) = facts
         .iter()
@@ -158,6 +168,110 @@ pub fn protected_sinks(facts: &[Fact]) -> Vec<&Fact> {
             )
         })
         .collect()
+}
+
+pub fn validated_input_uses(facts: &[Fact], lines: &[&str]) -> Vec<ValidatedInputUse> {
+    let validations = facts
+        .iter()
+        .filter(|fact| fact.kind == FactKind::RequestValidationCalled)
+        .filter_map(validation_metadata)
+        .collect::<Vec<_>>();
+    let mut uses = Vec::new();
+    for validation in validations {
+        for sink in protected_sinks(facts)
+            .into_iter()
+            .filter(|sink| sink.start_line > validation.validation_line)
+        {
+            let Some(line) = lines.get(sink.start_line.saturating_sub(1)) else {
+                continue;
+            };
+            if line_uses_identifier(line, &validation.validated_var) {
+                if validation.requires_success_guard
+                    && !safe_parse_success_guard_dominates(
+                        lines,
+                        &validation.validated_var,
+                        validation.validation_line,
+                        sink.start_line,
+                    )
+                {
+                    continue;
+                }
+                uses.push(ValidatedInputUse {
+                    source_input_var: validation.source_input_var.clone(),
+                    validated_var: validation.validated_var.clone(),
+                    sink_fact_id: sink_id(sink),
+                    sink_kind: sink_kind(sink).to_string(),
+                    start_line: sink.start_line,
+                    end_line: sink.end_line,
+                });
+            }
+        }
+    }
+    uses
+}
+
+struct ValidationMetadata {
+    source_input_var: String,
+    validated_var: String,
+    validation_line: usize,
+    requires_success_guard: bool,
+}
+
+fn validation_metadata(fact: &Fact) -> Option<ValidationMetadata> {
+    let value = serde_json::from_str::<serde_json::Value>(fact.value.as_deref()?).ok()?;
+    let source_input_var = value.get("input_var")?.as_str()?.to_string();
+    let validated_var = value.get("result_var")?.as_str()?.to_string();
+    Some(ValidationMetadata {
+        source_input_var,
+        validated_var,
+        validation_line: fact.start_line,
+        requires_success_guard: fact.name == "safeParse",
+    })
+}
+
+fn safe_parse_success_guard_dominates(
+    lines: &[&str],
+    result_var: &str,
+    validation_line: usize,
+    sink_line: usize,
+) -> bool {
+    let success_check = format!("{result_var}.success");
+    let failure_check = format!("!{result_var}.success");
+    for (index, line) in lines.iter().enumerate() {
+        let line_number = index + 1;
+        if line_number <= validation_line || line_number >= sink_line || !line.contains("if") {
+            continue;
+        }
+        if line.contains(&failure_check) {
+            let Some(block_end) = closing_block_line(lines, line_number) else {
+                continue;
+            };
+            let guard_exits = lines
+                .iter()
+                .take(block_end)
+                .skip(line_number)
+                .any(|candidate| candidate.contains("return") || candidate.contains("throw"));
+            if guard_exits && block_end < sink_line {
+                return true;
+            }
+        }
+        if line.contains(&success_check) && !line.contains(&failure_check) {
+            let Some(block_end) = closing_block_line(lines, line_number) else {
+                continue;
+            };
+            if line_number < sink_line && sink_line < block_end {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn line_uses_identifier(line: &str, identifier: &str) -> bool {
+    line.split(|character: char| {
+        character != '_' && character != '$' && !character.is_ascii_alphanumeric()
+    })
+    .any(|token| token == identifier)
 }
 
 pub fn static_middleware_coverage(

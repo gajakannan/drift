@@ -646,6 +646,7 @@ function securityCapabilitySummary(capabilityReport: ReturnType<SqliteDriftStora
   const completenessByRule = new Map((capabilityReport?.completeness ?? [])
     .map((entry) => [entry.rule_id, entry]));
   const middlewareCompleteness = completenessByRule.get("middleware_must_cover_routes");
+  const requestValidationCompleteness = completenessByRule.get("api_route_requires_request_validation");
   return {
     middleware_coverage: {
       certified: certified.has("middleware_coverage"),
@@ -653,6 +654,13 @@ function securityCapabilitySummary(capabilityReport: ReturnType<SqliteDriftStora
       missing: missing.has("middleware_coverage"),
       can_block: Boolean(middlewareCompleteness?.can_block),
       complete: Boolean(middlewareCompleteness?.complete)
+    },
+    request_validation: {
+      certified: certified.has("request_validation_facts"),
+      required: required.has("request_validation_facts"),
+      missing: missing.has("request_validation_facts"),
+      can_block: Boolean(requestValidationCompleteness?.can_block),
+      complete: Boolean(requestValidationCompleteness?.complete)
     }
   };
 }

@@ -1919,7 +1919,10 @@ async function runEngineOwnedAuthCheck(input: {
 
   for (const convention of input.contract.conventions) {
     if (
-      convention.kind !== "api_route_requires_auth_helper" ||
+      (
+        convention.kind !== "api_route_requires_auth_helper" &&
+        convention.kind !== "api_route_requires_request_validation"
+      ) ||
       convention.enforcement_mode === "off" ||
       convention.enforcement_capability !== "deterministic_check" ||
       !isActiveConvention(convention, input.now)
@@ -1968,6 +1971,7 @@ async function runEngineOwnedAuthCheck(input: {
         )
         .map((fact) => fact.id);
       const preserved = preservedGovernanceStatus(input.existingFindings.get(engineFinding.fingerprint));
+      const isRequestValidationFinding = engineFinding.rule_id === "api_route_requires_request_validation";
       findings.push({
         id: engineFinding.id,
         repo_id: input.repoId,
@@ -1992,10 +1996,12 @@ async function runEngineOwnedAuthCheck(input: {
           file_hash: snapshot?.content_hash ?? "",
           redaction_state: "none"
         }],
-        expected_layer: "auth_guard",
-        actual_layer: "missing_auth_guard",
+        expected_layer: isRequestValidationFinding ? "request_validation" : "auth_guard",
+        actual_layer: isRequestValidationFinding ? "request_input_not_validated" : "missing_auth_guard",
         graph_path: [evidence.file_path],
-        suggested_fix: "Call an accepted auth helper before route data operations or response sinks.",
+        suggested_fix: isRequestValidationFinding
+          ? "Validate request input with an accepted validator before using it at protected route sinks."
+          : "Call an accepted auth helper before route data operations or response sinks.",
         related_node_ids: engineFinding.related_node_ids,
         created_at: input.now
       });

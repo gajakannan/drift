@@ -737,6 +737,9 @@ fn fact_kind(kind: FactKind) -> &'static str {
         FactKind::MiddlewareDeclared => "middleware_declared",
         FactKind::MiddlewareMatcherDeclared => "middleware_matcher_declared",
         FactKind::MiddlewareProtectsRoute => "middleware_protects_route",
+        FactKind::RequestInputRead => "request_input_read",
+        FactKind::RequestValidationCalled => "request_validation_called",
+        FactKind::ValidatedInputUsed => "validated_input_used",
     }
 }
 

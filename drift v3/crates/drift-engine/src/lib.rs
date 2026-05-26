@@ -33,22 +33,29 @@ pub use security_capabilities::{
     SecurityCapabilityStatus, SecurityScanCapability, security_capabilities,
 };
 pub use security_control_flow::{
-    MatchedMiddleware, MiddlewareMismatch, static_middleware_coverage,
+    MatchedMiddleware, MiddlewareMismatch, ValidatedInputUse, static_middleware_coverage,
+    validated_input_uses,
 };
 pub use security_facts::extract_security_facts;
+pub use security_facts::extract_security_facts_with_validation;
 pub use security_patterns::{
-    AcceptedAuthHelper, AuthGuardBehavior, dynamic_middleware_matcher_line,
+    AcceptedAuthHelper, AcceptedRequestValidator, AuthGuardBehavior, RequestValidatorBehavior,
+    RequestValidatorKind, dynamic_middleware_matcher_line,
 };
 pub use security_proof::{
-    AuthBoundaryProof, MiddlewareBoundaryProof, RouteSecurityBoundaryProof, SecurityBoundaryProof,
-    SecurityParserGap, SecurityProofResult, SecurityProofStatus, TrustedGuardCallProof,
-    UndominatedSinkProof, build_auth_boundary_proof, build_auth_boundary_proofs_for_file,
-    build_middleware_coverage_proof,
+    AuthBoundaryProof, MiddlewareBoundaryProof, RequestInputReadProof, RequestUnvalidatedUseProof,
+    RequestValidatedUseProof, RequestValidationCallProof, RequestValidationProof,
+    RouteSecurityBoundaryProof, SecurityBoundaryProof, SecurityParserGap, SecurityProofResult,
+    SecurityProofStatus, TrustedGuardCallProof, UndominatedSinkProof, build_auth_boundary_proof,
+    build_auth_boundary_proofs_for_file, build_middleware_coverage_proof,
+    build_request_validation_proof,
 };
 pub use security_rules::{
     SecurityAuthContract, SecurityContractCapability, SecurityEnforcementMode, SecurityFinding,
-    SecurityFindingResult, SecurityMiddlewareContract, evaluate_api_route_requires_auth_helper,
-    evaluate_api_route_requires_auth_helper_with_middleware, evaluate_middleware_must_cover_routes,
+    SecurityFindingResult, SecurityMiddlewareContract, SecurityRequestValidationContract,
+    evaluate_api_route_requires_auth_helper,
+    evaluate_api_route_requires_auth_helper_with_middleware,
+    evaluate_api_route_requires_request_validation, evaluate_middleware_must_cover_routes,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

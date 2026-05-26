@@ -97,7 +97,10 @@ export const EngineFactSchema = z.object({
     "callback_boundary_detected",
     "middleware_declared",
     "middleware_matcher_declared",
-    "middleware_protects_route"
+    "middleware_protects_route",
+    "request_input_read",
+    "request_validation_called",
+    "validated_input_used"
   ]),
   file_path: z.string().min(1),
   name: z.string().min(1),
@@ -293,6 +296,9 @@ const EngineSecurityMissingProofCodeSchema = z.enum([
   "auth_guard_not_dominating_sink",
   "middleware_not_covering_route",
   "middleware_dynamic_matcher",
+  "request_input_not_validated",
+  "validation_result_not_used",
+  "unknown_validator",
   "unsupported_callback_boundary",
   "unsupported_dynamic_control_flow",
   "route_binding_unresolved",
@@ -307,6 +313,7 @@ const EngineSecurityParserGapSchema = z.object({
     "handler_unresolved",
     "unsupported_dynamic_control_flow",
     "unsupported_dynamic_middleware_matcher",
+    "unsupported_request_input_spread",
     "unsupported_callback_boundary"
   ]),
   file_path: z.string().min(1),
@@ -387,6 +394,43 @@ const EngineSecurityBoundaryProofSchema = z.object({
     proven: false,
     matched_middleware: [],
     mismatches: []
+  }),
+  request_validation: z.object({
+    required: z.boolean(),
+    proven: z.boolean(),
+    input_reads: z.array(z.object({
+      fact_id: z.string().min(1),
+      source: z.enum(["body", "query", "params", "headers", "cookies", "formData"]),
+      variable: z.string().min(1).optional(),
+      key: z.string().min(1).optional()
+    })),
+    validations: z.array(z.object({
+      fact_id: z.string().min(1),
+      validator_symbol: z.string().min(1),
+      schema_symbol: z.string().min(1).optional(),
+      input_var: z.string().min(1).optional(),
+      result_var: z.string().min(1).optional()
+    })),
+    validated_uses: z.array(z.object({
+      fact_id: z.string().min(1).optional(),
+      source_input_var: z.string().min(1),
+      validated_var: z.string().min(1),
+      sink_fact_id: z.string().min(1),
+      sink_kind: z.enum(["data_operation", "response", "outbound_request", "raw_sql"])
+    })),
+    unvalidated_uses: z.array(z.object({
+      input_fact_id: z.string().min(1),
+      sink_fact_id: z.string().min(1),
+      sink_kind: z.enum(["data_operation", "response", "outbound_request", "raw_sql"]),
+      reason: z.enum(["request_input_not_validated", "validation_result_not_used", "unknown_validator"])
+    }))
+  }).optional().default({
+    required: false,
+    proven: false,
+    input_reads: [],
+    validations: [],
+    validated_uses: [],
+    unvalidated_uses: []
   }),
   missing_proof: z.array(z.object({
     id: z.string().min(1),

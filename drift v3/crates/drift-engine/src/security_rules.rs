@@ -1,6 +1,6 @@
 use crate::{
-    AcceptedAuthHelper, FactExtractError, SecurityProofStatus, build_auth_boundary_proof,
-    build_middleware_coverage_proof,
+    AcceptedAuthHelper, AcceptedRequestValidator, FactExtractError, SecurityProofStatus,
+    build_auth_boundary_proof, build_middleware_coverage_proof, build_request_validation_proof,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +18,14 @@ pub struct SecurityMiddlewareContract {
     pub route_paths: Vec<String>,
     pub methods: Vec<String>,
     pub accepted_auth_helpers: Vec<AcceptedAuthHelper>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityRequestValidationContract {
+    pub contract_id: String,
+    pub capability: SecurityContractCapability,
+    pub enforcement_mode: SecurityEnforcementMode,
+    pub accepted_validators: Vec<AcceptedRequestValidator>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +180,44 @@ pub fn evaluate_middleware_must_cover_routes(
             .first()
             .map(|mismatch| mismatch.reason.clone())
             .unwrap_or_else(|| "middleware_not_covering_route".to_string()),
+        enforcement_result: match contract.enforcement_mode {
+            SecurityEnforcementMode::Brief => SecurityFindingResult::Brief,
+            SecurityEnforcementMode::Warn => SecurityFindingResult::Warn,
+            SecurityEnforcementMode::Block => SecurityFindingResult::Block,
+            SecurityEnforcementMode::Off => return Ok(Vec::new()),
+        },
+        drift_category: "missing_proof".to_string(),
+        confidence_label: "certain".to_string(),
+    }])
+}
+
+pub fn evaluate_api_route_requires_request_validation(
+    file_path: impl AsRef<std::path::Path>,
+    source: &str,
+    contract: &SecurityRequestValidationContract,
+) -> Result<Vec<SecurityFinding>, FactExtractError> {
+    if contract.enforcement_mode == SecurityEnforcementMode::Off
+        || contract.capability != SecurityContractCapability::DeterministicCheck
+        || contract.accepted_validators.is_empty()
+    {
+        return Ok(Vec::new());
+    }
+
+    let proof = build_request_validation_proof(file_path, source, &contract.accepted_validators)?;
+    if proof.result.proof_status == SecurityProofStatus::Proven {
+        return Ok(Vec::new());
+    }
+
+    Ok(vec![SecurityFinding {
+        contract_id: contract.contract_id.clone(),
+        title: "API route uses unvalidated request input".to_string(),
+        expected_layer: "request_validation".to_string(),
+        actual_layer: proof
+            .request_validation
+            .unvalidated_uses
+            .first()
+            .map(|use_proof| use_proof.reason.clone())
+            .unwrap_or_else(|| "request_input_not_validated".to_string()),
         enforcement_result: match contract.enforcement_mode {
             SecurityEnforcementMode::Brief => SecurityFindingResult::Brief,
             SecurityEnforcementMode::Warn => SecurityFindingResult::Warn,

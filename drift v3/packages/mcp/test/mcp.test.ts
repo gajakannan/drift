@@ -1587,6 +1587,140 @@ describe("read-only MCP handlers", () => {
     expect(JSON.stringify(securityContext)).not.toContain("requireUser()");
   });
 
+  it("exposes request validation proof summaries without snippets", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const validationConvention = {
+      id: "security_api_request_validation",
+      contract_id: "contract_abc",
+      kind: "api_route_requires_request_validation" as const,
+      statement: "API request input must be validated before protected sinks.",
+      scope: { path_globs: ["apps/web/app/api/**/route.ts"], file_roles: ["api_route" as const] },
+      matcher: {
+        kind: "api_route_requires_request_validation" as const,
+        applies_to_file_roles: ["api_route" as const]
+      },
+      requires: {
+        validators: ["validateProjectInput"],
+        schemas: ["ProjectInputSchema"]
+      },
+      severity: "error" as const,
+      enforcement_mode: "block" as const,
+      enforcement_capability: "deterministic_check" as const,
+      exceptions: [],
+      evidence_refs: [],
+      counterexample_refs: [],
+      accepted_by: "local-user",
+      accepted_at: "2026-05-25T00:00:00.000Z",
+      updated_at: "2026-05-25T00:00:00.000Z"
+    };
+    storage.upsertAcceptedConvention("repo_abc", validationConvention);
+    storage.upsertRepoContract({
+      id: "contract_abc",
+      repo_id: "repo_abc",
+      contract_schema_version: 1,
+      repo_fingerprint: "repo-fp",
+      created_at: "2026-05-25T00:00:00.000Z",
+      updated_at: "2026-05-25T00:00:00.000Z",
+      conventions: [validationConvention],
+      rejected_inferences: [],
+      waivers: [],
+      risky_areas: [],
+      safe_commands: [],
+      required_checks: [],
+      context_egress: {
+        default_mode: "local_only",
+        denied_globs: [".env*", "**/*.pem"],
+        max_snippet_chars: 1200,
+        allow_full_file_content: false
+      },
+      agent_permissions: []
+    });
+    storage.upsertFacts([{
+      id: "fact_request_body",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "request_input_read",
+      file_path: "apps/web/app/api/projects/route.ts",
+      name: "body",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/projects/route.ts:POST",
+        source: "body",
+        variable: "body"
+      }),
+      imported_name: undefined,
+      start_line: 3,
+      end_line: 3,
+      ...factQuality("scan_abc")
+    }, {
+      id: "fact_validated_use",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "validated_input_used",
+      file_path: "apps/web/app/api/projects/route.ts",
+      name: "input",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/projects/route.ts:POST",
+        source_input_var: "body",
+        validated_var: "input",
+        sink_fact_id: "fact_sink",
+        sink_kind: "data_operation"
+      }),
+      imported_name: undefined,
+      start_line: 5,
+      end_line: 5,
+      ...factQuality("scan_abc")
+    }]);
+    storage.upsertParserGaps([{
+      schema_version: "drift.parser_gap.v1",
+      gap_id: "parser_gap_request_spread",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "partial_parse",
+      file_path: "apps/web/app/api/projects/route.ts",
+      start_line: 8,
+      end_line: 8,
+      confidence_impact: "blocks_enforcement",
+      message: "unsupported_request_input_spread",
+      evidence_refs: ["parser_gap_request_spread"],
+      created_at: "2026-05-25T00:00:00.000Z"
+    }]);
+    storage.close();
+
+    const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
+      repo_id: "repo_abc"
+    } as never) as {
+      accepted_contracts: Array<{ kind: string }>;
+      request_validation: {
+        routes: Array<{
+          route_id: string;
+          file_path: string;
+          proof_status: string;
+          input_sources: string[];
+          validated_sink_kinds: string[];
+        }>;
+        parser_gaps: Array<{ reason: string; blocking: boolean }>;
+      };
+    };
+
+    expect(securityContext.accepted_contracts).toContainEqual(expect.objectContaining({
+      kind: "api_route_requires_request_validation"
+    }));
+    expect(securityContext.request_validation.routes).toEqual([{
+      route_id: "route:apps/web/app/api/projects/route.ts:POST",
+      file_path: "apps/web/app/api/projects/route.ts",
+      proof_status: "proven",
+      input_sources: ["body"],
+      validated_sink_kinds: ["data_operation"]
+    }]);
+    expect(securityContext.request_validation.parser_gaps).toEqual([
+      { reason: "unsupported_request_input_spread", blocking: true }
+    ]);
+    expect(JSON.stringify(securityContext)).not.toContain("request.json()");
+    expect(JSON.stringify(securityContext)).not.toContain("cookie");
+  });
+
   it("includes scan symbol identities in MCP change impact", async () => {
     const databasePath = await seedMcpDatabase();
     const storage = openDriftStorage({ databasePath });

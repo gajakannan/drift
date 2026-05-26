@@ -20,6 +20,9 @@ export interface SecurityBoundaryProofRouteSummary {
   middleware_proven: boolean;
   middleware_protection_kinds: string[];
   middleware_mismatch_reasons: string[];
+  request_validation_required: boolean;
+  request_validation_proven: boolean;
+  request_validation_unvalidated_reasons: string[];
   proof_status: string;
   enforcement_result: string;
   missing_proof_codes: string[];
@@ -48,6 +51,14 @@ export function buildSecurityBoundaryProofReadModel(
         matched_middleware: [],
         mismatches: []
       };
+      const requestValidation = proof.request_validation ?? {
+        required: false,
+        proven: false,
+        input_reads: [],
+        validations: [],
+        validated_uses: [],
+        unvalidated_uses: []
+      };
       return {
       route_id: proof.route.route_id,
       file_path: proof.route.file_path,
@@ -59,6 +70,10 @@ export function buildSecurityBoundaryProofReadModel(
         .map((middleware) => middleware.protection_kind))].sort(),
       middleware_mismatch_reasons: [...new Set(middleware.mismatches
         .map((mismatch) => mismatch.reason))].sort(),
+      request_validation_required: requestValidation.required,
+      request_validation_proven: requestValidation.proven,
+      request_validation_unvalidated_reasons: [...new Set(requestValidation.unvalidated_uses
+        .map((unvalidated) => unvalidated.reason))].sort(),
       proof_status: proof.result.proof_status,
       enforcement_result: proof.result.enforcement_result,
       missing_proof_codes: proof.missing_proof.map((missing) => missing.code),

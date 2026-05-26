@@ -1,5 +1,6 @@
 use crate::{
-    AcceptedAuthHelper, Fact, FactExtractError, extract_security_facts, extract_typescript_facts,
+    AcceptedAuthHelper, AcceptedRequestValidator, Fact, FactExtractError, extract_security_facts,
+    extract_security_facts_with_validation, extract_typescript_facts,
     security_control_flow::{
         DominatedSink, MatchedMiddleware, MiddlewareMismatch, branch_bypass_reasons,
         callback_boundary_reasons, conditional_guard_without_else_reasons,
@@ -13,6 +14,7 @@ use crate::{
 pub struct SecurityBoundaryProof {
     pub auth: AuthBoundaryProof,
     pub middleware: MiddlewareBoundaryProof,
+    pub request_validation: RequestValidationProof,
     pub parser_gaps: Vec<SecurityParserGap>,
     pub result: SecurityProofResult,
 }
@@ -61,6 +63,50 @@ pub struct MiddlewareBoundaryProof {
     pub proven: bool,
     pub matched_middleware: Vec<MatchedMiddleware>,
     pub mismatches: Vec<MiddlewareMismatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestValidationProof {
+    pub required: bool,
+    pub proven: bool,
+    pub input_reads: Vec<RequestInputReadProof>,
+    pub validations: Vec<RequestValidationCallProof>,
+    pub validated_uses: Vec<RequestValidatedUseProof>,
+    pub unvalidated_uses: Vec<RequestUnvalidatedUseProof>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestInputReadProof {
+    pub fact_id: String,
+    pub source: String,
+    pub variable: String,
+    pub key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestValidationCallProof {
+    pub fact_id: String,
+    pub validator_symbol: String,
+    pub schema_symbol: Option<String>,
+    pub input_var: Option<String>,
+    pub result_var: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestValidatedUseProof {
+    pub fact_id: String,
+    pub source_input_var: String,
+    pub validated_var: String,
+    pub sink_fact_id: String,
+    pub sink_kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestUnvalidatedUseProof {
+    pub input_fact_id: String,
+    pub sink_fact_id: String,
+    pub sink_kind: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +185,7 @@ pub fn build_auth_boundary_proof(
             matched_middleware: Vec::new(),
             mismatches: Vec::new(),
         },
+        request_validation: RequestValidationProof::not_required(),
         parser_gaps,
         result: SecurityProofResult {
             proof_status: if dynamic_control_flow {
@@ -438,6 +485,7 @@ pub fn build_middleware_coverage_proof(
             matched_middleware,
             mismatches,
         },
+        request_validation: RequestValidationProof::not_required(),
         parser_gaps,
         result: SecurityProofResult {
             proof_status: if dynamic_matcher_line.is_some() {
@@ -449,4 +497,286 @@ pub fn build_middleware_coverage_proof(
             },
         },
     })
+}
+
+pub fn build_request_validation_proof(
+    file_path: impl AsRef<std::path::Path>,
+    source: &str,
+    accepted_validators: &[AcceptedRequestValidator],
+) -> Result<SecurityBoundaryProof, FactExtractError> {
+    let base_facts = extract_typescript_facts(&file_path, source)?;
+    let security_facts =
+        extract_security_facts_with_validation(file_path, source, &[], accepted_validators)?;
+    let mut facts: Vec<Fact> = base_facts.into_iter().chain(security_facts).collect();
+    facts.sort_by_key(|fact| fact.start_line);
+    let lines = source.lines().collect::<Vec<_>>();
+
+    let input_reads = facts
+        .iter()
+        .filter(|fact| fact.kind == crate::FactKind::RequestInputRead)
+        .filter_map(request_input_read_proof)
+        .collect::<Vec<_>>();
+    let validations = facts
+        .iter()
+        .filter(|fact| fact.kind == crate::FactKind::RequestValidationCalled)
+        .filter_map(request_validation_call_proof)
+        .collect::<Vec<_>>();
+    let validated_uses = facts
+        .iter()
+        .filter(|fact| fact.kind == crate::FactKind::ValidatedInputUsed)
+        .filter_map(request_validated_use_proof)
+        .collect::<Vec<_>>();
+    let parser_gaps = request_input_parser_gaps(&file_path_string(&facts), &lines, &input_reads);
+    let unvalidated_uses = request_unvalidated_uses(&facts, &lines, &input_reads, &validated_uses);
+    let proven = parser_gaps.is_empty()
+        && !input_reads.is_empty()
+        && !validated_uses.is_empty()
+        && unvalidated_uses.is_empty();
+    let proof_status = if !parser_gaps.is_empty() {
+        SecurityProofStatus::ParserGap
+    } else if proven {
+        SecurityProofStatus::Proven
+    } else {
+        SecurityProofStatus::MissingProof
+    };
+
+    Ok(SecurityBoundaryProof {
+        auth: AuthBoundaryProof {
+            required: false,
+            proven: false,
+            dominated_sinks: Vec::new(),
+            undominated_sinks: Vec::new(),
+        },
+        middleware: MiddlewareBoundaryProof {
+            required: false,
+            proven: false,
+            matched_middleware: Vec::new(),
+            mismatches: Vec::new(),
+        },
+        request_validation: RequestValidationProof {
+            required: true,
+            proven,
+            input_reads,
+            validations,
+            validated_uses,
+            unvalidated_uses,
+        },
+        parser_gaps,
+        result: SecurityProofResult { proof_status },
+    })
+}
+
+fn file_path_string(facts: &[Fact]) -> String {
+    facts
+        .first()
+        .map(|fact| fact.file_path.clone())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn request_input_parser_gaps(
+    file_path: &str,
+    lines: &[&str],
+    input_reads: &[RequestInputReadProof],
+) -> Vec<SecurityParserGap> {
+    let mut gaps = Vec::new();
+    for input in input_reads {
+        for (index, line) in lines.iter().enumerate() {
+            let spread_marker = format!("...{}", input.variable);
+            if line.contains(&spread_marker) {
+                gaps.push(SecurityParserGap {
+                    parser_gap_id: format!(
+                        "parser_gap:{}:{}:unsupported_request_input_spread",
+                        file_path,
+                        index + 1
+                    ),
+                    code: "unsupported_request_input_spread".to_string(),
+                    file_path: file_path.to_string(),
+                    reason:
+                        "Object spread from request input prevents deterministic validation proof"
+                            .to_string(),
+                    blocks_enforcement: true,
+                });
+            }
+        }
+    }
+    gaps
+}
+
+impl RequestValidationProof {
+    fn not_required() -> Self {
+        Self {
+            required: false,
+            proven: false,
+            input_reads: Vec::new(),
+            validations: Vec::new(),
+            validated_uses: Vec::new(),
+            unvalidated_uses: Vec::new(),
+        }
+    }
+}
+
+fn request_unvalidated_uses(
+    facts: &[Fact],
+    lines: &[&str],
+    input_reads: &[RequestInputReadProof],
+    validated_uses: &[RequestValidatedUseProof],
+) -> Vec<RequestUnvalidatedUseProof> {
+    let mut uses = Vec::new();
+    for input in input_reads {
+        uses.extend(unknown_validator_uses(facts, lines, input));
+        for sink in protected_sinks(facts) {
+            if sink.start_line <= input_line_from_fact_id(&input.fact_id) {
+                continue;
+            }
+            let Some(line) = lines.get(sink.start_line.saturating_sub(1)) else {
+                continue;
+            };
+            if !line_uses_identifier(line, &input.variable) {
+                continue;
+            }
+            let sink_fact_id = fact_id(sink);
+            let validated = validated_uses.iter().any(|validated| {
+                validated.source_input_var == input.variable
+                    && validated.sink_fact_id == sink_fact_id
+            });
+            if !validated {
+                uses.push(RequestUnvalidatedUseProof {
+                    input_fact_id: input.fact_id.clone(),
+                    sink_fact_id,
+                    sink_kind: sink_kind(sink).to_string(),
+                    reason: "request_input_not_validated".to_string(),
+                });
+            }
+        }
+    }
+    uses
+}
+
+fn unknown_validator_uses(
+    facts: &[Fact],
+    lines: &[&str],
+    input: &RequestInputReadProof,
+) -> Vec<RequestUnvalidatedUseProof> {
+    let input_line = input_line_from_fact_id(&input.fact_id);
+    let mut uses = Vec::new();
+    for call in facts
+        .iter()
+        .filter(|fact| fact.kind == crate::FactKind::SymbolCalled)
+        .filter(|fact| fact.start_line > input_line)
+        .filter(|fact| {
+            fact.name.starts_with("validate")
+                || fact
+                    .value
+                    .as_deref()
+                    .is_some_and(|receiver| receiver.ends_with("Schema"))
+        })
+    {
+        if facts.iter().any(|fact| {
+            fact.kind == crate::FactKind::RequestValidationCalled
+                && fact.start_line == call.start_line
+                && fact.name == call.name
+        }) {
+            continue;
+        }
+        let Some(call_line) = lines.get(call.start_line.saturating_sub(1)) else {
+            continue;
+        };
+        if !line_uses_identifier(call_line, &input.variable) {
+            continue;
+        }
+        let Some(result_var) = assigned_variable(call_line) else {
+            continue;
+        };
+        for sink in protected_sinks(facts)
+            .into_iter()
+            .filter(|sink| sink.start_line > call.start_line)
+        {
+            let Some(sink_line) = lines.get(sink.start_line.saturating_sub(1)) else {
+                continue;
+            };
+            if line_uses_identifier(sink_line, &result_var) {
+                uses.push(RequestUnvalidatedUseProof {
+                    input_fact_id: input.fact_id.clone(),
+                    sink_fact_id: fact_id(sink),
+                    sink_kind: sink_kind(sink).to_string(),
+                    reason: "unknown_validator".to_string(),
+                });
+            }
+        }
+    }
+    uses
+}
+
+fn assigned_variable(line: &str) -> Option<String> {
+    let before_equals = line.split_once('=')?.0.trim();
+    let variable = before_equals
+        .strip_prefix("const ")
+        .or_else(|| before_equals.strip_prefix("let "))
+        .or_else(|| before_equals.strip_prefix("var "))
+        .unwrap_or(before_equals)
+        .trim();
+    (!variable.is_empty()
+        && variable.chars().all(|character| {
+            character == '_' || character == '$' || character.is_ascii_alphanumeric()
+        }))
+    .then(|| variable.to_string())
+}
+
+fn request_input_read_proof(fact: &Fact) -> Option<RequestInputReadProof> {
+    let value = serde_json::from_str::<serde_json::Value>(fact.value.as_deref()?).ok()?;
+    Some(RequestInputReadProof {
+        fact_id: fact_id(fact),
+        source: value.get("source")?.as_str()?.to_string(),
+        variable: value.get("variable")?.as_str()?.to_string(),
+        key: value
+            .get("key")
+            .and_then(|key| key.as_str())
+            .map(str::to_string),
+    })
+}
+
+fn request_validation_call_proof(fact: &Fact) -> Option<RequestValidationCallProof> {
+    let value = serde_json::from_str::<serde_json::Value>(fact.value.as_deref()?).ok()?;
+    Some(RequestValidationCallProof {
+        fact_id: fact_id(fact),
+        validator_symbol: value.get("validator_symbol")?.as_str()?.to_string(),
+        schema_symbol: value
+            .get("schema_symbol")
+            .and_then(|symbol| symbol.as_str())
+            .map(str::to_string),
+        input_var: value
+            .get("input_var")
+            .and_then(|symbol| symbol.as_str())
+            .map(str::to_string),
+        result_var: value
+            .get("result_var")
+            .and_then(|symbol| symbol.as_str())
+            .map(str::to_string),
+    })
+}
+
+fn request_validated_use_proof(fact: &Fact) -> Option<RequestValidatedUseProof> {
+    let value = serde_json::from_str::<serde_json::Value>(fact.value.as_deref()?).ok()?;
+    Some(RequestValidatedUseProof {
+        fact_id: fact_id(fact),
+        source_input_var: value.get("source_input_var")?.as_str()?.to_string(),
+        validated_var: value.get("validated_var")?.as_str()?.to_string(),
+        sink_fact_id: value.get("sink_fact_id")?.as_str()?.to_string(),
+        sink_kind: value.get("sink_kind")?.as_str()?.to_string(),
+    })
+}
+
+fn input_line_from_fact_id(fact_id: &str) -> usize {
+    fact_id
+        .rsplit(':')
+        .next()
+        .and_then(|line| line.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn line_uses_identifier(line: &str, identifier: &str) -> bool {
+    line.split(|character: char| {
+        character != '_' && character != '$' && !character.is_ascii_alphanumeric()
+    })
+    .any(|token| token == identifier)
 }

@@ -1,6 +1,7 @@
 use drift_engine::{
-    AcceptedAuthHelper, AuthGuardBehavior, FactKind, SecurityProofStatus,
-    build_auth_boundary_proof, build_middleware_coverage_proof, extract_security_facts,
+    AcceptedAuthHelper, AcceptedRequestValidator, AuthGuardBehavior, FactKind,
+    RequestValidatorBehavior, RequestValidatorKind, SecurityProofStatus, build_auth_boundary_proof,
+    build_middleware_coverage_proof, build_request_validation_proof, extract_security_facts,
 };
 
 #[test]
@@ -329,6 +330,89 @@ export async function GET() {
             .any(|gap| gap.code == "unsupported_dynamic_middleware_matcher"
                 && gap.blocks_enforcement),
         "missing dynamic middleware parser gap: {proof:#?}"
+    );
+    assert_eq!(proof.result.proof_status, SecurityProofStatus::ParserGap);
+}
+
+#[test]
+fn safe_parse_data_is_validated_only_after_success_guard() {
+    let unguarded_source = r#"
+import { ProjectInputSchema } from "@/server/validation";
+import { db } from "@/server/db";
+
+export async function POST(request: Request) {
+  const body = await request.json();
+  const result = ProjectInputSchema.safeParse(body);
+  await db.project.create({ data: result.data });
+  return Response.json({ ok: true });
+}
+"#;
+    let guarded_source = r#"
+import { ProjectInputSchema } from "@/server/validation";
+import { db } from "@/server/db";
+
+export async function POST(request: Request) {
+  const body = await request.json();
+  const result = ProjectInputSchema.safeParse(body);
+  if (!result.success) {
+    return Response.json({ ok: false }, { status: 400 });
+  }
+  await db.project.create({ data: result.data });
+  return Response.json({ ok: true });
+}
+"#;
+    let validators = vec![AcceptedRequestValidator {
+        validator_id: "schema_project_input".to_string(),
+        symbol: "ProjectInputSchema".to_string(),
+        kind: RequestValidatorKind::Schema,
+        behavior: RequestValidatorBehavior::ReturnsParsed,
+    }];
+
+    let unguarded =
+        build_request_validation_proof("app/api/projects/route.ts", unguarded_source, &validators)
+            .expect("unguarded request validation proof");
+    assert!(
+        !unguarded.request_validation.proven,
+        "safeParse data without success guard must not prove validation: {unguarded:#?}"
+    );
+
+    let guarded =
+        build_request_validation_proof("app/api/projects/route.ts", guarded_source, &validators)
+            .expect("guarded request validation proof");
+    assert!(
+        guarded.request_validation.proven,
+        "safeParse data after success guard should prove validation: {guarded:#?}"
+    );
+}
+
+#[test]
+fn request_input_spread_emits_parser_gap_and_blocks() {
+    let source = r#"
+import { ProjectInputSchema } from "@/server/validation";
+import { db } from "@/server/db";
+
+export async function POST(request: Request) {
+  const body = await request.json();
+  const input = ProjectInputSchema.parse(body);
+  await db.project.create({ data: { ...body, ownerId: input.ownerId } });
+  return Response.json({ ok: true });
+}
+"#;
+    let validators = vec![AcceptedRequestValidator {
+        validator_id: "schema_project_input".to_string(),
+        symbol: "ProjectInputSchema".to_string(),
+        kind: RequestValidatorKind::Schema,
+        behavior: RequestValidatorBehavior::ReturnsParsed,
+    }];
+
+    let proof = build_request_validation_proof("app/api/projects/route.ts", source, &validators)
+        .expect("request validation proof");
+
+    assert!(
+        proof.parser_gaps.iter().any(|gap| {
+            gap.code == "unsupported_request_input_spread" && gap.blocks_enforcement
+        }),
+        "missing unsupported request input spread parser gap: {proof:#?}"
     );
     assert_eq!(proof.result.proof_status, SecurityProofStatus::ParserGap);
 }

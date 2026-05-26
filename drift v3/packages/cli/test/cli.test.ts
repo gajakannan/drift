@@ -10151,6 +10151,54 @@ describe("drift CLI convention review", () => {
     });
   });
 
+  it("scan status reports request_validation capability", async () => {
+    const { databasePath, repoId } = await seedStartedDoctorState("drift-scan-status-validation-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const scanId = storage.listScanManifests(repoId)
+      .find((scan) => scan.status === "completed" && !scan.id.startsWith("scan_baseline_"))!.id;
+    storage.upsertScanCapabilityReport({
+      schema_version: "drift.scan_capability_report.v1",
+      repo_id: repoId,
+      scan_id: scanId,
+      engine_source: "rust",
+      engine_version: "0.1.0",
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      certified_capabilities: ["file_discovery", "syntax_facts", "request_validation_facts"],
+      required_capabilities: ["file_discovery", "syntax_facts", "request_validation_facts"],
+      missing_capabilities: [],
+      completeness: [{
+        scope: "route-flow",
+        rule_id: "api_route_requires_request_validation",
+        complete: true,
+        can_block: true,
+        reasons: []
+      }],
+      parser_gap_count: 0,
+      parser_gap_kinds: {},
+      fallback_used: false,
+      enforcement_degraded: false,
+      created_at: "2026-05-25T00:00:00.000Z"
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", repoId,
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.security_capabilities.request_validation).toMatchObject({
+      certified: true,
+      can_block: true,
+      missing: false
+    });
+  });
+
   it("repo map reports route middleware coverage summary", async () => {
     const { databasePath, repoId } = await seedStartedDoctorState("drift-repo-map-middleware-");
     const storage = openDriftStorage({ databasePath });
@@ -10192,6 +10240,49 @@ describe("drift CLI convention review", () => {
       middleware_ids: ["middleware:middleware.ts"]
     });
     expect(result.stdout).not.toContain("requireUser()");
+  });
+
+  it("repo map reports route request validation summary", async () => {
+    const { databasePath, repoId } = await seedStartedDoctorState("drift-repo-map-validation-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const scanId = storage.listScanManifests(repoId)
+      .find((scan) => scan.status === "completed" && !scan.id.startsWith("scan_baseline_"))!.id;
+    storage.upsertFacts([{
+      id: "fact_request_body",
+      repo_id: repoId,
+      scan_id: scanId,
+      kind: "request_input_read",
+      file_path: "apps/web/app/api/users/route.ts",
+      name: "body",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/users/route.ts:POST",
+        source: "body",
+        variable: "body",
+        taint: "untrusted"
+      }),
+      imported_name: undefined,
+      start_line: 1,
+      end_line: 1,
+      ...factQuality(scanId)
+    }]);
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "repo", "map",
+      "--repo", repoId,
+      "--path", "apps/web/app/api/users/route.ts",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.files[0].route_security.request_validation).toMatchObject({
+      status: "missing_proof",
+      input_sources: ["body"]
+    });
+    expect(result.stdout).not.toContain("request.json()");
   });
 
   it("prints prepare summary and governance in human output", async () => {
