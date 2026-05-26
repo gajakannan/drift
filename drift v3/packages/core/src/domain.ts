@@ -4,6 +4,9 @@ export type ConventionKind =
   | "api_route_requires_auth_helper"
   | "middleware_must_cover_routes"
   | "api_route_requires_request_validation"
+  | "session_object_must_come_from_trusted_helper"
+  | "api_route_requires_authorization"
+  | "api_route_requires_tenant_scope"
   | "test_expected_for_changed_module"
   | "custom_briefing"
   | AgentContractKind;
@@ -263,6 +266,10 @@ export type FactKind =
   | "middleware_matcher_declared"
   | "middleware_protects_route"
   | "request_input_read"
+  | "session_read"
+  | "tenant_source"
+  | "tenant_guard_called"
+  | "authorization_guard_called"
   | "request_validation_called"
   | "validated_input_used";
 

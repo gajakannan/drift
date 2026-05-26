@@ -109,6 +109,9 @@ export const DRIFT_READ_ONLY_MCP_TOOLS: DriftMcpTool[] = [
             "api_route_requires_service_delegation",
             "api_route_requires_auth_helper",
             "middleware_must_cover_routes",
+            "session_object_must_come_from_trusted_helper",
+            "api_route_requires_authorization",
+            "api_route_requires_tenant_scope",
             "test_expected_for_changed_module",
             "custom_briefing"
           ]
