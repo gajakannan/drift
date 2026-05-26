@@ -9,9 +9,21 @@ interface MiddlewareCoverageValue {
   protection_kind?: string;
 }
 
+interface RequestInputReadValue {
+  route_id?: string;
+  source?: string;
+}
+
+interface ValidatedInputUsedValue {
+  route_id?: string;
+  sink_kind?: string;
+}
+
 export function buildSecurityContextPayload(storage: DriftStorage, repoId: string, contract: RepoContract) {
   const latestScan = latestSecurityScan(storage.listScanManifests(repoId));
   const facts = latestScan ? storage.listFacts(latestScan.id, { kind: "middleware_protects_route" }) : [];
+  const requestInputFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "request_input_read" }) : [];
+  const validatedUseFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "validated_input_used" }) : [];
   const parserGaps = latestScan ? storage.listParserGaps(repoId, latestScan.id) : [];
 
   return {
@@ -22,6 +34,10 @@ export function buildSecurityContextPayload(storage: DriftStorage, repoId: strin
     middleware_coverage: {
       routes: middlewareCoverageRoutes(facts),
       parser_gaps: middlewareParserGaps(parserGaps)
+    },
+    request_validation: {
+      routes: requestValidationRoutes(requestInputFacts, validatedUseFacts),
+      parser_gaps: requestValidationParserGaps(parserGaps)
     },
     redactions: {
       snippets_included: false,
@@ -44,7 +60,8 @@ function securityConventions(conventions: AcceptedConvention[]) {
   return conventions
     .filter((convention) =>
       convention.kind === "middleware_must_cover_routes" ||
-      convention.kind === "api_route_requires_auth_helper"
+      convention.kind === "api_route_requires_auth_helper" ||
+      convention.kind === "api_route_requires_request_validation"
     )
     .map((convention) => ({
       id: convention.id,
@@ -53,6 +70,80 @@ function securityConventions(conventions: AcceptedConvention[]) {
       enforcement_capability: convention.enforcement_capability,
       severity: convention.severity
     }));
+}
+
+function requestValidationRoutes(inputFacts: FactRecord[], validatedUseFacts: FactRecord[]) {
+  const byRoute = new Map<string, {
+    route_id: string;
+    file_path: string;
+    input_sources: Set<string>;
+    validated_sink_kinds: Set<string>;
+  }>();
+
+  for (const fact of inputFacts) {
+    const value = parseRequestInputReadValue(fact.value);
+    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const entry = byRoute.get(routeId) ?? {
+      route_id: routeId,
+      file_path: fact.file_path,
+      input_sources: new Set<string>(),
+      validated_sink_kinds: new Set<string>()
+    };
+    if (value.source) {
+      entry.input_sources.add(value.source);
+    }
+    byRoute.set(routeId, entry);
+  }
+
+  for (const fact of validatedUseFacts) {
+    const value = parseValidatedInputUsedValue(fact.value);
+    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const entry = byRoute.get(routeId) ?? {
+      route_id: routeId,
+      file_path: fact.file_path,
+      input_sources: new Set<string>(),
+      validated_sink_kinds: new Set<string>()
+    };
+    if (value.sink_kind) {
+      entry.validated_sink_kinds.add(value.sink_kind);
+    }
+    byRoute.set(routeId, entry);
+  }
+
+  return [...byRoute.values()]
+    .sort((left, right) => left.route_id.localeCompare(right.route_id))
+    .map((entry) => ({
+      route_id: entry.route_id,
+      file_path: entry.file_path,
+      proof_status: "not_evaluated",
+      proven: false,
+      input_sources: [...entry.input_sources].sort(),
+      validated_sink_kinds: [...entry.validated_sink_kinds].sort()
+    }));
+}
+
+function parseRequestInputReadValue(value: string | undefined): RequestInputReadValue {
+  if (!value) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value) as RequestInputReadValue;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseValidatedInputUsedValue(value: string | undefined): ValidatedInputUsedValue {
+  if (!value) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value) as ValidatedInputUsedValue;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function middlewareCoverageRoutes(facts: FactRecord[]) {
@@ -105,6 +196,15 @@ function parseMiddlewareCoverageValue(value: string | undefined): MiddlewareCove
 function middlewareParserGaps(parserGaps: ParserGap[]) {
   return parserGaps
     .filter((gap) => gap.message === "unsupported_dynamic_middleware_matcher")
+    .map((gap) => ({
+      reason: gap.message,
+      blocking: gap.confidence_impact === "blocks_enforcement"
+    }));
+}
+
+function requestValidationParserGaps(parserGaps: ParserGap[]) {
+  return parserGaps
+    .filter((gap) => gap.message === "unsupported_request_input_spread")
     .map((gap) => ({
       reason: gap.message,
       blocking: gap.confidence_impact === "blocks_enforcement"

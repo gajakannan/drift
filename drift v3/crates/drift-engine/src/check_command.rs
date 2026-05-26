@@ -6,9 +6,10 @@ use std::{
 };
 
 use drift_engine::{
-    AcceptedAuthHelper, AuthGuardBehavior, BaselineStatus, BaselineViolation, DiffFile, DiffScope,
-    DirectDataAccessRule, EnforcementMode, Fact, FactKind, FindingStatus, ParsedDiff,
-    RouteSecurityBoundaryProof, RuleFinding, SecurityProofStatus, Severity,
+    AcceptedAuthHelper, AcceptedRequestValidator, AuthGuardBehavior, BaselineStatus,
+    BaselineViolation, DiffFile, DiffScope, DirectDataAccessRule, EnforcementMode, Fact, FactKind,
+    FindingStatus, ParsedDiff, RequestValidatorBehavior, RequestValidatorKind,
+    RouteSecurityBoundaryProof, RuleFinding, SecurityBoundaryProof, SecurityProofStatus, Severity,
     build_auth_boundary_proofs_for_file, classify_findings_against_diff,
     materialize_direct_data_access_findings,
 };
@@ -134,6 +135,22 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
             );
             security_boundary_proofs.extend(auth_result.proofs);
             auth_result.findings
+        } else if convention.kind == "api_route_requires_request_validation" {
+            required_capabilities.extend([
+                "security_facts".to_string(),
+                "request_validation_facts".to_string(),
+            ]);
+            let validation_result = security_request_validation_findings_and_proofs(
+                &facts,
+                repo_root.as_deref(),
+                &parsed_diff,
+                diff_scope,
+                &convention,
+                severity,
+                enforcement_mode,
+            );
+            security_boundary_proofs.extend(validation_result.proofs);
+            validation_result.findings
         } else {
             continue;
         };
@@ -494,6 +511,11 @@ struct SecurityAuthEvaluation {
     proofs: Vec<serde_json::Value>,
 }
 
+struct SecurityRequestValidationEvaluation {
+    findings: Vec<PendingFinding>,
+    proofs: Vec<serde_json::Value>,
+}
+
 fn security_auth_findings_and_proofs(
     facts: &[Fact],
     repo_root: Option<&str>,
@@ -580,6 +602,111 @@ fn security_auth_findings_and_proofs(
     SecurityAuthEvaluation { findings, proofs }
 }
 
+fn security_request_validation_findings_and_proofs(
+    facts: &[Fact],
+    repo_root: Option<&str>,
+    parsed_diff: &ParsedDiff,
+    diff_scope: DiffScope,
+    convention: &crate::protocol::CheckConvention,
+    severity: Severity,
+    enforcement_mode: EnforcementMode,
+) -> SecurityRequestValidationEvaluation {
+    let accepted_validators = accepted_request_validators_for_convention(convention);
+    if accepted_validators.is_empty() {
+        return SecurityRequestValidationEvaluation {
+            findings: Vec::new(),
+            proofs: Vec::new(),
+        };
+    }
+    let proof_scope = request_validation_proof_scope_for_convention(convention);
+    let allowed_methods = convention
+        .matcher
+        .methods
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|method| method.to_uppercase())
+        .collect::<Vec<_>>();
+    if convention
+        .matcher
+        .applies_to_file_roles
+        .as_ref()
+        .is_some_and(|roles| !roles.iter().any(|role| role == "api_route"))
+    {
+        return SecurityRequestValidationEvaluation {
+            findings: Vec::new(),
+            proofs: Vec::new(),
+        };
+    }
+
+    let files = security_auth_files(facts, parsed_diff, diff_scope);
+    let mut findings = Vec::new();
+    let mut proofs = Vec::new();
+
+    for file_path in files {
+        if !allowed_methods.is_empty()
+            && !route_methods_for_file(facts, &file_path)
+                .iter()
+                .any(|method| allowed_methods.contains(method))
+        {
+            continue;
+        }
+        let Some(source) = read_repo_file(repo_root, &file_path) else {
+            continue;
+        };
+        let proof = match drift_engine::build_request_validation_proof_with_scope(
+            &file_path,
+            &source,
+            &accepted_validators,
+            &proof_scope,
+        ) {
+            Ok(proof) => proof,
+            Err(_) => continue,
+        };
+        if !proof.request_validation.required {
+            continue;
+        }
+        let (route_id, handler_symbol) = route_identity_for_file(facts, &file_path)
+            .unwrap_or_else(|| (format!("route:{file_path}:unknown"), "unknown".to_string()));
+        let missing_code = request_validation_missing_code(&proof);
+        let finding_line = request_validation_finding_line(&proof).unwrap_or(1);
+        let finding_fingerprint = stable_hash(&format!(
+            "{}:{}:{}:{}",
+            convention.id, route_id, missing_code, finding_line
+        ));
+        let finding_id = format!("finding_{}", &finding_fingerprint[..16]);
+        proofs.push(request_validation_proof_json(
+            &proof,
+            &route_id,
+            &file_path,
+            &handler_symbol,
+            convention,
+            &finding_id,
+        ));
+        if proof.result.proof_status != SecurityProofStatus::Proven {
+            findings.push(PendingFinding {
+                fingerprint: finding_fingerprint,
+                convention_id: convention.id.clone(),
+                rule_id: "api_route_requires_request_validation".to_string(),
+                title: "API route uses unvalidated request input".to_string(),
+                message: "Accepted request validation must produce the value used by protected route sinks."
+                    .to_string(),
+                severity,
+                enforcement_result: enforcement_result_for_mode(enforcement_mode),
+                file_path: file_path.clone(),
+                import_name: "request_validation".to_string(),
+                import_source: missing_code,
+                line: finding_line,
+                evidence_id: format!("evidence_{}", &finding_id["finding_".len()..]),
+                legacy_fingerprints: Vec::new(),
+                related_node_ids: Vec::new(),
+            });
+        }
+    }
+
+    SecurityRequestValidationEvaluation { findings, proofs }
+}
+
 fn accepted_auth_helpers_for_convention(
     convention: &crate::protocol::CheckConvention,
 ) -> Vec<AcceptedAuthHelper> {
@@ -639,6 +766,128 @@ fn accepted_auth_helpers_for_convention(
     helpers.into_values().collect()
 }
 
+fn accepted_request_validators_for_convention(
+    convention: &crate::protocol::CheckConvention,
+) -> Vec<AcceptedRequestValidator> {
+    let mut validators = BTreeMap::<String, AcceptedRequestValidator>::new();
+    if let Some(requires) = &convention.requires {
+        if let Some(helper_values) = requires
+            .get("validators")
+            .and_then(|value| value.as_array())
+        {
+            for helper in helper_values {
+                insert_request_validator_value(
+                    &mut validators,
+                    helper,
+                    RequestValidatorKind::Helper,
+                    RequestValidatorBehavior::ReturnsParsed,
+                );
+            }
+        }
+        if let Some(schema_values) = requires.get("schemas").and_then(|value| value.as_array()) {
+            for schema in schema_values {
+                insert_request_validator_value(
+                    &mut validators,
+                    schema,
+                    RequestValidatorKind::Schema,
+                    RequestValidatorBehavior::ReturnsParsed,
+                );
+            }
+        }
+    }
+    validators.into_values().collect()
+}
+
+fn request_validation_proof_scope_for_convention(
+    convention: &crate::protocol::CheckConvention,
+) -> drift_engine::RequestValidationProofScope {
+    let Some(requires) = &convention.requires else {
+        return drift_engine::RequestValidationProofScope::default();
+    };
+    drift_engine::RequestValidationProofScope {
+        input_sources: string_array_field(requires, "input_sources"),
+        sink_kinds: string_array_field(requires, "sinks"),
+    }
+}
+
+fn string_array_field(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(|field| field.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.as_str().map(str::to_string))
+        .collect()
+}
+
+fn insert_request_validator_value(
+    validators: &mut BTreeMap<String, AcceptedRequestValidator>,
+    value: &serde_json::Value,
+    default_kind: RequestValidatorKind,
+    default_behavior: RequestValidatorBehavior,
+) {
+    if let Some(symbol) = value.as_str() {
+        insert_request_validator(validators, symbol, default_kind, default_behavior, None);
+        return;
+    }
+    let Some(symbol) = value
+        .get("symbol")
+        .or_else(|| value.get("name"))
+        .and_then(|symbol| symbol.as_str())
+    else {
+        return;
+    };
+    let kind = value
+        .get("kind")
+        .and_then(|kind| kind.as_str())
+        .map(request_validator_kind_from_str)
+        .unwrap_or(default_kind);
+    let behavior = value
+        .get("behavior")
+        .and_then(|behavior| behavior.as_str())
+        .map(request_validator_behavior_from_str)
+        .unwrap_or(default_behavior);
+    let validator_id = value
+        .get("validator_id")
+        .or_else(|| value.get("id"))
+        .and_then(|id| id.as_str());
+    insert_request_validator(validators, symbol, kind, behavior, validator_id);
+}
+
+fn insert_request_validator(
+    validators: &mut BTreeMap<String, AcceptedRequestValidator>,
+    symbol: &str,
+    kind: RequestValidatorKind,
+    behavior: RequestValidatorBehavior,
+    validator_id: Option<&str>,
+) {
+    validators.insert(
+        format!("{}:{symbol}", kind.as_str()),
+        AcceptedRequestValidator {
+            validator_id: validator_id.unwrap_or(symbol).to_string(),
+            symbol: symbol.to_string(),
+            kind,
+            behavior,
+        },
+    );
+}
+
+fn request_validator_kind_from_str(kind: &str) -> RequestValidatorKind {
+    match kind {
+        "schema" => RequestValidatorKind::Schema,
+        _ => RequestValidatorKind::Helper,
+    }
+}
+
+fn request_validator_behavior_from_str(behavior: &str) -> RequestValidatorBehavior {
+    match behavior {
+        "throws" => RequestValidatorBehavior::Throws,
+        "boolean" => RequestValidatorBehavior::Boolean,
+        "unknown" => RequestValidatorBehavior::Unknown,
+        _ => RequestValidatorBehavior::ReturnsParsed,
+    }
+}
+
 fn read_repo_file(repo_root: Option<&str>, file_path: &str) -> Option<String> {
     let repo_root = repo_root?;
     let path = Path::new(repo_root).join(file_path);
@@ -668,6 +917,65 @@ fn first_sink_line_for_route(
         })
         .map(|fact| fact.start_line)
         .min()
+}
+
+fn route_identity_for_file(facts: &[Fact], file_path: &str) -> Option<(String, String)> {
+    facts
+        .iter()
+        .find(|fact| fact.file_path == file_path && fact.kind == FactKind::RouteDeclared)
+        .map(|fact| {
+            (
+                format!("route:{}:{}", fact.file_path, fact.name),
+                fact.name.clone(),
+            )
+        })
+}
+
+fn route_methods_for_file(facts: &[Fact], file_path: &str) -> Vec<String> {
+    facts
+        .iter()
+        .filter(|fact| fact.file_path == file_path && fact.kind == FactKind::RouteDeclared)
+        .map(|fact| fact.name.to_uppercase())
+        .collect()
+}
+
+fn request_validation_missing_code(proof: &SecurityBoundaryProof) -> String {
+    proof
+        .parser_gaps
+        .first()
+        .map(|gap| gap.code.clone())
+        .or_else(|| {
+            proof
+                .request_validation
+                .unvalidated_uses
+                .first()
+                .map(|use_proof| use_proof.reason.clone())
+        })
+        .unwrap_or_else(|| "request_input_not_validated".to_string())
+}
+
+fn request_validation_finding_line(proof: &SecurityBoundaryProof) -> Option<usize> {
+    proof
+        .request_validation
+        .unvalidated_uses
+        .first()
+        .map(|use_proof| input_line_from_fact_id(&use_proof.sink_fact_id))
+        .or_else(|| {
+            proof
+                .parser_gaps
+                .first()
+                .and_then(|gap| gap.parser_gap_id.split(':').nth_back(1))
+                .and_then(|line| line.parse::<usize>().ok())
+        })
+        .filter(|line| *line > 0)
+}
+
+fn input_line_from_fact_id(fact_id: &str) -> usize {
+    fact_id
+        .rsplit(':')
+        .next()
+        .and_then(|line| line.parse::<usize>().ok())
+        .unwrap_or(0)
 }
 
 fn route_security_proof_json(
@@ -773,6 +1081,181 @@ fn route_security_proof_json(
                 "sink_kind": sink.sink_kind,
                 "reason": sink.reason,
                 "fact_ids": sink.fact_ids
+            })).collect::<Vec<_>>()
+        },
+        "missing_proof": missing_proof,
+        "parser_gaps": parser_gaps,
+        "result": {
+            "proof_status": security_proof_status(&proof.result.proof_status),
+            "enforcement_result": if proof.result.proof_status == SecurityProofStatus::Proven {
+                "pass"
+            } else {
+                convention.enforcement_mode.as_str()
+            },
+            "can_block": proof.result.proof_status != SecurityProofStatus::Proven,
+            "finding_ids": if proof.result.proof_status == SecurityProofStatus::Proven {
+                Vec::<String>::new()
+            } else {
+                vec![finding_id.to_string()]
+            }
+        }
+    })
+}
+
+fn request_validation_proof_json(
+    proof: &SecurityBoundaryProof,
+    route_id: &str,
+    file_path: &str,
+    handler_symbol: &str,
+    convention: &crate::protocol::CheckConvention,
+    finding_id: &str,
+) -> serde_json::Value {
+    let missing_codes = if proof.result.proof_status == SecurityProofStatus::Proven {
+        Vec::new()
+    } else if !proof.request_validation.unvalidated_uses.is_empty() {
+        proof
+            .request_validation
+            .unvalidated_uses
+            .iter()
+            .map(|use_proof| use_proof.reason.clone())
+            .collect::<Vec<_>>()
+    } else {
+        vec![request_validation_missing_code(proof)]
+    };
+    let missing_proof_ids = missing_codes
+        .iter()
+        .map(|code| format!("missing_proof:{route_id}:{code}"))
+        .collect::<Vec<_>>();
+    let parser_gap_ids = proof
+        .parser_gaps
+        .iter()
+        .map(|gap| gap.parser_gap_id.clone())
+        .collect::<Vec<_>>();
+    let missing_fact_ids = proof
+        .request_validation
+        .unvalidated_uses
+        .iter()
+        .flat_map(|use_proof| {
+            [
+                use_proof.input_fact_id.clone(),
+                use_proof.sink_fact_id.clone(),
+            ]
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let missing_proof = missing_codes
+        .iter()
+        .enumerate()
+        .map(|(index, code)| {
+            json!({
+                "id": missing_proof_ids[index],
+                "capability": "request_validation_facts",
+                "code": code,
+                "blocks_enforcement": true,
+                "fact_ids": missing_fact_ids.clone(),
+                "graph_edge_ids": []
+            })
+        })
+        .collect::<Vec<_>>();
+    let parser_gaps = proof
+        .parser_gaps
+        .iter()
+        .map(|gap| {
+            json!({
+                "parser_gap_id": gap.parser_gap_id,
+                "capability": "request_validation_facts",
+                "code": gap.code,
+                "file_path": gap.file_path,
+                "reason": gap.reason,
+                "affected_contract_kinds": ["api_route_requires_request_validation"],
+                "affected_route_ids": [route_id],
+                "missing_proof_ids": missing_proof_ids.clone(),
+                "blocks_enforcement": gap.blocks_enforcement
+            })
+        })
+        .collect::<Vec<_>>();
+    let validations = proof
+        .request_validation
+        .validations
+        .iter()
+        .map(|validation| {
+            let mut object = serde_json::Map::new();
+            object.insert("fact_id".to_string(), json!(validation.fact_id));
+            object.insert(
+                "validator_symbol".to_string(),
+                json!(validation.validator_symbol),
+            );
+            if let Some(schema_symbol) = &validation.schema_symbol {
+                object.insert("schema_symbol".to_string(), json!(schema_symbol));
+            }
+            if let Some(input_var) = &validation.input_var {
+                object.insert("input_var".to_string(), json!(input_var));
+            }
+            if let Some(result_var) = &validation.result_var {
+                object.insert("result_var".to_string(), json!(result_var));
+            }
+            serde_json::Value::Object(object)
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "proof_id": format!("proof:{route_id}:request_validation"),
+        "proof_version": "security-boundary-proof/v1",
+        "route": {
+            "route_id": route_id,
+            "file_path": file_path,
+            "file_role": "api_route",
+            "handler_symbol": handler_symbol
+        },
+        "contracts": [{
+            "contract_id": convention.id,
+            "kind": "api_route_requires_request_validation",
+            "enforcement_mode": convention.enforcement_mode,
+            "capability": convention.enforcement_capability,
+            "matched": true
+        }],
+        "capability_status": [{
+            "name": "request_validation_facts",
+            "status": if proof.result.proof_status == SecurityProofStatus::Proven { "complete" } else { "partial" },
+            "can_block": true,
+            "parser_gap_ids": parser_gap_ids,
+            "missing_proof_ids": missing_proof_ids
+        }],
+        "auth": {
+            "required": false,
+            "proven": false,
+            "proof_kind": "none",
+            "trusted_guard_calls": [],
+            "dominated_sinks": [],
+            "undominated_sinks": []
+        },
+        "request_validation": {
+            "required": proof.request_validation.required,
+            "proven": proof.request_validation.proven,
+            "input_reads": proof.request_validation.input_reads.iter().map(|input| {
+                let mut object = serde_json::Map::new();
+                object.insert("fact_id".to_string(), json!(input.fact_id));
+                object.insert("source".to_string(), json!(input.source));
+                object.insert("variable".to_string(), json!(input.variable));
+                if let Some(key) = &input.key {
+                    object.insert("key".to_string(), json!(key));
+                }
+                serde_json::Value::Object(object)
+            }).collect::<Vec<_>>(),
+            "validations": validations,
+            "validated_uses": proof.request_validation.validated_uses.iter().map(|use_proof| json!({
+                "fact_id": use_proof.fact_id,
+                "source_input_var": use_proof.source_input_var,
+                "validated_var": use_proof.validated_var,
+                "sink_fact_id": use_proof.sink_fact_id,
+                "sink_kind": use_proof.sink_kind
+            })).collect::<Vec<_>>(),
+            "unvalidated_uses": proof.request_validation.unvalidated_uses.iter().map(|use_proof| json!({
+                "input_fact_id": use_proof.input_fact_id,
+                "sink_fact_id": use_proof.sink_fact_id,
+                "sink_kind": use_proof.sink_kind,
+                "reason": use_proof.reason
             })).collect::<Vec<_>>()
         },
         "missing_proof": missing_proof,

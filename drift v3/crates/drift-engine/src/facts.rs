@@ -19,6 +19,9 @@ pub enum FactKind {
     MiddlewareDeclared,
     MiddlewareMatcherDeclared,
     MiddlewareProtectsRoute,
+    RequestInputRead,
+    RequestValidationCalled,
+    ValidatedInputUsed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

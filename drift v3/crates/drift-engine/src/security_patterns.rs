@@ -43,6 +43,104 @@ pub fn accepted_auth_helper_for_call<'a>(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedRequestValidator {
+    pub validator_id: String,
+    pub symbol: String,
+    pub kind: RequestValidatorKind,
+    pub behavior: RequestValidatorBehavior,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestValidatorKind {
+    Schema,
+    Helper,
+}
+
+impl RequestValidatorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RequestValidatorKind::Schema => "schema",
+            RequestValidatorKind::Helper => "helper",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestValidatorBehavior {
+    Throws,
+    ReturnsParsed,
+    Boolean,
+    Unknown,
+}
+
+impl RequestValidatorBehavior {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RequestValidatorBehavior::Throws => "throws",
+            RequestValidatorBehavior::ReturnsParsed => "returns_parsed",
+            RequestValidatorBehavior::Boolean => "boolean",
+            RequestValidatorBehavior::Unknown => "unknown",
+        }
+    }
+}
+
+pub fn accepted_request_validator_for_call<'a>(
+    call: &Fact,
+    facts: &[Fact],
+    accepted_validators: &'a [AcceptedRequestValidator],
+) -> Option<&'a AcceptedRequestValidator> {
+    accepted_validators
+        .iter()
+        .find(|validator| match validator.kind {
+            RequestValidatorKind::Helper => {
+                call.value.is_none()
+                    && (call.name == validator.symbol
+                        || imported_symbol_matches(facts, &call.name, &validator.symbol))
+            }
+            RequestValidatorKind::Schema => {
+                matches!(call.name.as_str(), "parse" | "safeParse")
+                    && call.value.as_deref().is_some_and(|receiver| {
+                        schema_receiver_matches(facts, receiver, &validator.symbol)
+                    })
+            }
+        })
+}
+
+fn imported_symbol_matches(facts: &[Fact], local_name: &str, accepted_symbol: &str) -> bool {
+    facts.iter().any(|fact| {
+        fact.kind == FactKind::ImportUsed
+            && fact.name == local_name
+            && fact.imported_name.as_deref() == Some(accepted_symbol)
+    })
+}
+
+fn receiver_root(receiver: &str) -> &str {
+    receiver.split('.').next().unwrap_or(receiver)
+}
+
+fn schema_receiver_matches(facts: &[Fact], receiver: &str, accepted_symbol: &str) -> bool {
+    if receiver_root(receiver) == accepted_symbol
+        || imported_symbol_matches(facts, receiver_root(receiver), accepted_symbol)
+    {
+        return true;
+    }
+    let mut parts = receiver.split('.');
+    let Some(namespace) = parts.next() else {
+        return false;
+    };
+    let Some(symbol) = parts.next() else {
+        return false;
+    };
+    symbol == accepted_symbol
+        && parts.next().is_none()
+        && facts.iter().any(|fact| {
+            fact.kind == FactKind::ImportUsed
+                && fact.name == namespace
+                && fact.imported_name.as_deref() == Some("*")
+        })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticMiddlewareMatcher {
     pub path_pattern: String,
     pub excluded: bool,

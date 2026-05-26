@@ -1,6 +1,7 @@
 use crate::{
-    AcceptedAuthHelper, FactExtractError, SecurityProofStatus, build_auth_boundary_proof,
-    build_middleware_coverage_proof,
+    AcceptedAuthHelper, AcceptedRequestValidator, FactExtractError, RequestValidationProofScope,
+    SecurityProofStatus, build_auth_boundary_proof, build_middleware_coverage_proof,
+    build_request_validation_proof_with_scope,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,17 @@ pub struct SecurityMiddlewareContract {
     pub route_paths: Vec<String>,
     pub methods: Vec<String>,
     pub accepted_auth_helpers: Vec<AcceptedAuthHelper>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityRequestValidationContract {
+    pub contract_id: String,
+    pub capability: SecurityContractCapability,
+    pub enforcement_mode: SecurityEnforcementMode,
+    pub methods: Vec<String>,
+    pub input_sources: Vec<String>,
+    pub sinks: Vec<String>,
+    pub accepted_validators: Vec<AcceptedRequestValidator>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +193,73 @@ pub fn evaluate_middleware_must_cover_routes(
         drift_category: "missing_proof".to_string(),
         confidence_label: "certain".to_string(),
     }])
+}
+
+pub fn evaluate_api_route_requires_request_validation(
+    file_path: impl AsRef<std::path::Path>,
+    source: &str,
+    contract: &SecurityRequestValidationContract,
+) -> Result<Vec<SecurityFinding>, FactExtractError> {
+    if contract.enforcement_mode == SecurityEnforcementMode::Off
+        || contract.capability != SecurityContractCapability::DeterministicCheck
+        || contract.accepted_validators.is_empty()
+    {
+        return Ok(Vec::new());
+    }
+    if !contract.methods.is_empty() {
+        let route_method = first_route_method(source);
+        if route_method
+            .is_none_or(|method| !contract.methods.iter().any(|allowed| allowed == &method))
+        {
+            return Ok(Vec::new());
+        }
+    }
+
+    let proof = build_request_validation_proof_with_scope(
+        file_path,
+        source,
+        &contract.accepted_validators,
+        &RequestValidationProofScope {
+            input_sources: contract.input_sources.clone(),
+            sink_kinds: contract.sinks.clone(),
+        },
+    )?;
+    if proof.result.proof_status == SecurityProofStatus::Proven {
+        return Ok(Vec::new());
+    }
+
+    Ok(vec![SecurityFinding {
+        contract_id: contract.contract_id.clone(),
+        title: "API route uses unvalidated request input".to_string(),
+        expected_layer: "request_validation".to_string(),
+        actual_layer: proof
+            .request_validation
+            .unvalidated_uses
+            .first()
+            .map(|use_proof| use_proof.reason.clone())
+            .unwrap_or_else(|| "request_input_not_validated".to_string()),
+        enforcement_result: match contract.enforcement_mode {
+            SecurityEnforcementMode::Brief => SecurityFindingResult::Brief,
+            SecurityEnforcementMode::Warn => SecurityFindingResult::Warn,
+            SecurityEnforcementMode::Block => SecurityFindingResult::Block,
+            SecurityEnforcementMode::Off => return Ok(Vec::new()),
+        },
+        drift_category: "missing_proof".to_string(),
+        confidence_label: "certain".to_string(),
+    }])
+}
+
+fn first_route_method(source: &str) -> Option<String> {
+    source.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        let rest = trimmed.strip_prefix("export async function ")?;
+        let method = rest.split('(').next()?.trim();
+        if method.is_empty() {
+            None
+        } else {
+            Some(method.to_uppercase())
+        }
+    })
 }
 
 fn route_path_from_file(file_path: &str) -> Option<String> {

@@ -76,6 +76,10 @@ export interface RepoMapRouteSecurity {
     protection_kinds: string[];
     middleware_ids: string[];
   };
+  request_validation: {
+    status: "not_required" | "not_evaluated" | "missing_proof";
+    input_sources: string[];
+  };
 }
 
 export interface GraphRepoMap {
@@ -964,7 +968,9 @@ function routeSecurityFromFacts(fileFacts: FactRecord[]): RepoMapRouteSecurity |
   const middlewareProtectionFacts = fileFacts.filter((fact) =>
     fact.kind === "middleware_protects_route"
   );
-  if (middlewareProtectionFacts.length === 0) {
+  const requestInputFacts = fileFacts.filter((fact) => fact.kind === "request_input_read");
+  const validatedUseFacts = fileFacts.filter((fact) => fact.kind === "validated_input_used");
+  if (middlewareProtectionFacts.length === 0 && requestInputFacts.length === 0 && validatedUseFacts.length === 0) {
     return undefined;
   }
   const middlewareIds = middlewareProtectionFacts.map((fact) => {
@@ -979,9 +985,18 @@ function routeSecurityFromFacts(fileFacts: FactRecord[]): RepoMapRouteSecurity |
   });
   return {
     middleware_coverage: {
-      proven: true,
+      proven: middlewareProtectionFacts.length > 0,
       protection_kinds: unique(protectionKinds),
       middleware_ids: unique(middlewareIds)
+    },
+    request_validation: {
+      status: requestInputFacts.length === 0
+        ? "not_required"
+        : "not_evaluated",
+      input_sources: unique(requestInputFacts.map((fact) => {
+        const metadata = parseFactValue(fact.value);
+        return typeof metadata.source === "string" ? metadata.source : fact.name;
+      }))
     }
   };
 }
@@ -1006,6 +1021,17 @@ function mergeRouteSecurity(
       middleware_ids: unique([
         ...left.middleware_coverage.middleware_ids,
         ...right.middleware_coverage.middleware_ids
+      ])
+    },
+    request_validation: {
+      status: left.request_validation.status === "missing_proof" || right.request_validation.status === "missing_proof"
+          ? "missing_proof"
+          : left.request_validation.status === "not_evaluated" || right.request_validation.status === "not_evaluated"
+            ? "not_evaluated"
+            : "not_required",
+      input_sources: unique([
+        ...left.request_validation.input_sources,
+        ...right.request_validation.input_sources
       ])
     }
   };

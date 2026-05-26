@@ -24,6 +24,7 @@ export interface SecurityCheckJson {
     security_findings_count: number;
     security_blocking_count: number;
     middleware_coverage_proven_count: number;
+    request_validation_failed_count: number;
   };
 }
 
@@ -46,6 +47,10 @@ export function buildSecurityCheckJson(input: BuildSecurityCheckJsonInput): Secu
       middleware_coverage_proven_count: input.proofs.filter((proof) => {
         const middleware = proof.middleware;
         return Boolean(middleware && middleware.required && middleware.proven);
+      }).length,
+      request_validation_failed_count: input.proofs.filter((proof) => {
+        const requestValidation = proof.request_validation;
+        return Boolean(requestValidation && requestValidation.required && !requestValidation.proven);
       }).length
     }
   };

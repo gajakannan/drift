@@ -4,7 +4,8 @@ export const SecurityCapabilityNameSchema = z.enum([
   "security_facts",
   "auth_boundary_facts",
   "control_flow_guard_dominance",
-  "middleware_coverage"
+  "middleware_coverage",
+  "request_validation_facts"
 ]);
 
 export const SecurityMissingProofCodeSchema = z.enum([
@@ -12,6 +13,9 @@ export const SecurityMissingProofCodeSchema = z.enum([
   "auth_guard_not_dominating_sink",
   "middleware_not_covering_route",
   "middleware_dynamic_matcher",
+  "request_input_not_validated",
+  "validation_result_not_used",
+  "unknown_validator",
   "unsupported_callback_boundary",
   "unsupported_dynamic_control_flow",
   "route_binding_unresolved",
@@ -23,12 +27,15 @@ export const SecurityParserGapCodeSchema = z.enum([
   "handler_unresolved",
   "unsupported_dynamic_control_flow",
   "unsupported_dynamic_middleware_matcher",
+  "unsupported_request_input_spread",
+  "unsupported_request_input_destructure",
   "unsupported_callback_boundary"
 ]);
 
 const SecurityContractKindSchema = z.enum([
   "api_route_requires_auth_helper",
-  "middleware_must_cover_routes"
+  "middleware_must_cover_routes",
+  "api_route_requires_request_validation"
 ]);
 
 export const SecurityConventionSchema = z.object({
@@ -136,6 +143,37 @@ const SecurityMiddlewareProofSchema = z.object({
   }))
 });
 
+const SecurityRequestValidationProofSchema = z.object({
+  required: z.boolean(),
+  proven: z.boolean(),
+  input_reads: z.array(z.object({
+    fact_id: z.string().min(1),
+    source: z.enum(["body", "query", "params", "headers", "cookies", "formData"]),
+    variable: z.string().min(1).optional(),
+    key: z.string().min(1).optional()
+  })),
+  validations: z.array(z.object({
+    fact_id: z.string().min(1),
+    validator_symbol: z.string().min(1),
+    schema_symbol: z.string().min(1).optional(),
+    input_var: z.string().min(1).optional(),
+    result_var: z.string().min(1).optional()
+  })),
+  validated_uses: z.array(z.object({
+    fact_id: z.string().min(1).optional(),
+    source_input_var: z.string().min(1),
+    validated_var: z.string().min(1),
+    sink_fact_id: z.string().min(1),
+    sink_kind: z.enum(["data_operation", "response", "outbound_request", "raw_sql"])
+  })),
+  unvalidated_uses: z.array(z.object({
+    input_fact_id: z.string().min(1),
+    sink_fact_id: z.string().min(1),
+    sink_kind: z.enum(["data_operation", "response", "outbound_request", "raw_sql"]),
+    reason: z.enum(["request_input_not_validated", "validation_result_not_used", "unknown_validator"])
+  }))
+});
+
 const SecurityMissingProofSchema = z.object({
   id: z.string().min(1),
   capability: z.string().min(1),
@@ -185,6 +223,14 @@ export const SecurityBoundaryProofSchema = z.object({
     matched_middleware: [],
     mismatches: []
   }),
+  request_validation: SecurityRequestValidationProofSchema.optional().default({
+    required: false,
+    proven: false,
+    input_reads: [],
+    validations: [],
+    validated_uses: [],
+    unvalidated_uses: []
+  }),
   missing_proof: z.array(SecurityMissingProofSchema),
   parser_gaps: z.array(SecurityParserGapSchema),
   result: z.object({
@@ -193,6 +239,42 @@ export const SecurityBoundaryProofSchema = z.object({
     can_block: z.boolean(),
     finding_ids: z.array(z.string().min(1))
   })
+}).superRefine((proof, context) => {
+  const requestValidationMissingProof = proof.missing_proof.filter((entry) =>
+    entry.capability === "request_validation_facts" ||
+    ["request_input_not_validated", "validation_result_not_used", "unknown_validator"].includes(entry.code)
+  );
+  const blockingRequestValidationParserGaps = proof.parser_gaps.filter((gap) =>
+    gap.blocks_enforcement &&
+    (gap.capability === "request_validation_facts" ||
+      gap.affected_contract_kinds.includes("api_route_requires_request_validation"))
+  );
+
+  if (proof.request_validation.required && proof.request_validation.proven) {
+    if (
+      proof.request_validation.unvalidated_uses.length > 0 ||
+      requestValidationMissingProof.length > 0 ||
+      blockingRequestValidationParserGaps.length > 0 ||
+      proof.request_validation.validated_uses.length === 0 ||
+      proof.result.proof_status !== "proven" ||
+      proof.result.enforcement_result !== "pass"
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "request validation proven proof cannot include missing proof, parser gaps, or unvalidated uses"
+      });
+    }
+  }
+
+  if (
+    proof.request_validation.unvalidated_uses.length > 0 &&
+    (proof.request_validation.proven || proof.result.proof_status === "proven")
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "request validation unvalidated uses require a non-proven proof status"
+    });
+  }
 });
 
 export type SecurityConvention = z.infer<typeof SecurityConventionSchema>;

@@ -22,6 +22,16 @@ pub struct MiddlewareMismatch {
     pub parser_gap_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedInputUse {
+    pub source_input_var: String,
+    pub validated_var: String,
+    pub sink_fact_id: String,
+    pub sink_kind: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
 pub fn guard_dominates_straight_line_sinks(facts: &[Fact]) -> Vec<DominatedSink> {
     let Some(first_guard_line) = facts
         .iter()
@@ -158,6 +168,221 @@ pub fn protected_sinks(facts: &[Fact]) -> Vec<&Fact> {
             )
         })
         .collect()
+}
+
+pub fn validated_input_uses(facts: &[Fact], lines: &[&str]) -> Vec<ValidatedInputUse> {
+    let validations = facts
+        .iter()
+        .filter(|fact| fact.kind == FactKind::RequestValidationCalled)
+        .filter_map(validation_metadata)
+        .collect::<Vec<_>>();
+    let mut uses = Vec::new();
+    for validation in validations {
+        for sink in protected_sinks(facts)
+            .into_iter()
+            .filter(|sink| sink.start_line > validation.validation_line)
+        {
+            let sink_text = sink_source_text(lines, sink);
+            let sink_uses_validated_input = if validation.requires_success_guard {
+                if validation.requires_success_guard
+                    && !safe_parse_success_guard_dominates(
+                        lines,
+                        &validation.validated_var,
+                        validation.validation_line,
+                        sink.start_line,
+                    )
+                {
+                    continue;
+                }
+                sink_text.contains(&format!("{}.data", validation.validated_var))
+                    || safe_parse_aliases(
+                        lines,
+                        &validation.validated_var,
+                        validation.validation_line,
+                        sink.start_line,
+                    )
+                    .iter()
+                    .any(|alias| line_uses_identifier(&sink_text, alias))
+            } else {
+                line_uses_identifier(&sink_text, &validation.validated_var)
+            };
+            if !sink_uses_validated_input {
+                continue;
+            }
+            uses.push(ValidatedInputUse {
+                source_input_var: validation.source_input_var.clone(),
+                validated_var: validation.validated_var.clone(),
+                sink_fact_id: sink_id(sink),
+                sink_kind: sink_kind(sink).to_string(),
+                start_line: sink.start_line,
+                end_line: sink.end_line,
+            });
+        }
+    }
+    uses
+}
+
+struct ValidationMetadata {
+    source_input_var: String,
+    validated_var: String,
+    validation_line: usize,
+    requires_success_guard: bool,
+}
+
+fn validation_metadata(fact: &Fact) -> Option<ValidationMetadata> {
+    let value = serde_json::from_str::<serde_json::Value>(fact.value.as_deref()?).ok()?;
+    let source_input_var = value.get("input_var")?.as_str()?.to_string();
+    let behavior = value.get("behavior")?.as_str()?.to_string();
+    let validated_var = value
+        .get("result_var")
+        .and_then(|result| result.as_str())
+        .map(str::to_string)
+        .or_else(|| (behavior == "throws").then(|| source_input_var.clone()))?;
+    Some(ValidationMetadata {
+        source_input_var,
+        validated_var,
+        validation_line: fact.start_line,
+        requires_success_guard: fact.name == "safeParse",
+    })
+}
+
+fn safe_parse_success_guard_dominates(
+    lines: &[&str],
+    result_var: &str,
+    validation_line: usize,
+    sink_line: usize,
+) -> bool {
+    let success_check = format!("{result_var}.success");
+    let failure_check = format!("!{result_var}.success");
+    for (index, line) in lines.iter().enumerate() {
+        let line_number = index + 1;
+        let stripped = strip_strings_and_line_comment(line);
+        if line_number <= validation_line || line_number >= sink_line || !stripped.contains("if") {
+            continue;
+        }
+        if stripped.contains(&failure_check) {
+            if line_has_exit_after_condition(&stripped, &failure_check) {
+                return true;
+            }
+            if let Some(block_end) = closing_block_line(lines, line_number) {
+                let guard_exits = lines
+                    .iter()
+                    .take(block_end.saturating_sub(1))
+                    .skip(line_number)
+                    .any(|candidate| line_is_exit_statement(candidate));
+                if guard_exits && block_end < sink_line {
+                    return true;
+                }
+            }
+        }
+        if stripped.contains(&success_check) && !stripped.contains(&failure_check) {
+            let Some(block_end) = closing_block_line(lines, line_number) else {
+                continue;
+            };
+            if line_number < sink_line && sink_line < block_end {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn safe_parse_aliases(
+    lines: &[&str],
+    result_var: &str,
+    validation_line: usize,
+    sink_line: usize,
+) -> Vec<String> {
+    let data_expr = format!("{result_var}.data");
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(index, line)| {
+            let line_number = index + 1;
+            validation_line < line_number && line_number < sink_line && line.contains(&data_expr)
+        })
+        .filter_map(|(_, line)| assigned_variable(line))
+        .collect()
+}
+
+fn sink_source_text(lines: &[&str], sink: &Fact) -> String {
+    let start_line = sink.start_line;
+    let end_line = if sink.kind == FactKind::RouteReturnsResponse {
+        sink.start_line
+    } else {
+        sink.end_line
+    };
+    if start_line == 0 {
+        return String::new();
+    }
+    lines
+        .iter()
+        .skip(start_line.saturating_sub(1))
+        .take(end_line.saturating_sub(start_line).saturating_add(1))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn line_has_exit_after_condition(line: &str, condition: &str) -> bool {
+    line.split(condition)
+        .nth(1)
+        .is_some_and(|after| after.contains("return") || after.contains("throw"))
+}
+
+fn line_is_exit_statement(line: &str) -> bool {
+    let stripped = strip_strings_and_line_comment(line);
+    let trimmed = stripped.trim();
+    trimmed.starts_with("return ") || trimmed == "return" || trimmed.starts_with("throw ")
+}
+
+fn strip_strings_and_line_comment(line: &str) -> String {
+    let mut stripped = String::new();
+    let mut chars = line.chars().peekable();
+    let mut quote: Option<char> = None;
+    while let Some(current) = chars.next() {
+        if quote.is_none() && current == '/' && chars.peek() == Some(&'/') {
+            break;
+        }
+        if let Some(active_quote) = quote {
+            if current == '\\' {
+                let _ = chars.next();
+                continue;
+            }
+            if current == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(current, '"' | '\'' | '`') {
+            quote = Some(current);
+            continue;
+        }
+        stripped.push(current);
+    }
+    stripped
+}
+
+fn assigned_variable(line: &str) -> Option<String> {
+    let before_equals = line.split_once('=')?.0.trim();
+    let variable = before_equals
+        .strip_prefix("const ")
+        .or_else(|| before_equals.strip_prefix("let "))
+        .or_else(|| before_equals.strip_prefix("var "))
+        .unwrap_or(before_equals)
+        .trim();
+    (!variable.is_empty()
+        && variable.chars().all(|character| {
+            character == '_' || character == '$' || character.is_ascii_alphanumeric()
+        }))
+    .then(|| variable.to_string())
+}
+
+fn line_uses_identifier(line: &str, identifier: &str) -> bool {
+    line.split(|character: char| {
+        character != '_' && character != '$' && !character.is_ascii_alphanumeric()
+    })
+    .any(|token| token == identifier)
 }
 
 pub fn static_middleware_coverage(

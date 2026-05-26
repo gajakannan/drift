@@ -130,6 +130,9 @@ function securityRequires(convention: AcceptedConvention): Record<string, unknow
   if (isRecord(conventionWithRequires.requires)) {
     return conventionWithRequires.requires;
   }
+  if (convention.kind === "api_route_requires_request_validation") {
+    return undefined;
+  }
   if (convention.kind !== "api_route_requires_auth_helper" || !convention.matcher.required_calls?.length) {
     return undefined;
   }
