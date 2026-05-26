@@ -1,4 +1,5 @@
 import {
+  SecurityBoundaryProofSchema,
   authorizeContextExport,
   type CanonicalHelperReuseAgentContract,
   type CheckRun,
@@ -7,7 +8,8 @@ import {
   type Finding,
   type MachineContractVersions,
   type RequiredCheckExecution,
-  type RepoContract
+  type RepoContract,
+  type SecurityBoundaryProof
 } from "@drift/core";
 import { buildEntrypointFlowProof,buildReadiness, scoreHelperSimilarity } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
@@ -147,6 +149,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
       review_items: [],
       waived_findings: [],
       diagnostics: checkData.diagnostics,
+      security_boundary_proofs: [],
       next_commands: [
         "drift doctor --json",
         `drift scan status --repo ${repoId} --json`
@@ -160,6 +163,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
   }
   const findings: Finding[] = [];
   const waivedFindings: WaivedFinding[] = [];
+  const securityBoundaryProofs: SecurityBoundaryProof[] = [];
   let waivedFindingsCount = 0;
 
   const engineOwned = await runEngineOwnedDirectDataAccessCheck({
@@ -305,6 +309,26 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
       }
     }
   }
+  }
+
+  const engineOwnedAuth = await runEngineOwnedAuthCheck({
+    repoId,
+    repoRoot: repo.root_path,
+    contract,
+    now,
+    scope: scope as "changed-hunks" | "changed-files" | "full",
+    parsedDiff,
+    baseline,
+    existingFindings,
+    checkData,
+    snapshotsByPath,
+    checkId,
+    checkScanId
+  });
+  findings.push(...engineOwnedAuth.findings);
+  securityBoundaryProofs.push(...engineOwnedAuth.securityBoundaryProofs);
+  for (const finding of engineOwnedAuth.findings) {
+    storage.upsertFinding(finding);
   }
 
   const helperReuseFindings = runCanonicalHelperReuseCheck({
@@ -493,6 +517,7 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     },
     review_items: findings.map(reviewFinding),
     waived_findings: waivedFindings,
+    security_boundary_proofs: securityBoundaryProofs,
     next_commands: checkNextCommands(repoId, {
       findingCount: findings.length,
       openNewCount,
@@ -1814,6 +1839,9 @@ async function runEngineOwnedDirectDataAccessCheck(input: {
       repoId: input.repoId,
       repoRoot: input.repoRoot,
       scanId: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
+      contractId: input.contract.id,
+      contractSchemaVersion: input.contract.contract_schema_version,
+      contractWaivers: input.contract.waivers,
       facts,
       snapshots,
       graphNodes: graph.nodes,
@@ -1870,6 +1898,111 @@ async function runEngineOwnedDirectDataAccessCheck(input: {
   }
 
   return { findings, waivedFindings, waivedFindingsCount };
+}
+
+async function runEngineOwnedAuthCheck(input: {
+  repoId: string;
+  repoRoot: string;
+  contract: RepoContract;
+  now: string;
+  scope: "changed-hunks" | "changed-files" | "full";
+  parsedDiff: ReturnType<typeof parseUnifiedDiff>;
+  baseline: ReturnType<SqliteDriftStorage["listBaselineViolations"]>;
+  existingFindings: Map<string, Finding>;
+  checkData: ScanData;
+  snapshotsByPath: Map<string, ScanData["snapshots"][number]>;
+  checkId: string;
+  checkScanId: string;
+}): Promise<{ findings: Finding[]; securityBoundaryProofs: SecurityBoundaryProof[] }> {
+  const findings: Finding[] = [];
+  const securityBoundaryProofs: SecurityBoundaryProof[] = [];
+
+  for (const convention of input.contract.conventions) {
+    if (
+      convention.kind !== "api_route_requires_auth_helper" ||
+      convention.enforcement_mode === "off" ||
+      convention.enforcement_capability !== "deterministic_check" ||
+      !isActiveConvention(convention, input.now)
+    ) {
+      continue;
+    }
+
+    const files = filesForConvention(input.parsedDiff, convention, input.scope)
+      .filter((filePath) => isApiRoutePath(filePath) && !isExceptedPath(filePath, convention, input.now));
+    const fileSet = new Set(files);
+    if (fileSet.size === 0) {
+      continue;
+    }
+
+    const result = await runEngineCheck({
+      repoId: input.repoId,
+      repoRoot: input.repoRoot,
+      scanId: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
+      contractId: input.contract.id,
+      contractSchemaVersion: input.contract.contract_schema_version,
+      contractWaivers: input.contract.waivers,
+      facts: input.checkData.facts.filter((fact) => fileSet.has(fact.file_path)),
+      snapshots: input.checkData.snapshots.filter((snapshot) => fileSet.has(snapshot.file_path)),
+      conventions: [convention],
+      baseline: input.baseline,
+      diff: input.parsedDiff,
+      scope: input.scope
+    });
+    securityBoundaryProofs.push(
+      ...result.security_boundary_proofs.map((proof) => SecurityBoundaryProofSchema.parse(proof))
+    );
+
+    for (const engineFinding of result.findings) {
+      const evidence = engineFinding.evidence[0];
+      if (!evidence) {
+        continue;
+      }
+      const evidenceStartLine = evidence.start_line ?? 1;
+      const evidenceEndLine = evidence.end_line ?? evidenceStartLine;
+      const snapshot = input.snapshotsByPath.get(evidence.file_path);
+      const evidenceFacts = input.checkData.facts
+        .filter((fact) =>
+          fact.file_path === evidence.file_path &&
+          fact.start_line >= evidenceStartLine &&
+          fact.end_line <= evidenceEndLine
+        )
+        .map((fact) => fact.id);
+      const preserved = preservedGovernanceStatus(input.existingFindings.get(engineFinding.fingerprint));
+      findings.push({
+        id: engineFinding.id,
+        repo_id: input.repoId,
+        convention_id: engineFinding.convention_id,
+        check_id: input.checkId,
+        repo_contract_id: input.contract.id,
+        fingerprint: engineFinding.fingerprint,
+        title: engineFinding.title,
+        message: engineFinding.message,
+        severity: engineFinding.severity,
+        enforcement_result: engineFinding.enforcement_result,
+        status: engineFinding.status_hint === "pre_existing" ? "pre_existing" : preserved ?? "new",
+        diff_status: engineFinding.diff_status,
+        evidence_refs: [{
+          id: evidence.evidence_id ?? `evidence_${engineFinding.fingerprint.slice(0, 16)}`,
+          kind: "violation",
+          file_path: evidence.file_path,
+          start_line: evidenceStartLine,
+          end_line: evidenceEndLine,
+          fact_ids: evidenceFacts,
+          scan_id: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
+          file_hash: snapshot?.content_hash ?? "",
+          redaction_state: "none"
+        }],
+        expected_layer: "auth_guard",
+        actual_layer: "missing_auth_guard",
+        graph_path: [evidence.file_path],
+        suggested_fix: "Call an accepted auth helper before route data operations or response sinks.",
+        related_node_ids: engineFinding.related_node_ids,
+        created_at: input.now
+      });
+    }
+  }
+
+  return { findings, securityBoundaryProofs };
 }
 
 function graphForEngineCheck(

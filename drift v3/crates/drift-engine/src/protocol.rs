@@ -217,6 +217,8 @@ pub struct CheckGraphData {
 #[derive(Debug, Deserialize)]
 pub struct CheckRepoContext {
     pub repo_id: String,
+    #[serde(default)]
+    pub repo_root: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,7 +310,15 @@ pub struct EngineCandidateEvidenceRef {
 
 #[derive(Debug, Deserialize)]
 pub struct CheckContract {
+    #[serde(default)]
+    pub contract_id: Option<String>,
+    #[serde(default)]
+    pub contract_schema_version: Option<usize>,
     pub conventions: Vec<CheckConvention>,
+    #[serde(default)]
+    pub waivers: Vec<Value>,
+    #[serde(default)]
+    pub exceptions: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -316,6 +326,14 @@ pub struct CheckConvention {
     pub id: String,
     pub kind: String,
     pub matcher: CheckMatcher,
+    #[serde(default)]
+    pub requires: Option<Value>,
+    #[serde(default)]
+    pub scope: Option<Value>,
+    #[serde(default)]
+    pub exceptions: Vec<Value>,
+    #[serde(default)]
+    pub governance: Option<Value>,
     pub severity: String,
     pub enforcement_mode: String,
     pub enforcement_capability: String,
@@ -325,6 +343,8 @@ pub struct CheckConvention {
 pub struct CheckMatcher {
     pub forbidden_imports: Option<Vec<String>>,
     pub allowed_delegate_imports: Option<Vec<String>>,
+    pub required_calls: Option<Vec<String>>,
+    pub applies_to_file_roles: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -356,6 +376,8 @@ pub struct CheckResult {
     pub adapter_versions: BTreeMap<String, String>,
     pub diff_mode: String,
     pub findings: Vec<CheckFinding>,
+    #[serde(default)]
+    pub security_boundary_proofs: Vec<Value>,
     pub diagnostics: Vec<EngineDiagnostic>,
     pub stats: EngineStats,
     pub completeness: Vec<EngineCompleteness>,
@@ -499,12 +521,15 @@ pub fn capability_stats(required: &[&str], missing: &[&str]) -> EngineCapability
 pub fn certified_capabilities() -> Vec<String> {
     [
         "candidate_inference",
+        "auth_boundary_facts",
+        "control_flow_guard_dominance",
         "data_operation_detection",
         "direct_data_access_check",
         "file_discovery",
         "graph_stream",
         "import_resolution",
         "route_detection",
+        "security_facts",
         "symbol_linking",
         "syntax_facts",
     ]

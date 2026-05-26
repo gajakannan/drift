@@ -20,6 +20,7 @@ export const ConventionKindSchema = z.enum([
   "api_route_no_direct_data_access",
   "api_route_requires_service_delegation",
   "api_route_requires_auth_helper",
+  "middleware_must_cover_routes",
   "test_expected_for_changed_module",
   "custom_briefing",
   "file_role",
@@ -276,7 +277,13 @@ export const FactKindSchema = z.enum([
   "data_operation_detected",
   "route_declared",
   "file_role_detected",
-  "test_declared"
+  "test_declared",
+  "auth_guard_called",
+  "route_returns_response",
+  "callback_boundary_detected",
+  "middleware_declared",
+  "middleware_matcher_declared",
+  "middleware_protects_route"
 ]);
 
 export const FactEvidenceLevelSchema = z.enum(["path", "text", "ast", "graph", "heuristic"]);
@@ -670,6 +677,7 @@ export const AcceptedConventionSchema = z.object({
   rationale: z.string().optional(),
   scope: ConventionScopeSchema,
   matcher: ConventionMatcherSchema,
+  requires: z.record(z.unknown()).optional(),
   severity: SeveritySchema,
   enforcement_mode: EnforcementModeSchema,
   enforcement_capability: EnforcementCapabilitySchema,

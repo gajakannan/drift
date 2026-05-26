@@ -1,4 +1,4 @@
-import type { AcceptedConvention,BaselineViolation,FactRecord,FileSnapshot } from "@drift/core";
+import type { AcceptedConvention,BaselineViolation,ConventionException,FactRecord,FileSnapshot } from "@drift/core";
 import type { EngineCheckRequest,EngineCheckResult,EngineDiagnostic } from "@drift/engine-contract";
 import type { GraphEdge,GraphEvidence,GraphNode } from "@drift/factgraph";
 import { parseEngineCheckResult } from "@drift/engine-contract";
@@ -10,6 +10,10 @@ export interface EngineCheckInput {
   repoId: string;
   repoRoot: string;
   scanId: string;
+  contractId?: string;
+  contractSchemaVersion?: number;
+  contractWaivers?: ConventionException[];
+  contractExceptions?: ConventionException[];
   facts: FactRecord[];
   snapshots: FileSnapshot[];
   graphNodes?: GraphNode[];
@@ -58,24 +62,42 @@ export function engineCheckRequest(input: EngineCheckInput): EngineCheckRequest 
         file_path: fact.file_path,
         name: fact.name,
         value: fact.value,
+        imported_name: fact.imported_name,
         start_line: fact.start_line,
         end_line: fact.end_line
       }))
     },
     contract: {
-      contract_id: input.conventions[0]?.contract_id ?? "contract_unknown",
-      contract_schema_version: 1,
+      contract_id: input.contractId ?? input.conventions[0]?.contract_id ?? "contract_unknown",
+      contract_schema_version: input.contractSchemaVersion ?? 1,
       conventions: input.conventions.map((convention) => ({
         id: convention.id,
         rule_id: convention.kind,
         kind: convention.kind,
         matcher: convention.matcher as unknown as Record<string, unknown>,
+        scope: convention.scope as unknown as Record<string, unknown>,
+        requires: securityRequires(convention),
+        exceptions: convention.exceptions as unknown as Array<Record<string, unknown>>,
+        governance: {
+          accepted_by: convention.accepted_by,
+          accepted_at: convention.accepted_at,
+          updated_at: convention.updated_at,
+          expires_at: convention.expires_at,
+          rationale: convention.rationale,
+          evidence_refs: convention.evidence_refs.map((evidence) => evidence.id),
+          counterexample_refs: convention.counterexample_refs.map((evidence) => evidence.id)
+        },
         severity: engineConventionSeverity(convention.severity),
         enforcement_mode: convention.enforcement_mode,
         enforcement_capability: convention.enforcement_capability
       })),
-      waivers: [],
-      exceptions: []
+      waivers: (input.contractWaivers ?? []).map((waiver) => ({
+        id: waiver.id,
+        convention_id: waiver.contract_kinds?.[0],
+        path_globs: waiver.path_globs,
+        reason: waiver.reason
+      })),
+      exceptions: (input.contractExceptions ?? []).map((exception) => exception as unknown as Record<string, unknown>)
     },
     baseline: input.baseline.map((entry) => ({
       convention_id: entry.convention_id,
@@ -101,6 +123,26 @@ export function engineCheckRequest(input: EngineCheckInput): EngineCheckRequest 
       follow_symlinks: false
     }
   };
+}
+
+function securityRequires(convention: AcceptedConvention): Record<string, unknown> | undefined {
+  const conventionWithRequires = convention as AcceptedConvention & { requires?: unknown };
+  if (isRecord(conventionWithRequires.requires)) {
+    return conventionWithRequires.requires;
+  }
+  if (convention.kind !== "api_route_requires_auth_helper" || !convention.matcher.required_calls?.length) {
+    return undefined;
+  }
+  return {
+    auth_helpers: convention.matcher.required_calls.map((symbol) => ({
+      guard_id: `auth:${symbol}`,
+      symbol
+    }))
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function engineConventionSeverity(severity: AcceptedConvention["severity"]): "info" | "warning" | "error" {

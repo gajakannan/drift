@@ -1744,6 +1744,479 @@ Required RED tests:
 - Middleware file exists but matcher excludes route blocks.
 - Dynamic matcher emits parser gap.
 
+### Phase 2 Executable Task Ledger
+
+Execute these tasks in order. For every RED task, run the focused command and
+record the expected failure before editing implementation files.
+
+- [ ] **Task 2.1: RED middleware fact extraction**
+
+  Test file: `crates/drift-engine/tests/security_facts.rs`
+
+  Test name: `extracts_static_middleware_matcher_fact`
+
+  Add a fixture source containing a Next middleware file with a static
+  `config.matcher` and an accepted auth helper call.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_static_middleware_matcher_fact -- --nocapture
+  ```
+
+  Expected RED: fail because Rust does not emit `middleware_declared` or
+  `middleware_matcher_declared`.
+
+- [ ] **Task 2.2: GREEN middleware fact extraction**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_facts.rs`
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/facts.rs`
+  - `crates/drift-engine/src/main.rs`
+
+  Implement only static middleware declaration and matcher extraction.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_static_middleware_matcher_fact -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.3: RED middleware coverage proof for matching route**
+
+  Test file: `crates/drift-engine/tests/security_control_flow.rs`
+
+  Test name: `static_middleware_matcher_protects_route`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine static_middleware_matcher_protects_route -- --nocapture
+  ```
+
+  Expected RED: fail because no file-local or repo-local proof creates
+  `middleware_protects_route`.
+
+- [ ] **Task 2.4: GREEN middleware coverage proof**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+
+  Implement deterministic static matcher coverage only. Do not infer coverage
+  from middleware existence.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine static_middleware_matcher_protects_route -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.5: RED path mismatch blocks**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `middleware_path_mismatch_blocks_covered_route_contract`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine middleware_path_mismatch_blocks_covered_route_contract -- --nocapture
+  ```
+
+  Expected RED: fail because `middleware_must_cover_routes` is not evaluated.
+
+- [ ] **Task 2.6: GREEN path mismatch rule**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_rules.rs`
+  - `crates/drift-engine/src/check_command.rs`
+
+  Implement deterministic blocking only for accepted
+  `middleware_must_cover_routes` contracts.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine middleware_path_mismatch_blocks_covered_route_contract -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.7: RED method mismatch blocks**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `middleware_method_mismatch_blocks_when_contract_requires_method`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine middleware_method_mismatch_blocks_when_contract_requires_method -- --nocapture
+  ```
+
+  Expected RED: fail because middleware method constraints are not normalized
+  or enforced.
+
+- [ ] **Task 2.8: GREEN method mismatch rule**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+  - `crates/drift-engine/src/check_command.rs`
+
+  Normalize static method constraints and block only when the accepted contract
+  requires method-aware coverage.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine middleware_method_mismatch_blocks_when_contract_requires_method -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.9: RED excluded route blocks**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `middleware_excludes_matched_route_blocks`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine middleware_excludes_matched_route_blocks -- --nocapture
+  ```
+
+  Expected RED: fail because excluded matcher branches are not represented as
+  missing proof.
+
+- [ ] **Task 2.10: GREEN excluded route rule**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+
+  Represent excluded route coverage as `missing_proof`; do not silently pass.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine middleware_excludes_matched_route_blocks -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.11: RED dynamic matcher parser gap**
+
+  Test file: `crates/drift-engine/tests/security_control_flow.rs`
+
+  Test name: `dynamic_middleware_matcher_emits_parser_gap_and_blocks`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine dynamic_middleware_matcher_emits_parser_gap_and_blocks -- --nocapture
+  ```
+
+  Expected RED: fail because unsupported dynamic middleware matcher evidence
+  is not emitted as a parser gap.
+
+- [ ] **Task 2.12: GREEN dynamic matcher parser gap**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_facts.rs`
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_capabilities.rs`
+
+  Emit parser gap `unsupported_dynamic_middleware_matcher` and block only
+  under an accepted blocking contract.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine dynamic_middleware_matcher_emits_parser_gap_and_blocks -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.13: RED auth contract accepts middleware proof only when proven**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `auth_contract_accepts_static_middleware_proof_but_not_middleware_existence`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine auth_contract_accepts_static_middleware_proof_but_not_middleware_existence -- --nocapture
+  ```
+
+  Expected RED: fail because `api_route_requires_auth_helper` does not yet
+  consume `middleware_protects_route` proof.
+
+- [ ] **Task 2.14: GREEN auth plus middleware proof**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+  - `crates/drift-engine/src/check_command.rs`
+
+  Allow middleware proof to satisfy auth only when coverage is deterministic
+  and accepted by contract input.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine auth_contract_accepts_static_middleware_proof_but_not_middleware_existence -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.15: RED candidate-only middleware cannot block**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `candidate_only_middleware_evidence_does_not_block`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine candidate_only_middleware_evidence_does_not_block -- --nocapture
+  ```
+
+  Expected RED: fail because candidate-only middleware evidence is not
+  separated from accepted deterministic contracts.
+
+- [ ] **Task 2.16: GREEN candidate-only middleware boundary**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_rules.rs`
+  - `packages/cli/src/domain/convention-candidates.ts`
+
+  Ensure inferred middleware evidence can propose candidates but cannot produce
+  blocking findings without an accepted deterministic contract.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine candidate_only_middleware_evidence_does_not_block -- --nocapture
+  pnpm --filter @drift/cli test -- convention-candidates
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.17: RED TypeScript schemas and engine contract**
+
+  Test files:
+
+  - `packages/core/test/security.test.ts`
+  - `packages/engine-contract/test/security-contract.test.ts`
+
+  Test names:
+
+  - `validates middleware_must_cover_routes contracts and parser gaps`
+  - `validates middleware SecurityBoundaryProof fields from engine output`
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/core test -- security
+  pnpm --filter @drift/engine-contract test -- security-contract
+  ```
+
+  Expected RED: fail because middleware contract kinds, proof fields, fact
+  kinds, and parser-gap codes are not in TypeScript schemas.
+
+- [ ] **Task 2.18: GREEN TypeScript schemas and engine contract**
+
+  Implementation files:
+
+  - `packages/core/src/security.ts`
+  - `packages/core/src/domain.ts`
+  - `packages/core/src/schemas.ts`
+  - `packages/engine-contract/src/index.ts`
+  - `crates/drift-engine/src/protocol.rs`
+
+  Add only normalized middleware contract/proof/event fields. Do not add rule
+  evaluation logic in TypeScript.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/core test -- security
+  pnpm --filter @drift/engine-contract test -- security-contract
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.19: RED query, scan status, and repo map output**
+
+  Test files:
+
+  - `packages/query/test/security-boundary-proof.test.ts`
+  - `packages/cli/test/security-check.test.ts`
+  - `packages/cli/test/cli.test.ts`
+
+  Test names:
+
+  - `summarizes middleware coverage proof without snippets`
+  - `returns middleware coverage proof in drift check JSON output`
+  - `scan status reports middleware_coverage capability`
+  - `repo map reports route middleware coverage summary`
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/query test -- security-boundary-proof
+  pnpm --filter @drift/cli test -- security-check
+  pnpm --filter @drift/cli test -- "scan status reports middleware_coverage"
+  pnpm --filter @drift/cli test -- "repo map reports route middleware coverage"
+  ```
+
+  Expected RED: fail because query/read models and CLI output do not expose
+  middleware coverage truth.
+
+- [ ] **Task 2.20: GREEN query, scan status, and repo map output**
+
+  Implementation files:
+
+  - `packages/query/src/security-boundary-proof.ts`
+  - `packages/cli/src/check/security-check.ts`
+  - `packages/cli/src/check/run-check.ts`
+  - `packages/cli/src/domain/scan-status.ts`
+  - `packages/cli/src/commands/scan.ts`
+  - `packages/cli/src/commands/repo-map.ts`
+
+  Wire read models and output formatting only. Do not duplicate deterministic
+  middleware coverage logic in TypeScript.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/query test -- security-boundary-proof
+  pnpm --filter @drift/cli test -- security-check
+  pnpm --filter @drift/cli test -- "scan status reports middleware_coverage"
+  pnpm --filter @drift/cli test -- "repo map reports route middleware coverage"
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.21: RED MCP middleware coverage output**
+
+  Test file: `packages/mcp/test/mcp.test.ts`
+
+  Test name: `exposes middleware coverage proof summaries without snippets`
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/mcp test -- middleware
+  ```
+
+  Expected RED: fail because MCP read-only context does not include middleware
+  proof summaries.
+
+- [ ] **Task 2.22: GREEN MCP middleware coverage output**
+
+  Implementation files:
+
+  - `packages/mcp/src/security-context.ts`
+  - `packages/mcp/src/index.ts`
+  - `packages/query/src/security-boundary-proof.ts`
+
+  Expose accepted contracts, proof status, missing proof, and parser gaps
+  without snippets or duplicated rule logic.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/mcp test -- middleware
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.23: RED e2e middleware fixture matrix**
+
+  Fixture names:
+
+  - `test/fixtures/security-middleware-covered`
+  - `test/fixtures/security-middleware-mismatch`
+  - `test/fixtures/security-middleware-method-mismatch`
+  - `test/fixtures/security-middleware-dynamic-parser-gap`
+
+  Test file: `test/e2e/security-middleware.test.ts`
+
+  Test name: `security middleware fixture matrix proves coverage and gaps`
+
+  Run:
+
+  ```bash
+  pnpm test:e2e -- security-middleware
+  ```
+
+  Expected RED: fail because fixtures and end-to-end middleware expectations
+  do not exist.
+
+- [ ] **Task 2.24: GREEN e2e middleware fixture matrix**
+
+  Implementation files:
+
+  - `test/e2e/security-middleware.test.ts`
+  - `test/fixtures/security-middleware-covered/package.json`
+  - `test/fixtures/security-middleware-covered/middleware.ts`
+  - `test/fixtures/security-middleware-covered/app/api/projects/route.ts`
+  - `test/fixtures/security-middleware-mismatch/package.json`
+  - `test/fixtures/security-middleware-mismatch/middleware.ts`
+  - `test/fixtures/security-middleware-mismatch/app/api/projects/route.ts`
+  - `test/fixtures/security-middleware-method-mismatch/package.json`
+  - `test/fixtures/security-middleware-method-mismatch/middleware.ts`
+  - `test/fixtures/security-middleware-method-mismatch/app/api/projects/route.ts`
+  - `test/fixtures/security-middleware-dynamic-parser-gap/package.json`
+  - `test/fixtures/security-middleware-dynamic-parser-gap/middleware.ts`
+  - `test/fixtures/security-middleware-dynamic-parser-gap/app/api/projects/route.ts`
+
+  Run:
+
+  ```bash
+  pnpm test:e2e -- security-middleware
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 2.25: Phase 2 full gate**
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine security_
+  cargo test -p drift-engine
+  pnpm --filter @drift/core test
+  pnpm --filter @drift/engine-contract test
+  pnpm --filter @drift/query test
+  pnpm --filter @drift/cli test
+  pnpm --filter @drift/mcp test
+  pnpm test:e2e
+  pnpm verify:ci
+  ```
+
+  Expected: all pass.
+
 Done when:
 
 - Middleware coverage is deterministic only for supported static matcher formats.

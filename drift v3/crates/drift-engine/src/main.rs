@@ -12,7 +12,9 @@ mod protocol;
 
 use candidate_command::infer_candidates;
 use check_command::check_repo;
-use drift_engine::{Fact, FactKind, extract_typescript_facts, should_index_path};
+use drift_engine::{
+    Fact, FactKind, extract_security_facts, extract_typescript_facts, should_index_path,
+};
 use protocol::*;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -406,10 +408,9 @@ fn scan_file_with_reuse(
         return Ok(Some((file, reused_facts, true)));
     }
     let source = fs::read_to_string(&absolute_path)?;
-    let facts = extract_typescript_facts(file_path, &source)?
-        .into_iter()
-        .map(engine_fact)
-        .collect();
+    let mut facts = extract_typescript_facts(file_path, &source)?;
+    facts.extend(extract_security_facts(file_path, &source, &[])?);
+    let facts = facts.into_iter().map(engine_fact).collect();
     Ok(Some((file, facts, false)))
 }
 
@@ -618,6 +619,9 @@ fn fact_kind(kind: FactKind) -> &'static str {
         FactKind::RouteDeclared => "route_declared",
         FactKind::FileRoleDetected => "file_role_detected",
         FactKind::TestDeclared => "test_declared",
+        FactKind::AuthGuardCalled => "auth_guard_called",
+        FactKind::RouteReturnsResponse => "route_returns_response",
+        FactKind::CallbackBoundaryDetected => "callback_boundary_detected",
     }
 }
 
