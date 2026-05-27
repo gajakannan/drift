@@ -1724,6 +1724,102 @@ describe("read-only MCP handlers", () => {
     expect(JSON.stringify(securityContext)).not.toContain("cookie");
   });
 
+  it("derives Phase 5 MCP context from trusted stored proof, not raw facts", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertSecurityBoundaryProofs({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      created_at: "2026-05-25T00:00:00.000Z",
+      proofs: [{
+        proof_id: "proof:route:apps/web/app/api/users/route.ts:GET:phase5",
+        proof_version: "security-boundary-proof/v1",
+        route: {
+          route_id: "route:apps/web/app/api/users/route.ts:GET",
+          file_path: "apps/web/app/api/users/route.ts",
+          file_role: "api_route",
+          handler_symbol: "GET"
+        },
+        contracts: [{
+          contract_id: "security_api_sensitive_response",
+          kind: "api_route_forbids_sensitive_response_fields",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }],
+        capability_status: [{
+          name: "response_shape_facts",
+          status: "partial",
+          can_block: true,
+          parser_gap_ids: [],
+          missing_proof_ids: ["missing_proof_sensitive"]
+        }],
+        auth: {
+          required: false,
+          proven: false,
+          proof_kind: "none",
+          trusted_guard_calls: [],
+          dominated_sinks: [],
+          undominated_sinks: []
+        },
+        response_shape: {
+          required: true,
+          proven: false,
+          sensitive_leaks: [{
+            field_fact_id: "fact:apps/web/app/api/users/route.ts:4",
+            field_path: "user.email",
+            reason: "sensitive_field_without_serializer"
+          }]
+        },
+        sinks: { secrets: [] },
+        missing_proof: [{
+          id: "missing_proof_sensitive",
+          capability: "response_shape_facts",
+          code: "sensitive_response_field_unfiltered",
+          blocks_enforcement: true,
+          fact_ids: ["fact:apps/web/app/api/users/route.ts:4"],
+          graph_edge_ids: []
+        }],
+        parser_gaps: [],
+        result: {
+          proof_status: "missing_proof",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: ["finding_sensitive"]
+        }
+      }]
+    });
+    storage.close();
+
+    const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
+      repo_id: "repo_abc"
+    } as never) as {
+      sensitive_response: {
+        proof_status: string;
+        routes: Array<{
+          route_id: string;
+          proof_status: string;
+          leak_reasons: string[];
+          missing_proof_codes: string[];
+        }>;
+      };
+    };
+
+    expect(securityContext.sensitive_response.proof_status).toBe("missing_proof");
+    expect(securityContext.sensitive_response.routes).toEqual([{
+      route_id: "route:apps/web/app/api/users/route.ts:GET",
+      file_path: "apps/web/app/api/users/route.ts",
+      proof_status: "missing_proof",
+      proven: false,
+      leak_reasons: ["sensitive_field_without_serializer"],
+      missing_proof_codes: ["sensitive_response_field_unfiltered"],
+      parser_gap_codes: []
+    }]);
+    expect(JSON.stringify(securityContext)).not.toContain("redacted@example.test");
+    expect(JSON.stringify(securityContext)).not.toContain("process.env");
+  });
+
   it("includes scan symbol identities in MCP change impact", async () => {
     const databasePath = await seedMcpDatabase();
     const storage = openDriftStorage({ databasePath });
@@ -2704,7 +2800,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 22,
+        supported_sqlite_schema_version: 23,
         storage_driver: "sqlite"
       },
       v1_scope: {

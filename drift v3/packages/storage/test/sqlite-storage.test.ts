@@ -62,7 +62,8 @@ describe("SQLite Drift storage", () => {
       "019_scan_capability_reports",
       "020_machine_contract_versions",
       "021_graph_evidence_confidence",
-      "022_fact_imported_name"
+      "022_fact_imported_name",
+      "023_security_boundary_proofs"
     ]);
     storage.close();
   });
@@ -130,7 +131,8 @@ describe("SQLite Drift storage", () => {
       "019_scan_capability_reports",
       "020_machine_contract_versions",
       "021_graph_evidence_confidence",
-      "022_fact_imported_name"
+      "022_fact_imported_name",
+      "023_security_boundary_proofs"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -267,7 +269,7 @@ describe("SQLite Drift storage", () => {
         schema_version: "drift.machine_contract_versions.v1",
         cli_version: "0.1.0",
         core_version: "0.1.0",
-        storage_schema_version: 22,
+        storage_schema_version: 23,
         contract_schema_version: 1,
         engine_contract_versions: {
           scan_request: "engine.scan.request.v1",
@@ -353,7 +355,7 @@ describe("SQLite Drift storage", () => {
         repo_contract_id: "contract_abc",
         machine_contract_versions: expect.objectContaining({
           schema_version: "drift.machine_contract_versions.v1",
-          storage_schema_version: 22,
+          storage_schema_version: 23,
           factgraph_schema_version: "factgraph.v2"
         }),
         status: "fail",
@@ -511,6 +513,109 @@ describe("SQLite Drift storage", () => {
       scan_id: "scan_abc",
       repo_contract_id: "contract_abc"
     })).toHaveLength(1);
+    storage.close();
+  });
+
+  it("persists trusted security boundary proofs for query and MCP reads", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_abc",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 1,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    storage.upsertSecurityBoundaryProofs({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      created_at: "2026-05-10T00:00:02.000Z",
+      proofs: [{
+        proof_id: "proof:route:app/api/users/route.ts:GET:phase5",
+        proof_version: "security-boundary-proof/v1",
+        route: {
+          route_id: "route:app/api/users/route.ts:GET",
+          file_path: "app/api/users/route.ts",
+          file_role: "api_route",
+          handler_symbol: "GET"
+        },
+        contracts: [{
+          contract_id: "security_api_sensitive_response",
+          kind: "api_route_forbids_sensitive_response_fields",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }],
+        capability_status: [{
+          name: "response_shape_facts",
+          status: "partial",
+          can_block: true,
+          parser_gap_ids: [],
+          missing_proof_ids: ["missing_proof_sensitive"]
+        }],
+        auth: {
+          required: false,
+          proven: false,
+          proof_kind: "none",
+          trusted_guard_calls: [],
+          dominated_sinks: [],
+          undominated_sinks: []
+        },
+        response_shape: {
+          required: true,
+          proven: false,
+          sensitive_leaks: [{
+            field_fact_id: "fact:app/api/users/route.ts:3",
+            field_path: "user.email",
+            reason: "sensitive_field_without_serializer"
+          }]
+        },
+        sinks: { secrets: [] },
+        missing_proof: [{
+          id: "missing_proof_sensitive",
+          capability: "response_shape_facts",
+          code: "sensitive_response_field_unfiltered",
+          blocks_enforcement: true,
+          fact_ids: ["fact:app/api/users/route.ts:3"],
+          graph_edge_ids: []
+        }],
+        parser_gaps: [],
+        result: {
+          proof_status: "missing_proof",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: ["finding_sensitive"]
+        }
+      }]
+    });
+
+    expect(storage.listSecurityBoundaryProofs("repo_abc", "scan_abc")[0]).toMatchObject({
+      proof_id: "proof:route:app/api/users/route.ts:GET:phase5",
+      response_shape: {
+        required: true,
+        sensitive_leaks: [{
+          field_path: "user.email",
+          reason: "sensitive_field_without_serializer"
+        }]
+      }
+    });
     storage.close();
   });
 

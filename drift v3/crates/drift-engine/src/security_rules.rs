@@ -1,7 +1,8 @@
 use crate::{
-    AcceptedAuthHelper, AcceptedRequestValidator, FactExtractError, RequestValidationProofScope,
-    SecurityProofStatus, build_auth_boundary_proof, build_middleware_coverage_proof,
-    build_request_validation_proof_with_scope,
+    AcceptedAuthHelper, AcceptedPhase5Contract, AcceptedRequestValidator, FactExtractError,
+    RequestValidationProofScope, SecurityProofStatus, build_auth_boundary_proof,
+    build_middleware_coverage_proof, build_request_validation_proof_with_scope,
+    build_response_shape_proof, build_secret_exposure_proof,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +31,16 @@ pub struct SecurityRequestValidationContract {
     pub input_sources: Vec<String>,
     pub sinks: Vec<String>,
     pub accepted_validators: Vec<AcceptedRequestValidator>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityPhase5Contract {
+    pub contract_id: String,
+    pub capability: SecurityContractCapability,
+    pub enforcement_mode: SecurityEnforcementMode,
+    pub methods: Vec<String>,
+    pub path_globs: Vec<String>,
+    pub accepted_phase5: AcceptedPhase5Contract,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,6 +258,125 @@ pub fn evaluate_api_route_requires_request_validation(
         drift_category: "missing_proof".to_string(),
         confidence_label: "certain".to_string(),
     }])
+}
+
+pub fn evaluate_api_route_forbids_sensitive_response_fields(
+    file_path: impl AsRef<std::path::Path>,
+    source: &str,
+    contract: &SecurityPhase5Contract,
+) -> Result<Vec<SecurityFinding>, FactExtractError> {
+    if !phase5_contract_applies(&file_path, source, contract)
+        || (contract
+            .accepted_phase5
+            .sensitive_response_fields
+            .is_empty()
+            && contract.accepted_phase5.response_serializers.is_empty())
+    {
+        return Ok(Vec::new());
+    }
+
+    let proof = build_response_shape_proof(file_path, source, &contract.accepted_phase5)?;
+    if proof.result.proof_status == SecurityProofStatus::Proven {
+        return Ok(Vec::new());
+    }
+
+    let actual_layer = if !proof.response_shape.sensitive_leaks.is_empty() {
+        "sensitive_response_field_unfiltered"
+    } else {
+        "dynamic_response_shape_missing_proof"
+    };
+
+    Ok(vec![SecurityFinding {
+        contract_id: contract.contract_id.clone(),
+        title: "API route emits sensitive response field".to_string(),
+        expected_layer: "response_shape".to_string(),
+        actual_layer: actual_layer.to_string(),
+        enforcement_result: finding_result(contract.enforcement_mode)?,
+        drift_category: "missing_proof".to_string(),
+        confidence_label: "certain".to_string(),
+    }])
+}
+
+pub fn evaluate_api_route_forbids_secret_exposure(
+    file_path: impl AsRef<std::path::Path>,
+    source: &str,
+    contract: &SecurityPhase5Contract,
+) -> Result<Vec<SecurityFinding>, FactExtractError> {
+    if !phase5_contract_applies(&file_path, source, contract)
+        || contract.accepted_phase5.secret_sources.is_empty()
+    {
+        return Ok(Vec::new());
+    }
+
+    let proof = build_secret_exposure_proof(file_path, source, &contract.accepted_phase5)?;
+    if proof.result.proof_status == SecurityProofStatus::Proven {
+        return Ok(Vec::new());
+    }
+
+    Ok(vec![SecurityFinding {
+        contract_id: contract.contract_id.clone(),
+        title: "API route exposes secret to response or log sink".to_string(),
+        expected_layer: "secret_exposure".to_string(),
+        actual_layer: "secret_exposure_not_excluded".to_string(),
+        enforcement_result: finding_result(contract.enforcement_mode)?,
+        drift_category: "missing_proof".to_string(),
+        confidence_label: "certain".to_string(),
+    }])
+}
+
+fn phase5_contract_applies(
+    file_path: impl AsRef<std::path::Path>,
+    source: &str,
+    contract: &SecurityPhase5Contract,
+) -> bool {
+    if contract.enforcement_mode == SecurityEnforcementMode::Off
+        || contract.capability != SecurityContractCapability::DeterministicCheck
+    {
+        return false;
+    }
+    if !contract.methods.is_empty() {
+        let route_method = first_route_method(source);
+        if route_method
+            .is_none_or(|method| !contract.methods.iter().any(|allowed| allowed == &method))
+        {
+            return false;
+        }
+    }
+    if !contract.path_globs.is_empty() {
+        let file_path = file_path.as_ref().to_string_lossy().replace('\\', "/");
+        let Some(route_path) = route_path_from_file(&file_path) else {
+            return false;
+        };
+        if !contract
+            .path_globs
+            .iter()
+            .any(|pattern| path_glob_matches(pattern, &route_path))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn path_glob_matches(pattern: &str, route_path: &str) -> bool {
+    if pattern == route_path {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        return route_path == prefix || route_path.starts_with(&format!("{prefix}/"));
+    }
+    false
+}
+
+fn finding_result(
+    enforcement_mode: SecurityEnforcementMode,
+) -> Result<SecurityFindingResult, FactExtractError> {
+    match enforcement_mode {
+        SecurityEnforcementMode::Brief => Ok(SecurityFindingResult::Brief),
+        SecurityEnforcementMode::Warn => Ok(SecurityFindingResult::Warn),
+        SecurityEnforcementMode::Block => Ok(SecurityFindingResult::Block),
+        SecurityEnforcementMode::Off => unreachable!("off mode is filtered before findings"),
+    }
 }
 
 fn first_route_method(source: &str) -> Option<String> {

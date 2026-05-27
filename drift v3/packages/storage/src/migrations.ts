@@ -671,5 +671,29 @@ export const MIGRATIONS: Migration[] = [
     sql: `
       ALTER TABLE facts ADD COLUMN imported_name TEXT;
     `
+  },
+  {
+    id: "023_security_boundary_proofs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS security_boundary_proofs (
+        proof_id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        route_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        contract_kinds_json TEXT NOT NULL,
+        proof_status TEXT NOT NULL,
+        enforcement_result TEXT NOT NULL,
+        proof_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_security_boundary_proofs_repo_scan
+        ON security_boundary_proofs(repo_id, scan_id);
+
+      CREATE INDEX IF NOT EXISTS idx_security_boundary_proofs_repo_route
+        ON security_boundary_proofs(repo_id, route_id);
+    `
   }
 ];

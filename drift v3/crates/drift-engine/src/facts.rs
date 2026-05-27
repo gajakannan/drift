@@ -22,6 +22,10 @@ pub enum FactKind {
     RequestInputRead,
     RequestValidationCalled,
     ValidatedInputUsed,
+    SensitiveFieldDeclared,
+    ResponseEmitsField,
+    SerializerCalled,
+    SecretRead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

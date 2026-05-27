@@ -38,5 +38,19 @@ pub fn security_capabilities() -> Vec<SecurityScanCapability> {
             can_block: true,
             block_requires_accepted_convention: true,
         },
+        SecurityScanCapability {
+            name: "response_shape_facts".to_string(),
+            capability: "deterministic_check".to_string(),
+            status: SecurityCapabilityStatus::Partial,
+            can_block: true,
+            block_requires_accepted_convention: true,
+        },
+        SecurityScanCapability {
+            name: "secret_exposure".to_string(),
+            capability: "deterministic_check".to_string(),
+            status: SecurityCapabilityStatus::Partial,
+            can_block: true,
+            block_requires_accepted_convention: true,
+        },
     ]
 }

@@ -740,6 +740,10 @@ fn fact_kind(kind: FactKind) -> &'static str {
         FactKind::RequestInputRead => "request_input_read",
         FactKind::RequestValidationCalled => "request_validation_called",
         FactKind::ValidatedInputUsed => "validated_input_used",
+        FactKind::SensitiveFieldDeclared => "sensitive_field_declared",
+        FactKind::ResponseEmitsField => "response_emits_field",
+        FactKind::SerializerCalled => "serializer_called",
+        FactKind::SecretRead => "secret_read",
     }
 }
 

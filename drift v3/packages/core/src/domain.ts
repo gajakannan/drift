@@ -4,6 +4,8 @@ export type ConventionKind =
   | "api_route_requires_auth_helper"
   | "middleware_must_cover_routes"
   | "api_route_requires_request_validation"
+  | "api_route_forbids_sensitive_response_fields"
+  | "api_route_forbids_secret_exposure"
   | "test_expected_for_changed_module"
   | "custom_briefing"
   | AgentContractKind;
@@ -264,7 +266,11 @@ export type FactKind =
   | "middleware_protects_route"
   | "request_input_read"
   | "request_validation_called"
-  | "validated_input_used";
+  | "validated_input_used"
+  | "sensitive_field_declared"
+  | "response_emits_field"
+  | "serializer_called"
+  | "secret_read";
 
 export type FactEvidenceLevel = "path" | "text" | "ast" | "graph" | "heuristic";
 export type FactResolutionStatus = "resolved" | "unresolved" | "partial" | "unsupported";
