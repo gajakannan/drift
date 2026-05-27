@@ -92,6 +92,13 @@ export function buildSecurityContextPayload(storage: DriftStorage, repoId: strin
     route.missing_proof_codes.includes("secret_exposure_not_excluded") ||
     route.parser_gap_codes.includes("unsupported_dynamic_control_flow")
   );
+  const phase6ProofRoutes = proofReadModel.routes.filter((route) =>
+    route.phase6.ssrf.required ||
+    route.phase6.raw_sql.required ||
+    route.phase6.cors.required ||
+    route.phase6.csrf.required ||
+    route.phase6.rate_limit.required
+  );
 
   return {
     response_schema: "drift.security.context.v1",
@@ -144,6 +151,19 @@ export function buildSecurityContextPayload(storage: DriftStorage, repoId: strin
       routes: tenantScopeRoutes(tenantSourceFacts, tenantGuardFacts),
       parser_gaps: tenantParserGaps(parserGaps)
     },
+    phase6: {
+      proof_source: "trusted_check_proof_required",
+      routes: phase6ProofRoutes.map((route) => ({
+        route_id: route.route_id,
+        file_path: route.file_path,
+        proof_status: route.proof_status,
+        enforcement_result: route.enforcement_result,
+        phase6: route.phase6,
+        missing_proof_codes: route.missing_proof_codes,
+        parser_gap_codes: route.parser_gap_codes
+      })),
+      parser_gaps: phase6ParserGaps(parserGaps)
+    },
     redactions: {
       snippets_included: false,
       source_content_included: false,
@@ -180,6 +200,11 @@ function securityConventions(conventions: AcceptedConvention[]) {
       convention.kind === "middleware_must_cover_routes" ||
       convention.kind === "api_route_requires_auth_helper" ||
       convention.kind === "api_route_requires_request_validation" ||
+      convention.kind === "api_route_forbids_untrusted_ssrf" ||
+      convention.kind === "api_route_forbids_raw_sql_without_params" ||
+      convention.kind === "api_route_cors_must_match_policy" ||
+      convention.kind === "api_route_requires_csrf_for_mutation" ||
+      convention.kind === "api_route_requires_rate_limit" ||
       convention.kind === "api_route_forbids_sensitive_response_fields" ||
       convention.kind === "api_route_forbids_secret_exposure" ||
       convention.kind === "session_object_must_come_from_trusted_helper" ||
@@ -536,6 +561,18 @@ function middlewareParserGaps(parserGaps: ParserGap[]) {
 function requestValidationParserGaps(parserGaps: ParserGap[]) {
   return parserGaps
     .filter((gap) => gap.message === "unsupported_request_input_spread")
+    .map((gap) => ({
+      reason: gap.message,
+      blocking: gap.confidence_impact === "blocks_enforcement"
+    }));
+}
+
+function phase6ParserGaps(parserGaps: ParserGap[]) {
+  return parserGaps
+    .filter((gap) =>
+      gap.message === "unsupported_dynamic_outbound_url" ||
+      gap.message === "unsupported_dynamic_cors_origin"
+    )
     .map((gap) => ({
       reason: gap.message,
       blocking: gap.confidence_impact === "blocks_enforcement"

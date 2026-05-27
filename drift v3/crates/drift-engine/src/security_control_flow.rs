@@ -303,7 +303,10 @@ pub fn protected_sinks(facts: &[Fact]) -> Vec<&Fact> {
         .filter(|fact| {
             matches!(
                 fact.kind,
-                FactKind::DataOperationDetected | FactKind::RouteReturnsResponse
+                FactKind::DataOperationDetected
+                    | FactKind::RouteReturnsResponse
+                    | FactKind::OutboundRequestCalled
+                    | FactKind::RawSqlCalled
             )
         })
         .collect()
@@ -688,6 +691,8 @@ fn sink_kind(fact: &Fact) -> &'static str {
     match fact.kind {
         FactKind::DataOperationDetected => "data_operation",
         FactKind::RouteReturnsResponse => "response",
+        FactKind::OutboundRequestCalled => "outbound_request",
+        FactKind::RawSqlCalled => "raw_sql",
         _ => "unknown",
     }
 }

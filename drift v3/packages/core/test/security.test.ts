@@ -528,6 +528,92 @@ describe("security domain schemas", () => {
     expect(SecurityParserGapCodeSchema.parse("unsupported_session_nested_destructure")).toBe("unsupported_session_nested_destructure");
   });
 
+  it("validates Phase 6 contract kinds and proof codes", () => {
+    expect(SecurityMissingProofCodeSchema.parse("request_controlled_url")).toBe("request_controlled_url");
+    expect(SecurityMissingProofCodeSchema.parse("raw_sql_unparameterized")).toBe("raw_sql_unparameterized");
+    expect(SecurityMissingProofCodeSchema.parse("unsupported_dynamic_cors_origin")).toBe("unsupported_dynamic_cors_origin");
+    expect(SecurityParserGapCodeSchema.parse("unsupported_dynamic_outbound_url")).toBe("unsupported_dynamic_outbound_url");
+
+    const contract = SecurityConventionSchema.parse({
+      contract_id: "security_api_no_untrusted_ssrf",
+      kind: "api_route_forbids_untrusted_ssrf",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: {
+        file_roles: ["api_route"],
+        path_globs: ["**/app/api/**/route.ts"],
+        methods: ["POST"]
+      },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "route",
+        diff_status: ["added", "modified", "renamed"]
+      },
+      requires: {
+        outbound_url_allowlist_helpers: [{
+          helper_id: "network:assertAllowedOutboundUrl",
+          symbol: "assertAllowedOutboundUrl",
+          import_source: "@/lib/security/network"
+        }]
+      },
+      exceptions: []
+    });
+
+    expect(contract.kind).toBe("api_route_forbids_untrusted_ssrf");
+  });
+
+  it("rejects impossible proven Phase 6 SSRF proof states", () => {
+    const proof = validSecurityBoundaryProof({
+      contracts: [{
+        contract_id: "security_api_no_untrusted_ssrf",
+        kind: "api_route_forbids_untrusted_ssrf",
+        enforcement_mode: "block",
+        capability: "deterministic_check",
+        matched: true
+      }],
+      ssrf: {
+        required: true,
+        proven: true,
+        outbound_requests: [{
+          fact_id: "fact_fetch",
+          sink_id: "sink_fetch",
+          api: "fetch",
+          url_source: "request_input"
+        }],
+        allowlist_proofs: [],
+        missing_proof: []
+      }
+    });
+
+    expect(() => SecurityBoundaryProofSchema.parse(proof)).toThrow(/SSRF/i);
+  });
+
+  it("rejects impossible proven Phase 6 raw SQL proof states", () => {
+    const proof = validSecurityBoundaryProof({
+      contracts: [{
+        contract_id: "security_api_no_raw_sql",
+        kind: "api_route_forbids_raw_sql_without_params",
+        enforcement_mode: "block",
+        capability: "deterministic_check",
+        matched: true
+      }],
+      raw_sql: {
+        required: true,
+        proven: true,
+        raw_sql_calls: [{
+          fact_id: "fact_query",
+          sink_id: "sink_query",
+          query_shape: "concat",
+          uses_untrusted_input: true
+        }],
+        parameterized_sql: [],
+        missing_proof: []
+      }
+    });
+
+    expect(() => SecurityBoundaryProofSchema.parse(proof)).toThrow(/raw SQL/i);
+  });
+
   it("rejects impossible request validation proof states", () => {
     const proof = validSecurityBoundaryProof({
       request_validation: {

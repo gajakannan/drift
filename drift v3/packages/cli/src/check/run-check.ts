@@ -1931,6 +1931,11 @@ async function runEngineOwnedAuthCheck(input: {
       (
         convention.kind !== "api_route_requires_auth_helper" &&
         convention.kind !== "api_route_requires_request_validation" &&
+        convention.kind !== "api_route_forbids_untrusted_ssrf" &&
+        convention.kind !== "api_route_forbids_raw_sql_without_params" &&
+        convention.kind !== "api_route_cors_must_match_policy" &&
+        convention.kind !== "api_route_requires_csrf_for_mutation" &&
+        convention.kind !== "api_route_requires_rate_limit" &&
         convention.kind !== "api_route_forbids_sensitive_response_fields" &&
         convention.kind !== "api_route_forbids_secret_exposure" &&
         convention.kind !== "session_object_must_come_from_trusted_helper" &&
@@ -1986,6 +1991,7 @@ async function runEngineOwnedAuthCheck(input: {
         .map((fact) => fact.id);
       const preserved = preservedGovernanceStatus(input.existingFindings.get(engineFinding.fingerprint));
       const isRequestValidationFinding = engineFinding.rule_id === "api_route_requires_request_validation";
+      const isPhase6Finding = isPhase6SecurityFinding(engineFinding.rule_id);
       const isPhase5Finding = isPhase5SecurityFinding(engineFinding.rule_id);
       const isPhase4Finding = isPhase4SecurityFinding(engineFinding.rule_id);
       const proofForFinding = result.security_boundary_proofs.find((proof) =>
@@ -2073,6 +2079,8 @@ async function runEngineOwnedAuthCheck(input: {
         }],
         expected_layer: isRequestValidationFinding
           ? "request_validation"
+          : isPhase6Finding
+            ? phase6ExpectedLayer(engineFinding.rule_id)
           : isPhase5Finding
             ? phase5ExpectedLayer(engineFinding.rule_id)
           : isPhase4Finding
@@ -2080,6 +2088,8 @@ async function runEngineOwnedAuthCheck(input: {
             : "auth_guard",
         actual_layer: isRequestValidationFinding
           ? requestValidationActualLayer(proofForFinding)
+          : isPhase6Finding
+            ? phase6ActualLayer(proofForFinding)
           : isPhase5Finding
             ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
           : isPhase4Finding
@@ -2088,6 +2098,8 @@ async function runEngineOwnedAuthCheck(input: {
         graph_path: [evidence.file_path],
         suggested_fix: isRequestValidationFinding
           ? "Validate request input with an accepted validator before using it at protected route sinks."
+          : isPhase6Finding
+            ? "Add accepted Phase 6 proof before SSRF, raw SQL, CORS, CSRF, or rate-limit protected sinks."
           : isPhase5Finding
             ? phase5SuggestedFix(engineFinding.rule_id)
           : isPhase4Finding
@@ -2105,6 +2117,53 @@ async function runEngineOwnedAuthCheck(input: {
 function isPhase5SecurityFinding(ruleId: string): boolean {
   return ruleId === "api_route_forbids_sensitive_response_fields" ||
     ruleId === "api_route_forbids_secret_exposure";
+}
+
+function isPhase6SecurityFinding(ruleId: string): boolean {
+  return ruleId === "api_route_forbids_untrusted_ssrf" ||
+    ruleId === "api_route_forbids_raw_sql_without_params" ||
+    ruleId === "api_route_cors_must_match_policy" ||
+    ruleId === "api_route_requires_csrf_for_mutation" ||
+    ruleId === "api_route_requires_rate_limit";
+}
+
+function phase6ExpectedLayer(ruleId: string): string {
+  if (ruleId === "api_route_forbids_untrusted_ssrf") {
+    return "outbound_request";
+  }
+  if (ruleId === "api_route_forbids_raw_sql_without_params") {
+    return "raw_sql";
+  }
+  if (ruleId === "api_route_cors_must_match_policy") {
+    return "cors_policy";
+  }
+  if (ruleId === "api_route_requires_csrf_for_mutation") {
+    return "csrf_guard";
+  }
+  if (ruleId === "api_route_requires_rate_limit") {
+    return "rate_limit_guard";
+  }
+  return "security_boundary";
+}
+
+function phase6ActualLayer(proof: unknown): string {
+  if (!proof || typeof proof !== "object") {
+    return "missing_phase6_proof";
+  }
+  const candidate = proof as {
+    parser_gaps?: Array<{ code?: unknown }>;
+    missing_proof?: Array<{ code?: unknown }>;
+  };
+  const parserGapCode = candidate.parser_gaps?.find((gap) =>
+    typeof gap.code === "string"
+  )?.code;
+  if (typeof parserGapCode === "string") {
+    return parserGapCode;
+  }
+  const missingProofCode = candidate.missing_proof?.find((missing) =>
+    typeof missing.code === "string"
+  )?.code;
+  return typeof missingProofCode === "string" ? missingProofCode : "missing_phase6_proof";
 }
 
 function isPhase4SecurityFinding(ruleId: string): boolean {

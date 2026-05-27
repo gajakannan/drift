@@ -542,6 +542,8 @@ fn sink_kind(fact: &Fact) -> &'static str {
     match fact.kind {
         crate::FactKind::DataOperationDetected => "data_operation",
         crate::FactKind::RouteReturnsResponse => "response",
+        crate::FactKind::OutboundRequestCalled => "outbound_request",
+        crate::FactKind::RawSqlCalled => "raw_sql",
         _ => "unknown",
     }
 }

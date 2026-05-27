@@ -6,6 +6,11 @@ export const SecurityCapabilityNameSchema = z.enum([
   "control_flow_guard_dominance",
   "middleware_coverage",
   "request_validation_facts",
+  "outbound_request_facts",
+  "raw_sql_facts",
+  "cors_policy_facts",
+  "csrf_facts",
+  "rate_limit_facts",
   "response_shape_facts",
   "secret_exposure",
   "session_trust",
@@ -21,6 +26,17 @@ export const SecurityMissingProofCodeSchema = z.enum([
   "request_input_not_validated",
   "validation_result_not_used",
   "unknown_validator",
+  "request_controlled_url",
+  "raw_sql_unparameterized",
+  "wildcard_origin_with_credentials",
+  "disallowed_origin",
+  "credentials_not_allowed",
+  "unsupported_dynamic_outbound_url",
+  "unsupported_dynamic_cors_origin",
+  "missing_csrf_guard",
+  "csrf_guard_not_dominating_sink",
+  "missing_rate_limit_guard",
+  "rate_limit_guard_not_dominating_sink",
   "sensitive_response_field_unfiltered",
   "dynamic_response_shape_missing_proof",
   "secret_exposure_not_excluded",
@@ -43,6 +59,8 @@ export const SecurityParserGapCodeSchema = z.enum([
   "unsupported_dynamic_middleware_matcher",
   "unsupported_request_input_spread",
   "unsupported_request_input_destructure",
+  "unsupported_dynamic_outbound_url",
+  "unsupported_dynamic_cors_origin",
   "dynamic_response_shape",
   "unsupported_destructuring_or_spread",
   "unsupported_tenant_dynamic_property",
@@ -55,6 +73,11 @@ const SecurityContractKindSchema = z.enum([
   "api_route_requires_auth_helper",
   "middleware_must_cover_routes",
   "api_route_requires_request_validation",
+  "api_route_forbids_untrusted_ssrf",
+  "api_route_forbids_raw_sql_without_params",
+  "api_route_cors_must_match_policy",
+  "api_route_requires_csrf_for_mutation",
+  "api_route_requires_rate_limit",
   "api_route_forbids_sensitive_response_fields",
   "api_route_forbids_secret_exposure",
   "session_object_must_come_from_trusted_helper",
@@ -200,7 +223,7 @@ export const SecurityConventionSchema = z.object({
 
 const SecurityContractMatchSchema = z.object({
   contract_id: z.string().min(1),
-  kind: z.string().min(1),
+  kind: SecurityContractKindSchema,
   enforcement_mode: z.enum(["off", "brief", "warn", "block"]),
   capability: z.enum(["briefing_only", "heuristic_check", "deterministic_check"]),
   matched: z.boolean()
@@ -364,6 +387,69 @@ const SecuritySecretSinkProofSchema = z.object({
   reason: z.enum(["secret_reaches_sink"])
 });
 
+const SecurityPhase6MissingProofSchema = z.object({
+  code: SecurityMissingProofCodeSchema,
+  fact_ids: z.array(z.string().min(1))
+});
+
+const SecurityPhase6HelperProofSchema = z.object({
+  fact_id: z.string().min(1),
+  helper_id: z.string().min(1),
+  symbol: z.string().min(1).optional(),
+  edge_id: z.string().min(1),
+  start_line: z.number().int().positive().optional(),
+  end_line: z.number().int().positive().optional()
+});
+
+const SecuritySsrfProofSchema = z.object({
+  required: z.boolean(),
+  proven: z.boolean(),
+  outbound_requests: z.array(z.object({
+    fact_id: z.string().min(1),
+    sink_id: z.string().min(1),
+    api: z.string().min(1),
+    url_source: z.enum(["constant", "request_input", "validated_input", "allowlisted", "unknown"])
+  })),
+  allowlist_proofs: z.array(SecurityPhase6HelperProofSchema),
+  missing_proof: z.array(SecurityPhase6MissingProofSchema)
+});
+
+const SecurityRawSqlProofSchema = z.object({
+  required: z.boolean(),
+  proven: z.boolean(),
+  raw_sql_calls: z.array(z.object({
+    fact_id: z.string().min(1),
+    sink_id: z.string().min(1),
+    query_shape: z.enum(["raw_string", "template", "concat", "query_builder", "unknown"]),
+    uses_untrusted_input: z.boolean()
+  })),
+  parameterized_sql: z.array(z.object({
+    fact_id: z.string().min(1),
+    sink_id: z.string().min(1),
+    parameterization: z.string().min(1)
+  })),
+  missing_proof: z.array(SecurityPhase6MissingProofSchema)
+});
+
+const SecurityCorsProofSchema = z.object({
+  required: z.boolean(),
+  proven: z.boolean(),
+  policies: z.array(z.object({
+    fact_id: z.string().min(1),
+    origin: z.string().min(1).nullable().optional(),
+    credentials: z.boolean(),
+    dynamic_origin: z.boolean()
+  })),
+  missing_proof: z.array(SecurityPhase6MissingProofSchema)
+});
+
+const SecurityPhase6GuardProofSchema = z.object({
+  required: z.boolean(),
+  proven: z.boolean(),
+  guard_calls: z.array(SecurityPhase6HelperProofSchema),
+  missing_proof: z.array(SecurityPhase6MissingProofSchema)
+});
+
 const SecurityMissingProofSchema = z.object({
   id: z.string().min(1),
   capability: z.string().min(1),
@@ -421,6 +507,38 @@ export const SecurityBoundaryProofSchema = z.object({
     validated_uses: [],
     unvalidated_uses: []
   }),
+  ssrf: SecuritySsrfProofSchema.optional().default({
+    required: false,
+    proven: false,
+    outbound_requests: [],
+    allowlist_proofs: [],
+    missing_proof: []
+  }),
+  raw_sql: SecurityRawSqlProofSchema.optional().default({
+    required: false,
+    proven: false,
+    raw_sql_calls: [],
+    parameterized_sql: [],
+    missing_proof: []
+  }),
+  cors: SecurityCorsProofSchema.optional().default({
+    required: false,
+    proven: false,
+    policies: [],
+    missing_proof: []
+  }),
+  csrf: SecurityPhase6GuardProofSchema.optional().default({
+    required: false,
+    proven: false,
+    guard_calls: [],
+    missing_proof: []
+  }),
+  rate_limit: SecurityPhase6GuardProofSchema.optional().default({
+    required: false,
+    proven: false,
+    guard_calls: [],
+    missing_proof: []
+  }),
   response_shape: SecurityResponseShapeProofSchema.optional().default({
     required: false,
     proven: false,
@@ -459,6 +577,26 @@ export const SecurityBoundaryProofSchema = z.object({
     finding_ids: z.array(z.string().min(1))
   })
 }).superRefine((proof, context) => {
+  const phase6MissingCodes = new Set([
+    "request_controlled_url",
+    "raw_sql_unparameterized",
+    "wildcard_origin_with_credentials",
+    "disallowed_origin",
+    "credentials_not_allowed",
+    "unsupported_dynamic_outbound_url",
+    "unsupported_dynamic_cors_origin",
+    "missing_csrf_guard",
+    "csrf_guard_not_dominating_sink",
+    "missing_rate_limit_guard",
+    "rate_limit_guard_not_dominating_sink"
+  ]);
+  const phase6ParserGapCodes = new Set([
+    "unsupported_dynamic_outbound_url",
+    "unsupported_dynamic_cors_origin"
+  ]);
+  const phase6MissingProof = proof.missing_proof.filter((entry) => phase6MissingCodes.has(entry.code));
+  const phase6ParserGaps = proof.parser_gaps.filter((gap) => phase6ParserGapCodes.has(gap.code));
+
   const requestValidationMissingProof = proof.missing_proof.filter((entry) =>
     entry.capability === "request_validation_facts" ||
     ["request_input_not_validated", "validation_result_not_used", "unknown_validator"].includes(entry.code)
@@ -492,6 +630,76 @@ export const SecurityBoundaryProofSchema = z.object({
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: "request validation unvalidated uses require a non-proven proof status"
+    });
+  }
+
+  if (
+    proof.result.proof_status === "proven" &&
+    (phase6MissingProof.length > 0 || phase6ParserGaps.length > 0)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "proven Phase 6 proof cannot include Phase 6 missing proof or parser gaps"
+    });
+  }
+
+  if (proof.ssrf.required && proof.ssrf.proven) {
+    const unsafeOutbound = proof.ssrf.outbound_requests.some((request) =>
+      request.url_source === "request_input" || request.url_source === "unknown"
+    );
+    if (unsafeOutbound || proof.ssrf.missing_proof.length > 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "proven SSRF proof cannot include untrusted outbound URLs or missing proof"
+      });
+    }
+  }
+
+  if (proof.raw_sql.required && proof.raw_sql.proven) {
+    const parameterizedSinkIds = new Set(proof.raw_sql.parameterized_sql.map((entry) => entry.sink_id));
+    const unsafeRawSql = proof.raw_sql.raw_sql_calls.some((call) =>
+      !parameterizedSinkIds.has(call.sink_id)
+    );
+    if (unsafeRawSql || proof.raw_sql.missing_proof.length > 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "proven raw SQL proof cannot include unparameterized raw SQL calls or missing proof"
+      });
+    }
+  }
+
+  if (proof.cors.required && proof.cors.proven) {
+    const unsafeCorsPolicy = proof.cors.policies.some((policy) =>
+      policy.dynamic_origin ||
+      (policy.origin === "*" && policy.credentials)
+    );
+    if (unsafeCorsPolicy || proof.cors.missing_proof.length > 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "proven CORS proof cannot include dynamic or unsafe CORS policy evidence"
+      });
+    }
+  }
+
+  if (
+    proof.csrf.required &&
+    proof.csrf.proven &&
+    (proof.csrf.guard_calls.length === 0 || proof.csrf.missing_proof.length > 0)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "proven CSRF proof requires trusted guard calls and no missing proof"
+    });
+  }
+
+  if (
+    proof.rate_limit.required &&
+    proof.rate_limit.proven &&
+    (proof.rate_limit.guard_calls.length === 0 || proof.rate_limit.missing_proof.length > 0)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "proven rate-limit proof requires trusted guard calls and no missing proof"
     });
   }
 

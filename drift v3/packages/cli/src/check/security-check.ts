@@ -25,6 +25,8 @@ export interface SecurityCheckJson {
     security_blocking_count: number;
     middleware_coverage_proven_count: number;
     request_validation_failed_count: number;
+    phase6_failed_count: number;
+    phase6_parser_gap_count: number;
     session_trust_failed_count: number;
     authorization_failed_count: number;
     tenant_scope_failed_count: number;
@@ -55,6 +57,20 @@ export function buildSecurityCheckJson(input: BuildSecurityCheckJsonInput): Secu
         const requestValidation = proof.request_validation;
         return Boolean(requestValidation && requestValidation.required && !requestValidation.proven);
       }).length,
+      phase6_failed_count: input.proofs.filter((proof) =>
+        Boolean(
+          (proof.ssrf?.required && !proof.ssrf.proven) ||
+          (proof.raw_sql?.required && !proof.raw_sql.proven) ||
+          (proof.cors?.required && !proof.cors.proven) ||
+          (proof.csrf?.required && !proof.csrf.proven) ||
+          (proof.rate_limit?.required && !proof.rate_limit.proven)
+        )
+      ).length,
+      phase6_parser_gap_count: input.proofs.reduce((count, proof) =>
+        count + proof.parser_gaps.filter((gap) =>
+          gap.code === "unsupported_dynamic_outbound_url" ||
+          gap.code === "unsupported_dynamic_cors_origin"
+        ).length, 0),
       session_trust_failed_count: input.proofs.filter((proof) => {
         const sessionTrust = proof.session_trust;
         return Boolean(sessionTrust && sessionTrust.required && !sessionTrust.proven);

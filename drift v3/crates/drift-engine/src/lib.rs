@@ -7,6 +7,7 @@ mod security_capabilities;
 mod security_control_flow;
 mod security_facts;
 mod security_patterns;
+mod security_phase6;
 mod security_proof;
 mod security_rules;
 
@@ -48,6 +49,14 @@ pub use security_patterns::{
     accepted_phase5_contract_from_requires, accepted_response_serializer_for_call,
     dynamic_middleware_matcher_line,
 };
+pub use security_phase6::{
+    Phase6AcceptedHelper, Phase6CorsContract, Phase6CorsPolicyProof, Phase6CorsProof,
+    Phase6GuardProof, Phase6HelperProof, Phase6MissingProof, Phase6OutboundRequestProof,
+    Phase6ParameterizedSqlProof, Phase6RawSqlCallProof, Phase6RawSqlContract, Phase6RawSqlProof,
+    Phase6SecurityContract, Phase6SecurityProof, Phase6SsrfContract, Phase6SsrfProof,
+    Phase6UrlSource, build_phase6_security_proof, build_phase6_security_proofs_for_file,
+    phase6_proof_to_json,
+};
 pub use security_proof::{
     AuthBoundaryProof, AuthorizationGuardProof, AuthorizationMissingProof, AuthorizationProof,
     ExposedSecretProof, MiddlewareBoundaryProof, RequestInputReadProof, RequestUnvalidatedUseProof,
@@ -63,13 +72,18 @@ pub use security_proof::{
     build_response_shape_proof, build_secret_exposure_proof,
 };
 pub use security_rules::{
-    SecurityAuthContract, SecurityAuthorizationContract, SecurityContractCapability,
-    SecurityEnforcementMode, SecurityFinding, SecurityFindingResult, SecurityMiddlewareContract,
-    SecurityPhase5Contract, SecurityRequestValidationContract, SecurityTenantScopeContract,
-    evaluate_api_route_forbids_secret_exposure,
-    evaluate_api_route_forbids_sensitive_response_fields, evaluate_api_route_requires_auth_helper,
+    AcceptedOutboundUrlHelper, AcceptedSecurityHelper, SecurityAuthContract,
+    SecurityAuthorizationContract, SecurityContractCapability, SecurityCorsContract,
+    SecurityCsrfContract, SecurityEnforcementMode, SecurityFinding, SecurityFindingResult,
+    SecurityMiddlewareContract, SecurityPhase5Contract, SecurityRateLimitContract,
+    SecurityRawSqlContract, SecurityRequestValidationContract, SecuritySsrfContract,
+    SecurityTenantScopeContract, evaluate_api_route_cors_must_match_policy,
+    evaluate_api_route_forbids_raw_sql_without_params, evaluate_api_route_forbids_secret_exposure,
+    evaluate_api_route_forbids_sensitive_response_fields,
+    evaluate_api_route_forbids_untrusted_ssrf, evaluate_api_route_requires_auth_helper,
     evaluate_api_route_requires_auth_helper_with_middleware,
-    evaluate_api_route_requires_authorization, evaluate_api_route_requires_request_validation,
+    evaluate_api_route_requires_authorization, evaluate_api_route_requires_csrf_for_mutation,
+    evaluate_api_route_requires_rate_limit, evaluate_api_route_requires_request_validation,
     evaluate_api_route_requires_tenant_scope, evaluate_middleware_must_cover_routes,
 };
 
