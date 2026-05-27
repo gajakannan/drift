@@ -71,6 +71,25 @@ export interface DriftStorageOptions {
   databasePath: string;
 }
 
+export interface StoredSecurityBoundaryProofRun {
+  storage_id: string;
+  proof_id: string;
+  repo_id: string;
+  scan_id: string;
+  check_id: string;
+  route_id: string;
+  file_path: string;
+  contract_kinds: string[];
+  capability_names: string[];
+  proof_status: "proven" | "violated" | "missing_proof" | "parser_gap" | "advisory_only";
+  enforcement_result: "pass" | "brief" | "warn" | "block";
+  parser_gap_count: number;
+  missing_proof_count: number;
+  affected_files: string[];
+  proof: SecurityBoundaryProof;
+  created_at: string;
+}
+
 type DatabaseHandle = Database.Database;
 
 export class SqliteDriftStorage {
@@ -606,6 +625,139 @@ export class SqliteDriftStorage {
     return rows.map((row) =>
       SecurityBoundaryProofSchema.parse(JSON.parse(rowValue<string>(row, "proof_json")))
     );
+  }
+
+  upsertSecurityBoundaryProofRuns(input: {
+    repo_id: string;
+    scan_id: string;
+    check_id: string;
+    proofs: SecurityBoundaryProof[];
+    created_at: string;
+  }): void {
+    const proofs = input.proofs.map((proof) => SecurityBoundaryProofSchema.parse(proof));
+    const insert = this.db.prepare(`
+      INSERT INTO security_boundary_proof_runs (
+        storage_id, proof_id, repo_id, scan_id, check_id, route_id, file_path,
+        contract_kinds_json, capability_names_json, proof_status, enforcement_result,
+        parser_gap_count, missing_proof_count, affected_files_json, proof_json, created_at
+      )
+      VALUES (
+        @storage_id, @proof_id, @repo_id, @scan_id, @check_id, @route_id, @file_path,
+        @contract_kinds_json, @capability_names_json, @proof_status, @enforcement_result,
+        @parser_gap_count, @missing_proof_count, @affected_files_json, @proof_json, @created_at
+      )
+      ON CONFLICT(check_id, proof_id) DO UPDATE SET
+        route_id = excluded.route_id,
+        file_path = excluded.file_path,
+        contract_kinds_json = excluded.contract_kinds_json,
+        capability_names_json = excluded.capability_names_json,
+        proof_status = excluded.proof_status,
+        enforcement_result = excluded.enforcement_result,
+        parser_gap_count = excluded.parser_gap_count,
+        missing_proof_count = excluded.missing_proof_count,
+        affected_files_json = excluded.affected_files_json,
+        proof_json = excluded.proof_json,
+        created_at = excluded.created_at
+    `);
+    const transaction = this.db.transaction(() => {
+      for (const proof of proofs) {
+        const affectedFiles = [...new Set([
+          proof.route.file_path,
+          ...proof.parser_gaps.map((gap) => gap.file_path)
+        ])].sort();
+        insert.run({
+          storage_id: `${input.check_id}:${proof.proof_id}`,
+          proof_id: proof.proof_id,
+          repo_id: input.repo_id,
+          scan_id: input.scan_id,
+          check_id: input.check_id,
+          route_id: proof.route.route_id,
+          file_path: proof.route.file_path,
+          contract_kinds_json: stringifyJson(proof.contracts.map((contract) => contract.kind)),
+          capability_names_json: stringifyJson(proof.capability_status.map((status) => status.name)),
+          proof_status: proof.result.proof_status,
+          enforcement_result: proof.result.enforcement_result,
+          parser_gap_count: proof.parser_gaps.length,
+          missing_proof_count: proof.missing_proof.length,
+          affected_files_json: stringifyJson(affectedFiles),
+          proof_json: stringifyJson(proof),
+          created_at: input.created_at
+        });
+      }
+    });
+    transaction();
+  }
+
+  listSecurityBoundaryProofRuns(input: {
+    repo_id: string;
+    scan_id?: string;
+    check_id?: string;
+    file_path?: string;
+    route_id?: string;
+    contract_kind?: string;
+    latest_only?: boolean;
+  }): StoredSecurityBoundaryProofRun[] {
+    const clauses = ["repo_id = ?"];
+    const params: unknown[] = [input.repo_id];
+    if (input.scan_id) {
+      clauses.push("scan_id = ?");
+      params.push(input.scan_id);
+    }
+    if (input.check_id) {
+      clauses.push("check_id = ?");
+      params.push(input.check_id);
+    }
+    if (input.file_path) {
+      clauses.push("file_path = ?");
+      params.push(input.file_path);
+    }
+    if (input.route_id) {
+      clauses.push("route_id = ?");
+      params.push(input.route_id);
+    }
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM security_boundary_proof_runs
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY created_at DESC, route_id, proof_id
+      `)
+      .all(...params)
+      .map(securityBoundaryProofRunFromRow);
+    const filtered = input.contract_kind
+      ? rows.filter((row) => row.contract_kinds.includes(input.contract_kind as string))
+      : rows;
+    if (!input.latest_only) {
+      return filtered;
+    }
+    const latestCheckId = filtered[0]?.check_id;
+    return latestCheckId ? filtered.filter((row) => row.check_id === latestCheckId) : [];
+  }
+
+  listLatestSecurityBoundaryProofRunsForRepo(input: {
+    repo_id: string;
+    file_path?: string;
+    check_id?: string;
+  }): StoredSecurityBoundaryProofRun[] {
+    const clauses = ["repo_id = ?"];
+    const params: unknown[] = [input.repo_id];
+    if (input.check_id) {
+      clauses.push("check_id = ?");
+      params.push(input.check_id);
+    }
+    if (input.file_path) {
+      clauses.push("file_path = ?");
+      params.push(input.file_path);
+    }
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM security_boundary_proof_runs
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY created_at DESC, check_id DESC, proof_id ASC
+      `)
+      .all(...params)
+      .map(securityBoundaryProofRunFromRow);
+    const latestCheckId = rows[0]?.check_id;
+    return latestCheckId ? rows.filter((row) => row.check_id === latestCheckId) : [];
   }
 
   upsertSymbolIdentities(identities: SymbolIdentity[]): void {
@@ -1641,6 +1793,34 @@ function scanCapabilityReportFromRow(row: unknown): ScanCapabilityReport {
     fallback_used: record.fallback_used === 1,
     enforcement_degraded: record.enforcement_degraded === 1
   });
+}
+
+function securityBoundaryProofRunFromRow(row: unknown): StoredSecurityBoundaryProofRun {
+  const record = row as Record<string, unknown>;
+  return {
+    storage_id: rowValue<string>(row, "storage_id"),
+    proof_id: rowValue<string>(row, "proof_id"),
+    repo_id: rowValue<string>(row, "repo_id"),
+    scan_id: rowValue<string>(row, "scan_id"),
+    check_id: rowValue<string>(row, "check_id"),
+    route_id: rowValue<string>(row, "route_id"),
+    file_path: rowValue<string>(row, "file_path"),
+    contract_kinds: parseJsonArray(record.contract_kinds_json).filter((value): value is string =>
+      typeof value === "string"
+    ),
+    capability_names: parseJsonArray(record.capability_names_json).filter((value): value is string =>
+      typeof value === "string"
+    ),
+    proof_status: rowValue<StoredSecurityBoundaryProofRun["proof_status"]>(row, "proof_status"),
+    enforcement_result: rowValue<StoredSecurityBoundaryProofRun["enforcement_result"]>(row, "enforcement_result"),
+    parser_gap_count: rowValue<number>(row, "parser_gap_count"),
+    missing_proof_count: rowValue<number>(row, "missing_proof_count"),
+    affected_files: parseJsonArray(record.affected_files_json).filter((value): value is string =>
+      typeof value === "string"
+    ),
+    proof: SecurityBoundaryProofSchema.parse(JSON.parse(rowValue<string>(row, "proof_json"))),
+    created_at: rowValue<string>(row, "created_at")
+  };
 }
 
 function deduplicateParserGaps(gaps: ParserGap[]): ParserGap[] {

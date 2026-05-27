@@ -188,15 +188,17 @@ describe("Drift-on-Drift accepted-contract enforcement proof", () => {
     expect(mcpFindings.summary.filtered_count).toBe(badPayload.summary.blocking_count);
     expect(mcpFindings.summary.by_severity.error).toBe(badPayload.summary.blocking_count);
     expect(mcpFindings.findings[0]).toMatchObject({
-      id: finding.id,
-      check_id: badPayload.check.id,
-      repo_contract_id: "contract_drift_package_boundary",
+      finding_id: finding.id,
       convention_id: "agent_contract_mcp_no_cli_imports",
       enforcement_result: "block",
-      evidence_refs: [expect.objectContaining({
+      file_refs: [expect.objectContaining({
         file_path: mcpSourcePath,
-        import_source: "@drift/cli"
+        start_line: 1,
+        end_line: 1,
+        redaction_state: "line_only"
       })]
     });
+    expect(JSON.stringify(mcpFindings.findings[0])).not.toContain("@drift/cli");
+    expect(mcpFindings.findings[0]).not.toHaveProperty("evidence_refs");
   }, 15_000);
 });

@@ -84,3 +84,21 @@ fn phase4_capabilities_reflect_supported_parser_gaps_and_contracts() {
         "tenant scope must stay partial while dynamic tenant shapes are parser-gap backed: {capabilities:#?}"
     );
 }
+
+#[test]
+fn security_phase8_reports_phase6_capabilities() {
+    let capabilities = security_capabilities();
+
+    for expected in ["ssrf", "raw_sql", "cors_policy", "csrf", "rate_limit"] {
+        let capability = capabilities
+            .iter()
+            .find(|capability| capability.name == expected)
+            .unwrap_or_else(|| panic!("missing {expected}: {capabilities:#?}"));
+        assert_eq!(capability.capability, "deterministic_check");
+        assert!(
+            capability.can_block,
+            "{expected} must be block-capable behind accepted contracts"
+        );
+        assert!(capability.block_requires_accepted_convention);
+    }
+}

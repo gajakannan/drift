@@ -82,6 +82,25 @@ export async function runCommand(storage: SqliteDriftStorage, parsed: ParsedArgs
     return listConventionCandidates(storage, parsed);
   }
 
+  if (group === "candidates" && command === undefined) {
+    return listConventionCandidates(storage, parsed);
+  }
+
+  if (group === "candidates" && command === "show") {
+    const id = requiredValue(maybeId, "candidate id");
+    return showConventionCandidate(storage, parsed, id);
+  }
+
+  if (group === "candidates" && command === "accept") {
+    const id = requiredValue(maybeId, "candidate id");
+    return acceptCandidate(storage, parsed, id);
+  }
+
+  if (group === "candidates" && command === "reject") {
+    const id = requiredValue(maybeId, "candidate id");
+    return rejectCandidate(storage, parsed, id);
+  }
+
   if (group === "conventions" && command === "accepted") {
     return listAcceptedConventions(storage, parsed);
   }

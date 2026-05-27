@@ -252,6 +252,45 @@ describe("security domain schemas", () => {
     expect(proof.auth.required).toBe(true);
   });
 
+  it("accepts Phase 8 proof route metadata and sanitized evidence refs", () => {
+    const proof = validSecurityBoundaryProof({
+      route: {
+        route_id: "route_users_get",
+        file_path: "app/api/users/route.ts",
+        file_role: "api_route",
+        endpoint: { path: "/api/users", method: "GET", framework: "next" },
+        handler_symbol: "GET"
+      },
+      evidence_refs: [{
+        evidence_id: "evidence_auth_guard",
+        fact_id: "fact_auth_guard",
+        capability: "control_flow_guard_dominance",
+        kind: "auth_guard_called",
+        file_path: "app/api/users/route.ts",
+        start_line: 4,
+        end_line: 4,
+        role: "guard"
+      }]
+    });
+
+    expect(SecurityBoundaryProofSchema.parse(proof).evidence_refs).toHaveLength(1);
+  });
+
+  it("rejects Phase 8 proof evidence refs that carry source or secret values", () => {
+    const proof = validSecurityBoundaryProof({
+      evidence_refs: [{
+        evidence_id: "evidence_bad",
+        capability: "raw_sql",
+        kind: "raw_sql_called",
+        file_path: "app/api/users/route.ts",
+        role: "sink",
+        source: "await db.query(\"select secret\")"
+      }]
+    });
+
+    expect(() => SecurityBoundaryProofSchema.parse(proof)).toThrow();
+  });
+
   it("validates middleware_must_cover_routes contracts and parser gaps", () => {
     expect(SecurityMissingProofCodeSchema.parse("middleware_not_covering_route")).toBe("middleware_not_covering_route");
     expect(SecurityMissingProofCodeSchema.parse("middleware_dynamic_matcher")).toBe("middleware_dynamic_matcher");

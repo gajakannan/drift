@@ -34,6 +34,49 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
+function validSecurityBoundaryProof(overrides: Record<string, unknown> = {}) {
+  return {
+    proof_id: "proof_route_users_get",
+    proof_version: "security-boundary-proof/v1",
+    route: {
+      route_id: "route_users_get",
+      file_path: "app/api/users/route.ts",
+      file_role: "api_route"
+    },
+    contracts: [{
+      contract_id: "security_api_auth",
+      kind: "api_route_requires_auth_helper",
+      enforcement_mode: "block",
+      capability: "deterministic_check",
+      matched: true
+    }],
+    capability_status: [{
+      name: "control_flow_guard_dominance",
+      status: "partial",
+      can_block: true,
+      parser_gap_ids: [],
+      missing_proof_ids: ["missing_auth"]
+    }],
+    auth: {
+      required: true,
+      proven: false,
+      proof_kind: "none",
+      trusted_guard_calls: [],
+      dominated_sinks: [],
+      undominated_sinks: []
+    },
+    missing_proof: [],
+    parser_gaps: [],
+    result: {
+      proof_status: "missing_proof",
+      enforcement_result: "block",
+      can_block: true,
+      finding_ids: ["finding_auth"]
+    },
+    ...overrides
+  };
+}
+
 describe("SQLite Drift storage", () => {
   it("applies schema migrations into SQLite", async () => {
     const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
@@ -64,7 +107,8 @@ describe("SQLite Drift storage", () => {
       "021_graph_evidence_confidence",
       "022_fact_imported_name",
       "023_security_boundary_proofs",
-      "024_phase7_candidate_election_metadata"
+      "024_phase7_candidate_election_metadata",
+      "025_security_boundary_proof_runs"
     ]);
     storage.close();
   });
@@ -134,7 +178,8 @@ describe("SQLite Drift storage", () => {
       "021_graph_evidence_confidence",
       "022_fact_imported_name",
       "023_security_boundary_proofs",
-      "024_phase7_candidate_election_metadata"
+      "024_phase7_candidate_election_metadata",
+      "025_security_boundary_proof_runs"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -618,6 +663,162 @@ describe("SQLite Drift storage", () => {
         }]
       }
     });
+    storage.close();
+  });
+
+  it("persists security boundary proof runs by check run without snippets", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+    storage.upsertRepo({
+      id: "repo_security",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-27T00:00:00.000Z",
+      updated_at: "2026-05-27T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_security",
+      repo_id: "repo_security",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 1,
+      started_at: "2026-05-27T00:00:00.000Z",
+      completed_at: "2026-05-27T00:00:01.000Z"
+    });
+    storage.upsertCheckRun({
+      id: "check_security",
+      repo_id: "repo_security",
+      repo_contract_id: "contract_security",
+      contract_fingerprint: "contract-fp",
+      scan_id: "scan_security",
+      status: "fail",
+      scope: "full",
+      engine_source: "rust",
+      fallback_used: false,
+      stale_scan: false,
+      capability_complete: true,
+      findings_count: 1,
+      blocking_count: 1,
+      started_at: "2026-05-27T00:00:01.000Z",
+      completed_at: "2026-05-27T00:00:02.000Z",
+    });
+
+    storage.upsertSecurityBoundaryProofRuns({
+      repo_id: "repo_security",
+      scan_id: "scan_security",
+      check_id: "check_security",
+      created_at: "2026-05-27T00:00:02.000Z",
+      proofs: [validSecurityBoundaryProof({
+        proof_id: "proof_route_users_get",
+        route: {
+          route_id: "route_users_get",
+          file_path: "app/api/users/route.ts",
+          file_role: "api_route",
+          endpoint: { path: "/api/users", method: "GET", framework: "next" }
+        },
+        missing_proof: [{
+          id: "missing_auth",
+          capability: "control_flow_guard_dominance",
+          code: "auth_guard_not_dominating_sink",
+          blocks_enforcement: true,
+          fact_ids: ["fact_sink"],
+          graph_edge_ids: []
+        }],
+        parser_gaps: [],
+        result: {
+          proof_status: "missing_proof",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: ["finding_auth"]
+        }
+      })]
+    });
+
+    const rows = storage.listSecurityBoundaryProofRuns({
+      repo_id: "repo_security",
+      check_id: "check_security"
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.missing_proof_count).toBe(1);
+    expect(rows[0]?.affected_files).toEqual(["app/api/users/route.ts"]);
+    expect(JSON.stringify(rows[0])).not.toContain("select *");
+    expect(JSON.stringify(rows[0])).not.toContain("secret=");
+    storage.close();
+  });
+
+  it("lists latest security boundary proof runs by repo across check scan ids", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+    storage.upsertRepo({
+      id: "repo_security",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-27T00:00:00.000Z",
+      updated_at: "2026-05-27T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_indexed",
+      repo_id: "repo_security",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-27T00:00:00.000Z",
+      completed_at: "2026-05-27T00:00:01.000Z"
+    });
+    storage.upsertCheckRun({
+      id: "check_security",
+      repo_id: "repo_security",
+      repo_contract_id: "contract_security",
+      contract_fingerprint: "contract-fp",
+      scan_id: "scan_indexed",
+      status: "pass",
+      scope: "full",
+      engine_source: "rust",
+      fallback_used: false,
+      stale_scan: false,
+      capability_complete: true,
+      findings_count: 0,
+      blocking_count: 0,
+      started_at: "2026-05-27T00:00:01.000Z",
+      completed_at: "2026-05-27T00:00:02.000Z"
+    });
+    storage.upsertSecurityBoundaryProofRuns({
+      repo_id: "repo_security",
+      scan_id: "scan_check_security",
+      check_id: "check_security",
+      created_at: "2026-05-27T00:00:02.000Z",
+      proofs: [validSecurityBoundaryProof({
+        route: {
+          route_id: "route_users_get",
+          file_path: "app/api/users/route.ts",
+          file_role: "api_route",
+          endpoint: { path: "/api/users", method: "GET", framework: "next" }
+        }
+      })]
+    });
+
+    const latestRows = storage.listLatestSecurityBoundaryProofRunsForRepo({
+      repo_id: "repo_security",
+      file_path: "app/api/users/route.ts"
+    });
+
+    expect(latestRows).toHaveLength(1);
+    expect(latestRows[0]?.check_id).toBe("check_security");
+    expect(latestRows[0]?.scan_id).toBe("scan_check_security");
     storage.close();
   });
 

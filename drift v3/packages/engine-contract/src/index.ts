@@ -562,7 +562,16 @@ const EngineSecurityBoundaryProofSchema = z.object({
   route: z.object({
     route_id: z.string().min(1),
     file_path: z.string().min(1),
-    file_role: z.literal("api_route")
+    file_role: z.literal("api_route"),
+    endpoint: z.object({
+      path: z.string().min(1).optional(),
+      method: z.string().min(1).optional(),
+      framework: z.string().min(1).optional()
+    }).optional(),
+    handler_symbol: z.string().min(1).optional(),
+    start_line: z.number().int().positive().optional(),
+    end_line: z.number().int().positive().optional(),
+    diff_status: z.enum(["unchanged", "added", "modified", "deleted", "renamed"]).optional()
   }),
   contracts: z.array(z.object({
     contract_id: z.string().min(1),
@@ -794,6 +803,26 @@ const EngineSecurityBoundaryProofSchema = z.object({
     graph_edge_ids: z.array(z.string().min(1))
   })),
   parser_gaps: z.array(EngineSecurityParserGapSchema),
+  evidence_refs: z.array(z.object({
+    evidence_id: z.string().min(1),
+    fact_id: z.string().min(1).optional(),
+    graph_edge_id: z.string().min(1).optional(),
+    capability: z.string().min(1),
+    kind: z.string().min(1),
+    file_path: z.string().min(1),
+    start_line: z.number().int().positive().optional(),
+    end_line: z.number().int().positive().optional(),
+    role: z.enum([
+      "guard",
+      "sink",
+      "validator",
+      "serializer",
+      "middleware",
+      "policy",
+      "parser_gap",
+      "missing_proof"
+    ])
+  }).strict()).optional().default([]),
   result: z.object({
     proof_status: z.enum(["proven", "violated", "missing_proof", "parser_gap", "advisory_only"]),
     enforcement_result: z.enum(["pass", "brief", "warn", "block"]),

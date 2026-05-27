@@ -30,7 +30,7 @@ export { evaluateRoleEdge } from "./role-ontology.js";
 export { scoreHelperSimilarity } from "./helper-similarity.js";
 export { buildRepoTopology } from "./repo-topology.js";
 export { buildReadiness } from "./readiness.js";
-export { buildSecurityBoundaryProofReadModel } from "./security-boundary-proof.js";
+export { buildSecurityBoundaryProofReadModel, buildSecurityPhase8ReadModel } from "./security-boundary-proof.js";
 export type { BuildEntrypointFlowProofInput } from "./flow-proof.js";
 export type { BuildChangeImpactInput, ChangeImpactRouteFlow } from "./change-impact.js";
 export type { ClassifyDataOperationRiskInput } from "./data-operation-risk.js";
@@ -51,8 +51,11 @@ export type { BuildSymbolIdentityInput } from "./symbol-identity.js";
 export type { RelevantTestsSelection, SelectRelevantTestsInput } from "./test-intelligence.js";
 export type {
   BuildSecurityBoundaryProofReadModelInput,
+  BuildSecurityPhase8ReadModelInput,
   SecurityBoundaryProofReadModel,
-  SecurityBoundaryProofRouteSummary
+  SecurityBoundaryProofRouteSummary,
+  SecurityCapabilitySummary,
+  SecurityPhase8Route
 } from "./security-boundary-proof.js";
 
 export interface GraphRepoMapFile {

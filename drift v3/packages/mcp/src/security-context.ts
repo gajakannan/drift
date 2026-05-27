@@ -1,6 +1,6 @@
 import type { AcceptedConvention, FactRecord, ParserGap, RepoContract, ScanManifest } from "@drift/core";
 import type { openDriftStorage } from "@drift/storage";
-import { buildSecurityBoundaryProofReadModel } from "@drift/query";
+import { buildSecurityBoundaryProofReadModel, buildSecurityPhase8ReadModel } from "@drift/query";
 
 type DriftStorage = ReturnType<typeof openDriftStorage>;
 
@@ -57,7 +57,104 @@ interface SecretReadValue {
   source?: string;
 }
 
-export function buildSecurityContextPayload(storage: DriftStorage, repoId: string, contract: RepoContract) {
+export function buildSecurityContextPayload(
+  storage: DriftStorage,
+  repoId: string,
+  contract: RepoContract,
+  options: { path?: string; changed_files?: string[]; check_id?: string } = {}
+) {
+  const latestScan = latestSecurityScan(storage.listScanManifests(repoId));
+  const proofRuns = typeof storage.listLatestSecurityBoundaryProofRunsForRepo === "function"
+    ? storage.listLatestSecurityBoundaryProofRunsForRepo({
+        repo_id: repoId,
+        check_id: options.check_id,
+        file_path: options.path
+      })
+    : [];
+  const fallbackProofs = proofRuns.length === 0 && latestScan
+    ? storage.listSecurityBoundaryProofs(repoId, latestScan.id)
+        .filter((proof) => !options.path || proof.route.file_path === options.path)
+    : [];
+  const proofs = proofRuns.length > 0 ? proofRuns.map((run) => run.proof) : fallbackProofs;
+  const changedFiles = options.changed_files ?? (options.path ? [options.path] : undefined);
+  const phase8 = buildSecurityPhase8ReadModel({
+    repo_id: repoId,
+    scan_id: proofRuns[0]?.scan_id ?? latestScan?.id ?? null,
+    check_id: options.check_id ?? proofRuns[0]?.check_id ?? null,
+    proofs,
+    findings: storage.listFindings(repoId).map((finding) => ({
+      finding_id: finding.id,
+      title: finding.title,
+      lifecycle: finding.status
+    })),
+    accepted_conventions: contract.conventions,
+    changed_files: changedFiles,
+    known_routes: latestScan ? knownRoutesFromFacts(storage.listFacts(latestScan.id)) : []
+  });
+  return {
+    response_schema: "drift.security.context.v2",
+    repo_id: repoId,
+    scan_id: phase8.scan_id,
+    check_id: phase8.check_id,
+    repo_security_contracts: phase8.repo_security_contracts,
+    changed_route_security: phase8.changed_route_security,
+    routes: phase8.routes,
+    required_proofs: phase8.required_proofs,
+    current_proof_status: phase8.current_proof_status,
+    missing_proof_summaries: phase8.missing_proof_summaries,
+    parser_gap_summaries: phase8.parser_gap_summaries,
+    security_capabilities: phase8.security_capabilities,
+    do_not_include: phase8.do_not_include,
+    redactions: {
+      snippets_included: false,
+      source_content_included: false,
+      request_payloads_included: false,
+      secret_values_included: false,
+      actor_identity_included: false
+    },
+    freshness: {
+      proof_source: proofRuns.length > 0 ? "proof_run" : fallbackProofs.length > 0 ? "scan_scoped" : "none",
+      latest_indexed_scan_id: latestScan?.id ?? null
+    },
+    next_commands: [
+      `drift check --repo ${repoId} --json`,
+      `drift repo map --repo ${repoId} --json`
+    ]
+  };
+}
+
+function knownRoutesFromFacts(facts: FactRecord[]) {
+  const apiFiles = new Set(facts
+    .filter((fact) => fact.kind === "file_role_detected" && fact.name === "api_route")
+    .map((fact) => fact.file_path));
+  return facts
+    .filter((fact) => fact.kind === "route_declared" && apiFiles.has(fact.file_path))
+    .map((fact) => ({
+      route_id: `route:${fact.file_path}:${fact.name}`,
+      file_path: fact.file_path,
+      path: routePathForFile(fact.file_path),
+      method: fact.name,
+      file_role: "api_route"
+    }));
+}
+
+function routePathForFile(filePath: string): string | undefined {
+  const normalized = filePath.replaceAll("\\", "/");
+  const prefix = "app/api/";
+  const prefixIndex = normalized.indexOf(prefix);
+  const suffix = ["/route.ts", "/route.tsx", "/route.js", "/route.jsx"]
+    .find((candidate) => normalized.endsWith(candidate));
+  if (prefixIndex === -1 || !suffix) {
+    return undefined;
+  }
+  const route = normalized.slice(prefixIndex + prefix.length, -suffix.length);
+  const segments = route.split("/").filter((segment) => !(segment.startsWith("(") && segment.endsWith(")")));
+  return segments.length === 0
+    ? "/api"
+    : `/api/${segments.join("/").replaceAll("[", ":").replaceAll("]", "")}`;
+}
+
+export function buildLegacySecurityContextPayload(storage: DriftStorage, repoId: string, contract: RepoContract) {
   const latestScan = latestSecurityScan(storage.listScanManifests(repoId));
   const facts = latestScan ? storage.listFacts(latestScan.id, { kind: "middleware_protects_route" }) : [];
   const requestInputFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "request_input_read" }) : [];

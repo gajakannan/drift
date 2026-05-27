@@ -566,7 +566,49 @@ function responseSchemasVerified(bundle) {
 }
 
 function stablePayloadForParity(payload) {
-  return stripParityVolatileFields(payload);
+  return stripParityVolatileFields(normalizeParityPayload(payload));
+}
+
+function normalizeParityPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+  if (payload.response_schema !== "drift.findings.list.v1") {
+    return payload;
+  }
+  return {
+    ...payload,
+    review_items: Array.isArray(payload.review_items)
+      ? payload.review_items.map((item) => ({
+          ...item,
+          first_evidence: item.first_evidence
+            ? {
+                file_path: item.first_evidence.file_path,
+                start_line: item.first_evidence.start_line ?? null
+              }
+            : null
+        }))
+      : payload.review_items,
+    findings: Array.isArray(payload.findings)
+      ? payload.findings.map((finding) => ({
+          finding_id: finding.finding_id ?? finding.id,
+          convention_id: finding.convention_id,
+          title: finding.title,
+          severity: finding.severity,
+          lifecycle: finding.lifecycle ?? finding.status,
+          diff_status: finding.diff_status,
+          enforcement_result: finding.enforcement_result,
+          file_refs: finding.file_refs ?? (Array.isArray(finding.evidence_refs)
+            ? finding.evidence_refs.map((ref) => ({
+                file_path: ref.file_path,
+                ...(ref.start_line ? { start_line: ref.start_line } : {}),
+                ...(ref.end_line ? { end_line: ref.end_line } : {}),
+                redaction_state: ref.start_line || ref.end_line ? "line_only" : "metadata_only"
+              }))
+            : [])
+        }))
+      : payload.findings
+  };
 }
 
 function stripParityVolatileFields(value) {

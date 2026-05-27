@@ -709,5 +709,41 @@ export const MIGRATIONS: Migration[] = [
 
       ALTER TABLE accepted_conventions ADD COLUMN requires_json TEXT;
     `
+  },
+  {
+    id: "025_security_boundary_proof_runs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS security_boundary_proof_runs (
+        storage_id TEXT PRIMARY KEY,
+        proof_id TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        check_id TEXT NOT NULL,
+        route_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        contract_kinds_json TEXT NOT NULL,
+        capability_names_json TEXT NOT NULL,
+        proof_status TEXT NOT NULL,
+        enforcement_result TEXT NOT NULL,
+        parser_gap_count INTEGER NOT NULL,
+        missing_proof_count INTEGER NOT NULL,
+        affected_files_json TEXT NOT NULL,
+        proof_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id)
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_security_boundary_proof_runs_unique
+        ON security_boundary_proof_runs(check_id, proof_id);
+
+      CREATE INDEX IF NOT EXISTS idx_security_boundary_proof_runs_repo_scan
+        ON security_boundary_proof_runs(repo_id, scan_id);
+
+      CREATE INDEX IF NOT EXISTS idx_security_boundary_proof_runs_repo_check
+        ON security_boundary_proof_runs(repo_id, check_id);
+
+      CREATE INDEX IF NOT EXISTS idx_security_boundary_proof_runs_repo_route
+        ON security_boundary_proof_runs(repo_id, route_id);
+    `
   }
 ];

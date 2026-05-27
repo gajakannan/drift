@@ -27,7 +27,13 @@ export interface DriftMcpHandlers {
     limit?: number;
     offset?: number;
   }): unknown;
-  get_security_context(input: { repo_id: string }): unknown;
+  get_security_context(input: {
+    repo_id: string;
+    path?: string;
+    changed_files?: string[];
+    check_id?: string;
+    require_fresh?: boolean;
+  }): unknown;
   get_task_preflight(input: { repo_id: string; task: string; path?: string; require_fresh?: boolean; now?: string }): unknown;
   get_conventions(input: {
     repo_id: string;
