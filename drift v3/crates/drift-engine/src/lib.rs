@@ -37,26 +37,35 @@ pub use security_control_flow::{
     validated_input_uses,
 };
 pub use security_facts::extract_security_facts;
+pub use security_facts::extract_security_facts_with_policy;
 pub use security_facts::extract_security_facts_with_validation;
 pub use security_patterns::{
-    AcceptedAuthHelper, AcceptedRequestValidator, AuthGuardBehavior, RequestValidatorBehavior,
-    RequestValidatorKind, dynamic_middleware_matcher_line,
+    AcceptedAuthHelper, AcceptedAuthorizationHelper, AcceptedHelperImport,
+    AcceptedRequestValidator, AcceptedTenantHelper, AuthGuardBehavior, AuthorizationHelperBehavior,
+    AuthorizationHelperKind, Phase4SecurityPolicy, RequestValidatorBehavior, RequestValidatorKind,
+    dynamic_middleware_matcher_line,
 };
 pub use security_proof::{
-    AuthBoundaryProof, MiddlewareBoundaryProof, RequestInputReadProof, RequestUnvalidatedUseProof,
+    AuthBoundaryProof, AuthorizationGuardProof, AuthorizationMissingProof, AuthorizationProof,
+    MiddlewareBoundaryProof, RequestInputReadProof, RequestUnvalidatedUseProof,
     RequestValidatedUseProof, RequestValidationCallProof, RequestValidationProof,
     RequestValidationProofScope, RouteSecurityBoundaryProof, SecurityBoundaryProof,
-    SecurityParserGap, SecurityProofResult, SecurityProofStatus, TrustedGuardCallProof,
-    UndominatedSinkProof, build_auth_boundary_proof, build_auth_boundary_proofs_for_file,
-    build_middleware_coverage_proof, build_request_validation_proof,
+    SecurityParserGap, SecurityProofResult, SecurityProofStatus, SessionMissingTrustProof,
+    SessionTrustBoundaryProof, SessionTrustProof, TenantMissingProof, TenantPredicateProof,
+    TenantProof, TenantSourceProof, TrustedGuardCallProof, UndominatedSinkProof,
+    build_auth_boundary_proof, build_auth_boundary_proofs_for_file,
+    build_middleware_coverage_proof, build_phase4_security_proof,
+    build_phase4_security_proof_with_policy, build_request_validation_proof,
     build_request_validation_proof_with_scope,
 };
 pub use security_rules::{
-    SecurityAuthContract, SecurityContractCapability, SecurityEnforcementMode, SecurityFinding,
-    SecurityFindingResult, SecurityMiddlewareContract, SecurityRequestValidationContract,
+    SecurityAuthContract, SecurityAuthorizationContract, SecurityContractCapability,
+    SecurityEnforcementMode, SecurityFinding, SecurityFindingResult, SecurityMiddlewareContract,
+    SecurityRequestValidationContract, SecurityTenantScopeContract,
     evaluate_api_route_requires_auth_helper,
     evaluate_api_route_requires_auth_helper_with_middleware,
-    evaluate_api_route_requires_request_validation, evaluate_middleware_must_cover_routes,
+    evaluate_api_route_requires_authorization, evaluate_api_route_requires_request_validation,
+    evaluate_api_route_requires_tenant_scope, evaluate_middleware_must_cover_routes,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

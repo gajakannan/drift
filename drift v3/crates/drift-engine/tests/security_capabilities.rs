@@ -33,3 +33,35 @@ fn reports_phase_one_security_capabilities() {
         "Phase 1 guard dominance should report partial, not overclaim complete: {capabilities:#?}"
     );
 }
+
+#[test]
+fn phase4_capabilities_reflect_supported_parser_gaps_and_contracts() {
+    let capabilities = security_capabilities();
+
+    for expected in ["session_trust", "authorization", "tenant_scope"] {
+        let capability = capabilities
+            .iter()
+            .find(|capability| capability.name == expected)
+            .unwrap_or_else(|| panic!("missing {expected}: {capabilities:#?}"));
+        assert_eq!(
+            capability.capability, "deterministic_check",
+            "{expected} must report deterministic authority: {capabilities:#?}"
+        );
+        assert!(
+            capability.can_block,
+            "{expected} must be able to block accepted contracts: {capabilities:#?}"
+        );
+        assert!(
+            capability.block_requires_accepted_convention,
+            "{expected} must require accepted contracts: {capabilities:#?}"
+        );
+    }
+
+    assert!(
+        capabilities
+            .iter()
+            .any(|capability| capability.name == "tenant_scope"
+                && capability.status == SecurityCapabilityStatus::Partial),
+        "tenant scope must stay partial while dynamic tenant shapes are parser-gap backed: {capabilities:#?}"
+    );
+}

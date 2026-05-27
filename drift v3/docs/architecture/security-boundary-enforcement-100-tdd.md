@@ -3017,6 +3017,50 @@ Done when:
 
 Purpose: prove trusted subject, role/permission checks, and tenant binding.
 
+Scope:
+
+- Implement only:
+  - `session_object_must_come_from_trusted_helper`
+  - `api_route_requires_authorization`
+  - `api_route_requires_tenant_scope`
+- Do not implement Phase 5 sensitive response/secrets work.
+- Do not implement Phase 6 SSRF, SQL, CORS, CSRF, or rate-limit work.
+- Rust is the deterministic authority for session trust, tenant predicate proof,
+  authorization guard proof, parser gaps, missing proof, and blocking rule
+  evaluation.
+- TypeScript is product/control plane only: schemas, engine-contract validation,
+  storage/query/read models, CLI/MCP envelopes, governance, candidates, and
+  output formatting.
+- TypeScript must not synthesize trusted session, tenant, role, permission, or
+  IDOR proof from raw facts.
+- Blocking findings require accepted deterministic contracts.
+- Candidate-only and heuristic role/tenant evidence must never block.
+- Name-only helpers such as `requireRole`, `canAccess`, `scopeTenant`, or
+  `getSession` must not satisfy proof unless accepted.
+- Inline role comparisons such as `user.role === "admin"` must not satisfy proof
+  unless the accepted contract explicitly allows that policy shape.
+- Tenant-looking variable names such as `tenantId`, `orgId`, or `accountId` must
+  not satisfy proof unless the value is tied to a trusted source and bound to
+  the protected data predicate.
+- Session/user objects from request body, query, headers, cookies, params, or
+  unaccepted framework helpers are untrusted until Rust proves trusted derivation
+  from an accepted auth helper or accepted middleware proof.
+- A trusted session alone must not satisfy tenant proof. Tenant proof must bind
+  the trusted tenant source to the protected data operation predicate or accepted
+  scoped data helper.
+- A trusted session alone must not satisfy authorization proof. Authorization
+  proof must show an accepted role, permission, policy, or resource guard
+  dominates the protected sink.
+- Unsupported destructuring, dynamic property access, dynamic query helpers,
+  unknown ORM wrappers, unresolved aliases, and branch/control-flow ambiguity
+  must emit parser-gap-backed evidence and must not silently pass.
+- Outputs, storage, MCP, and CLI must never include source snippets, session
+  values, user IDs, tenant IDs, header/cookie/request values, tokens, secrets,
+  raw SQL values, or request payloads.
+- Preserve existing waiver, baseline, lifecycle, diff-scope, check-run, audit,
+  policy egress, direct-data-access, service-delegation, Phase 1 auth, Phase 2
+  middleware, and Phase 3 request-validation behavior.
+
 Add facts:
 
 - `authorization_guard_called`
@@ -3030,6 +3074,62 @@ Add contracts:
 - `api_route_requires_tenant_scope`
 - `session_object_must_come_from_trusted_helper`
 
+Accepted contract input shape:
+
+```json
+{
+  "kind": "security_boundary",
+  "id": "accepted_security_phase4",
+  "rule": "api_route_requires_tenant_scope",
+  "mode": "block",
+  "scope": {
+    "path_globs": ["app/api/**/route.ts"],
+    "file_roles": ["api_route"]
+  },
+  "matcher": {
+    "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+  },
+  "requires": {
+    "auth_helpers": [
+      {
+        "symbol": "requireUser",
+        "import": "@/server/auth",
+        "returns": "session"
+      }
+    ],
+    "authorization_helpers": [
+      {
+        "symbol": "requireRole",
+        "import": "@/server/authz",
+        "roles": ["admin"],
+        "behavior": "throws"
+      },
+      {
+        "symbol": "canAccessProject",
+        "import": "@/server/authz",
+        "permissions": ["project:read"],
+        "behavior": "boolean"
+      }
+    ],
+    "tenant_helpers": [
+      {
+        "symbol": "scopeProjectToTenant",
+        "import": "@/server/tenant",
+        "tenant_arg": "tenantId",
+        "data_operation_arg": "query"
+      }
+    ],
+    "tenant_keys": ["tenantId", "orgId"],
+    "tenant_sources": ["session", "path_param"],
+    "data_operations": ["db.project.findMany", "db.project.findUnique", "db.project.update", "db.project.delete"]
+  }
+}
+```
+
+Rust must normalize accepted symbols and imports from `requires.*`. It must not
+use `matcher.required_calls`, helper names, or candidate evidence as deterministic
+truth for Phase 4 proof.
+
 Create fixtures:
 
 - `test/fixtures/security-tenant-missing`
@@ -3038,6 +3138,10 @@ Create fixtures:
 - `test/fixtures/security-role-missing`
 - `test/fixtures/security-role-guard-present`
 - `test/fixtures/security-session-from-request-untrusted`
+- `test/fixtures/security-tenant-untrusted-source`
+- `test/fixtures/security-tenant-parser-gap`
+- `test/fixtures/security-role-branch-bypass`
+- `test/fixtures/security-session-trusted-helper`
 
 Required RED tests:
 
@@ -3047,11 +3151,1272 @@ Required RED tests:
 - Role-required route without role guard blocks.
 - Session object from request/header is untrusted.
 - Role/tenant proof cannot use untrusted session.
+- Accepted auth helper can establish trusted session derivation.
+- Accepted authorization helper must dominate the protected sink.
+- Authorization guard after sink blocks.
+- Authorization guard in only one branch blocks.
+- Accepted tenant predicate must bind the trusted tenant source to the data
+  operation predicate.
+- Unknown tenant helper emits missing proof, not pass.
+- Dynamic tenant predicate emits parser gap, not pass.
+- Candidate-only tenant or role evidence does not block.
 
 Done when:
 
 - Tenant proof connects trusted tenant source to data predicate.
 - Role/permission proof requires accepted helper or accepted policy shape.
+- Session proof distinguishes trusted, untrusted, and unknown session sources.
+- `SecurityBoundaryProof.session_trust`, `SecurityBoundaryProof.authorization`,
+  and `SecurityBoundaryProof.tenant` are populated by Rust only.
+- Parser gaps and missing proof are surfaced through CLI, query, MCP, storage,
+  scan status, and repo map without snippets or sensitive values.
+- Phase 4 capability output is only marked deterministic after the full path is
+  tested.
+- Candidate-only Phase 4 evidence remains advisory.
+
+### Phase 4 Executable Task Ledger
+
+Execute these tasks in order. For every RED task, add only the failing test
+first, run the focused command, and record the exact expected failure before
+editing implementation files. For every GREEN task, edit only the listed
+implementation files and run the listed command.
+
+- [ ] **Task 4.1: RED session read fact extraction**
+
+  Test file: `crates/drift-engine/tests/security_facts.rs`
+
+  Test name: `extracts_session_read_facts_from_trusted_and_untrusted_sources`
+
+  Add source fixtures covering:
+
+  - `const session = await requireUser(request);`
+  - `const session = await getServerSession(authOptions);`
+  - `const user = request.headers.get("x-user");`
+  - `const session = await request.json();`
+  - `const token = request.cookies.get("session");`
+
+  Assert facts:
+
+  - `session_read` from accepted auth result starts as `source="auth_result"` and
+    `trust="unknown"` until proof construction.
+  - Header, body, and cookie-derived session/user reads are emitted as
+    `trust="untrusted"`.
+  - No fact value contains header names, cookie values, token values, user IDs,
+    tenant IDs, request payload values, or source snippets.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_session_read_facts_from_trusted_and_untrusted_sources -- --nocapture
+  ```
+
+  Expected RED: fail because Rust does not emit Phase 4 `session_read` facts.
+
+- [ ] **Task 4.2: GREEN session read fact extraction**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/security_facts.rs`
+
+  Implement extraction only:
+
+  - Normalize accepted auth/session helper imports from `requires.auth_helpers`.
+  - Emit `session_read` for accepted auth-helper result variables with
+    `source="auth_result"` and `trust="unknown"`.
+  - Emit `session_read` for request-derived session/user/token reads with
+    `trust="untrusted"`.
+  - Keep secret/session/request values out of fact metadata.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_session_read_facts_from_trusted_and_untrusted_sources -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.3: RED session trust proof construction**
+
+  Test file: `crates/drift-engine/tests/security_control_flow.rs`
+
+  Test name: `trusted_session_derives_only_from_accepted_auth_helper_or_middleware`
+
+  Fixture shapes:
+
+  ```ts
+  import { requireUser } from "@/server/auth";
+
+  export async function GET(request: Request) {
+    const session = await requireUser(request);
+    await db.project.findMany({ where: { tenantId: session.user.tenantId } });
+    return Response.json({});
+  }
+  ```
+
+  ```ts
+  export async function GET(request: Request) {
+    const session = await request.json();
+    await db.project.findMany({ where: { tenantId: session.user.tenantId } });
+    return Response.json({});
+  }
+  ```
+
+  Assert:
+
+  - Accepted auth helper creates a `session_trust_boundary` proof record with
+    `trust="trusted"` and `derived_from="auth_guard"`.
+  - Request-derived session creates missing trust with
+    `reason="derived_from_request"`.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine trusted_session_derives_only_from_accepted_auth_helper_or_middleware -- --nocapture
+  ```
+
+  Expected RED: fail because Rust does not construct `session_trust_boundary`
+  proof.
+
+- [ ] **Task 4.4: GREEN session trust proof construction**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+
+  Implement proof only:
+
+  - Connect accepted auth-helper calls from Phase 1 proof to session variables.
+  - Accept middleware-derived trusted session only when Phase 2 middleware proof
+    has accepted protection kind `auth`.
+  - Mark request/header/cookie/body-derived session values as untrusted.
+  - Emit missing proof code `session_not_trusted` when a session/user object is
+    used for tenant or authorization proof without trusted derivation.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine trusted_session_derives_only_from_accepted_auth_helper_or_middleware -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.5: RED tenant source extraction**
+
+  Test file: `crates/drift-engine/tests/security_facts.rs`
+
+  Test name: `extracts_tenant_sources_from_session_params_and_query`
+
+  Add fixtures for:
+
+  - `session.user.tenantId`
+  - `params.tenantId`
+  - `request.nextUrl.searchParams.get("tenantId")`
+  - `const { tenantId } = params`
+  - `const tenantId = body.tenantId`
+
+  Assert:
+
+  - Session tenant source references the trusted session fact when available.
+  - Path param source is `source="path_param"` and `trusted=false` until a
+    contract accepts path params as a tenant source.
+  - Query/body tenant source is emitted but `trusted=false`.
+  - Destructured path params are either extracted or parser-gapped; they are not
+    silently omitted.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_tenant_sources_from_session_params_and_query -- --nocapture
+  ```
+
+  Expected RED: fail because Rust does not extract tenant source evidence.
+
+- [ ] **Task 4.6: GREEN tenant source extraction**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/security_facts.rs`
+  - `crates/drift-engine/src/security_control_flow.rs`
+
+  Implement source extraction:
+
+  - Normalize accepted tenant keys from `requires.tenant_keys`.
+  - Track session property paths for accepted tenant keys.
+  - Track path params and query/body/header tenant-looking reads as sources,
+    while preserving trusted/untrusted status.
+  - Emit parser gap `unsupported_tenant_source_destructure` for destructuring
+    forms that cannot be resolved deterministically.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_tenant_sources_from_session_params_and_query -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.7: RED tenant predicate and tenant helper extraction**
+
+  Test file: `crates/drift-engine/tests/security_facts.rs`
+
+  Test name: `extracts_tenant_predicates_and_accepted_tenant_helpers`
+
+  Add fixtures for:
+
+  ```ts
+  const session = await requireUser(request);
+  await db.project.findMany({ where: { tenantId: session.user.tenantId } });
+  ```
+
+  ```ts
+  const session = await requireUser(request);
+  await db.project.findUnique({ where: { id: params.projectId, tenantId: session.user.tenantId } });
+  ```
+
+  ```ts
+  const session = await requireUser(request);
+  await scopeProjectToTenant(db.project, session.user.tenantId).findMany();
+  ```
+
+  Assert:
+
+  - Equality predicates produce `tenant_guard_called` with
+    `predicate_kind="equality"`.
+  - Accepted scoped helper produces `tenant_guard_called` with
+    `predicate_kind="scoped_helper"`.
+  - Unknown helper names are not emitted as accepted tenant guard facts.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_tenant_predicates_and_accepted_tenant_helpers -- --nocapture
+  ```
+
+  Expected RED: fail because tenant predicate/helper facts are not emitted.
+
+- [ ] **Task 4.8: GREEN tenant predicate and tenant helper extraction**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/security_facts.rs`
+  - `crates/drift-engine/src/security_control_flow.rs`
+
+  Implement extraction:
+
+  - Normalize accepted tenant helper symbols and imports from
+    `requires.tenant_helpers`.
+  - Recognize simple ORM `where` equality predicates for accepted tenant keys.
+  - Recognize accepted scoped helpers only when symbol and import match the
+    contract.
+  - Emit unknown helper evidence as candidate/missing proof, not as accepted
+    `tenant_guard_called`.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_tenant_predicates_and_accepted_tenant_helpers -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.9: RED authorization guard extraction**
+
+  Test file: `crates/drift-engine/tests/security_facts.rs`
+
+  Test name: `extracts_authorization_guard_called_for_accepted_role_and_policy_helpers`
+
+  Add fixtures for:
+
+  ```ts
+  const session = await requireUser(request);
+  requireRole(session.user, "admin");
+  await db.project.findMany();
+  ```
+
+  ```ts
+  const session = await requireUser(request);
+  if (!canAccessProject(session.user, params.projectId, "project:read")) {
+    return new Response("forbidden", { status: 403 });
+  }
+  await db.project.findUnique({ where: { id: params.projectId } });
+  ```
+
+  Assert:
+
+  - Accepted throwing role helper emits `authorization_guard_called`.
+  - Accepted boolean policy helper emits `authorization_guard_called` only when
+    the failing branch exits before the protected sink.
+  - `if (session.user.role === "admin")` does not emit accepted authorization
+    proof unless an accepted policy shape explicitly allows inline role checks.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_authorization_guard_called_for_accepted_role_and_policy_helpers -- --nocapture
+  ```
+
+  Expected RED: fail because accepted authorization guard facts are not emitted.
+
+- [ ] **Task 4.10: GREEN authorization guard extraction**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/security_facts.rs`
+  - `crates/drift-engine/src/security_control_flow.rs`
+
+  Implement extraction:
+
+  - Normalize accepted authorization helpers from
+    `requires.authorization_helpers`.
+  - Track accepted role, permission, policy, resource variable, and subject
+    variable metadata without storing user IDs or tenant IDs.
+  - Record boolean helper dominance only when the non-authorized branch returns
+    or throws before the protected sink.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine extracts_authorization_guard_called_for_accepted_role_and_policy_helpers -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.11: RED untrusted session cannot satisfy tenant or authorization proof**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `untrusted_session_cannot_satisfy_tenant_or_authorization_proof`
+
+  Fixture shape:
+
+  ```ts
+  export async function GET(request: Request) {
+    const session = await request.json();
+    requireRole(session.user, "admin");
+    await db.project.findMany({ where: { tenantId: session.user.tenantId } });
+    return Response.json({});
+  }
+  ```
+
+  Assert:
+
+  - `session_trust.proven` is false.
+  - `authorization.proven` is false with `session_not_trusted`.
+  - `tenant.proven` is false with `tenant_source_untrusted`.
+  - Blocking findings are emitted only when accepted Phase 4 contracts are in
+    `mode="block"`.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine untrusted_session_cannot_satisfy_tenant_or_authorization_proof -- --nocapture
+  ```
+
+  Expected RED: fail because role/tenant proof does not reject untrusted session
+  sources.
+
+- [ ] **Task 4.12: GREEN untrusted session rejection**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+
+  Implement rule/proof behavior:
+
+  - Require trusted session derivation before session-derived role or tenant
+    facts can satisfy Phase 4 proof.
+  - Emit `session_not_trusted`, `tenant_source_untrusted`, and
+    `authorization_guard_missing` as distinct missing-proof codes.
+  - Do not block candidate-only evidence.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine untrusted_session_cannot_satisfy_tenant_or_authorization_proof -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.13: RED tenant route without predicate blocks**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `tenant_scoped_route_without_tenant_predicate_blocks`
+
+  Fixture shape:
+
+  ```ts
+  export async function GET(request: Request) {
+    const session = await requireUser(request);
+    await db.project.findMany();
+    return Response.json({});
+  }
+  ```
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine tenant_scoped_route_without_tenant_predicate_blocks -- --nocapture
+  ```
+
+  Expected RED: fail because `api_route_requires_tenant_scope` is not evaluated
+  as a blocking deterministic rule.
+
+- [ ] **Task 4.14: GREEN tenant missing-predicate rule**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+  - `crates/drift-engine/src/check_command.rs`
+
+  Implement rule behavior:
+
+  - Apply only to accepted `api_route_requires_tenant_scope` contracts.
+  - Require at least one protected data operation in scope.
+  - Emit missing proof code `tenant_predicate_missing` when a protected data
+    operation has no accepted tenant predicate or scoped helper.
+  - Do not emit a tenant finding for routes with no protected data operation.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine tenant_scoped_route_without_tenant_predicate_blocks -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.15: RED tenant param read but unused blocks**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `tenant_param_read_but_not_bound_to_data_operation_blocks`
+
+  Fixture shape:
+
+  ```ts
+  export async function GET(request: Request, { params }: { params: { tenantId: string } }) {
+    const tenantId = params.tenantId;
+    await db.project.findMany({ where: { archived: false } });
+    return Response.json({});
+  }
+  ```
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine tenant_param_read_but_not_bound_to_data_operation_blocks -- --nocapture
+  ```
+
+  Expected RED: fail because the engine does not distinguish tenant source
+  existence from tenant predicate binding.
+
+- [ ] **Task 4.16: GREEN tenant predicate binding rule**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+
+  Implement binding:
+
+  - Tenant source presence is insufficient.
+  - Tenant predicate must reference the trusted/accepted tenant source and the
+    protected data operation.
+  - Emit missing proof code `tenant_predicate_not_bound_to_query` when the tenant
+    source is read but not used in the data predicate.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine tenant_param_read_but_not_bound_to_data_operation_blocks -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.17: RED accepted tenant predicate passes**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `trusted_tenant_source_bound_to_data_predicate_passes`
+
+  Fixture shape:
+
+  ```ts
+  export async function GET(request: Request) {
+    const session = await requireUser(request);
+    const projects = await db.project.findMany({
+      where: { tenantId: session.user.tenantId }
+    });
+    return Response.json(projects);
+  }
+  ```
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine trusted_tenant_source_bound_to_data_predicate_passes -- --nocapture
+  ```
+
+  Expected RED: fail because accepted tenant predicate proof is not marked
+  `proven`.
+
+- [ ] **Task 4.18: GREEN accepted tenant predicate proof**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+
+  Implement pass proof:
+
+  - Mark `tenant.required=true`.
+  - Mark `tenant.proven=true` only when every protected data operation in scope
+    has accepted tenant predicate/helper proof.
+  - Keep individual predicate fact IDs and data-operation fact IDs in proof.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine trusted_tenant_source_bound_to_data_predicate_passes -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.19: RED accepted tenant helper passes**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `accepted_tenant_scope_helper_bound_to_data_operation_passes`
+
+  Fixture shape:
+
+  ```ts
+  export async function GET(request: Request) {
+    const session = await requireUser(request);
+    const projects = await scopeProjectToTenant(db.project, session.user.tenantId).findMany();
+    return Response.json(projects);
+  }
+  ```
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine accepted_tenant_scope_helper_bound_to_data_operation_passes -- --nocapture
+  ```
+
+  Expected RED: fail because accepted tenant scoped helper proof is not
+  recognized.
+
+- [ ] **Task 4.20: GREEN accepted tenant helper proof**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+
+  Implement helper proof:
+
+  - Accept only helpers normalized from `requires.tenant_helpers`.
+  - Bind helper receiver/argument to the protected data operation.
+  - Bind helper tenant argument to a trusted or accepted tenant source.
+  - Unknown helper names remain missing proof.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine accepted_tenant_scope_helper_bound_to_data_operation_passes -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.21: RED authorization-required route without guard blocks**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `authorization_required_route_without_guard_blocks`
+
+  Fixture shape:
+
+  ```ts
+  export async function DELETE(request: Request, { params }: { params: { projectId: string } }) {
+    const session = await requireUser(request);
+    await db.project.delete({ where: { id: params.projectId, tenantId: session.user.tenantId } });
+    return Response.json({});
+  }
+  ```
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine authorization_required_route_without_guard_blocks -- --nocapture
+  ```
+
+  Expected RED: fail because `api_route_requires_authorization` is not evaluated.
+
+- [ ] **Task 4.22: GREEN missing authorization rule**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+  - `crates/drift-engine/src/check_command.rs`
+
+  Implement rule behavior:
+
+  - Apply only to accepted `api_route_requires_authorization` contracts.
+  - Require protected data operation/resource sink in scope.
+  - Emit missing proof code `authorization_guard_missing` when no accepted
+    authorization guard dominates the protected sink.
+  - Do not treat Phase 1 auth helper or Phase 4 tenant predicate as
+    authorization proof.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine authorization_required_route_without_guard_blocks -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.23: RED accepted authorization guard passes**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `accepted_authorization_guard_with_trusted_session_passes`
+
+  Fixture shape:
+
+  ```ts
+  export async function DELETE(request: Request, { params }: { params: { projectId: string } }) {
+    const session = await requireUser(request);
+    requireRole(session.user, "admin");
+    await db.project.delete({ where: { id: params.projectId, tenantId: session.user.tenantId } });
+    return Response.json({});
+  }
+  ```
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine accepted_authorization_guard_with_trusted_session_passes -- --nocapture
+  ```
+
+  Expected RED: fail because accepted authorization guard proof is not marked
+  `proven`.
+
+- [ ] **Task 4.24: GREEN accepted authorization guard proof**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+
+  Implement pass proof:
+
+  - Mark `authorization.required=true`.
+  - Mark `authorization.proven=true` only when every protected sink in scope has
+    accepted authorization guard proof.
+  - Require trusted session/user subject when the authorization helper uses a
+    subject variable.
+  - Preserve roles, permissions, policy ID, subject variable, and resource
+    variable classifications without storing concrete values.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine accepted_authorization_guard_with_trusted_session_passes -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.25: RED authorization guard must dominate sink**
+
+  Test file: `crates/drift-engine/tests/security_control_flow.rs`
+
+  Test name: `authorization_guard_after_sink_or_in_one_branch_does_not_dominate`
+
+  Fixture shapes:
+
+  ```ts
+  export async function DELETE(request: Request) {
+    const session = await requireUser(request);
+    await db.project.delete({ where: { tenantId: session.user.tenantId } });
+    requireRole(session.user, "admin");
+    return Response.json({});
+  }
+  ```
+
+  ```ts
+  export async function DELETE(request: Request) {
+    const session = await requireUser(request);
+    if (new URL(request.url).searchParams.get("preview")) {
+      requireRole(session.user, "admin");
+    }
+    await db.project.delete({ where: { tenantId: session.user.tenantId } });
+    return Response.json({});
+  }
+  ```
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine authorization_guard_after_sink_or_in_one_branch_does_not_dominate -- --nocapture
+  ```
+
+  Expected RED: fail because guard existence is treated as proof without
+  dominance over the protected sink.
+
+- [ ] **Task 4.26: GREEN authorization dominance**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+
+  Implement dominance:
+
+  - Throwing authorization helpers dominate only subsequent protected sinks in
+    the same route execution path.
+  - Boolean authorization helpers dominate only when the failure branch exits
+    before the sink.
+  - Guard-after-sink emits `authorization_guard_not_dominating_sink`.
+  - One-branch-only guard emits `authorization_guard_not_dominating_sink`.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine authorization_guard_after_sink_or_in_one_branch_does_not_dominate -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.27: RED candidate-only role and tenant evidence cannot block**
+
+  Test file: `crates/drift-engine/tests/security_rules.rs`
+
+  Test name: `candidate_only_role_and_tenant_evidence_does_not_block`
+
+  Fixture shape:
+
+  ```ts
+  export async function GET(request: Request) {
+    const session = await getSession(request);
+    if (session.user.role === "admin") {
+      await db.project.findMany({ where: { tenantId: session.user.tenantId } });
+    }
+    return Response.json({});
+  }
+  ```
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine candidate_only_role_and_tenant_evidence_does_not_block -- --nocapture
+  ```
+
+  Expected RED: fail if heuristic helper names or inline checks create blocking
+  Phase 4 proof.
+
+- [ ] **Task 4.28: GREEN candidate-only Phase 4 boundary**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_patterns.rs`
+  - `crates/drift-engine/src/security_rules.rs`
+  - `packages/cli/src/domain/convention-candidates.ts`
+
+  Implement boundary:
+
+  - Candidate inference may propose tenant helpers, authorization helpers, and
+    trusted session helpers.
+  - Candidate-only evidence must not produce blocking findings.
+  - Rust blocking proof uses only accepted contract input.
+  - Candidate output contains evidence refs and confidence, not snippets.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine candidate_only_role_and_tenant_evidence_does_not_block -- --nocapture
+  pnpm --filter @drift/cli test -- convention-candidates
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.29: RED Phase 4 parser gaps**
+
+  Test file: `crates/drift-engine/tests/security_control_flow.rs`
+
+  Test name: `tenant_authorization_dynamic_shapes_emit_parser_gaps`
+
+  Fixture shapes:
+
+  ```ts
+  const key = "tenantId";
+  await db.project.findMany({ where: { [key]: session.user.tenantId } });
+  ```
+
+  ```ts
+  const args = { where: { tenantId: session.user.tenantId } };
+  await db.project.findMany(args);
+  ```
+
+  ```ts
+  const { user: { tenantId } } = session;
+  await db.project.findMany({ where: { tenantId } });
+  ```
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine tenant_authorization_dynamic_shapes_emit_parser_gaps -- --nocapture
+  ```
+
+  Expected RED: fail because unsupported dynamic tenant/query shapes are
+  silently omitted or treated as proof.
+
+- [ ] **Task 4.30: GREEN Phase 4 parser gaps**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_control_flow.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `crates/drift-engine/src/security_capabilities.rs`
+
+  Implement parser gaps:
+
+  - Emit `unsupported_tenant_dynamic_property`.
+  - Emit `unsupported_tenant_query_object_alias`.
+  - Emit `unsupported_session_nested_destructure`.
+  - Parser gaps under blocking accepted Phase 4 contracts set
+    `blocks_enforcement=true`.
+  - Capability report marks the affected Phase 4 proof sub-capability
+    `partial` or `unsupported` for the file/route.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine tenant_authorization_dynamic_shapes_emit_parser_gaps -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.31: RED TypeScript schemas and engine contract**
+
+  Test files:
+
+  - `packages/core/test/security.test.ts`
+  - `packages/engine-contract/test/security-contract.test.ts`
+
+  Test names:
+
+  - `validates phase4 tenant authorization and session trust contracts`
+  - `rejects impossible phase4 proof states`
+  - `validates phase4 parser gaps from engine output`
+
+  Required schema assertions:
+
+  - `session_trust.proven=true` is invalid when `missing_trust` is non-empty.
+  - `authorization.proven=true` is invalid when `missing` is non-empty.
+  - `tenant.proven=true` is invalid when `missing` is non-empty.
+  - `authorization.proven=true` is invalid when any referenced session source is
+    untrusted.
+  - `tenant.proven=true` is invalid when every tenant source is untrusted.
+  - Parser gaps use normalized codes and carry no snippets or sensitive values.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/core test -- security
+  pnpm --filter @drift/engine-contract test -- security-contract
+  ```
+
+  Expected RED: fail because Phase 4 contract, proof, missing-proof, and
+  parser-gap fields are not fully validated.
+
+- [ ] **Task 4.32: GREEN TypeScript schemas and engine contract**
+
+  Implementation files:
+
+  - `packages/core/src/security.ts`
+  - `packages/core/src/domain.ts`
+  - `packages/core/src/schemas.ts`
+  - `packages/engine-contract/src/index.ts`
+  - `crates/drift-engine/src/protocol.rs`
+
+  Implement schemas only:
+
+  - Add Phase 4 proof/event fields and parser-gap codes.
+  - Validate impossible proof states.
+  - Validate accepted contract fields under `requires.auth_helpers`,
+    `requires.authorization_helpers`, `requires.tenant_helpers`,
+    `requires.tenant_keys`, `requires.tenant_sources`, and
+    `requires.data_operations`.
+  - Do not add deterministic Phase 4 proof logic in TypeScript.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/core test -- security
+  pnpm --filter @drift/engine-contract test -- security-contract
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.33: RED engine request path carries accepted Phase 4 contracts to Rust**
+
+  Test files:
+
+  - `packages/cli/test/security-check.test.ts`
+  - `crates/drift-engine/tests/security_check_repo_phase4.rs`
+
+  Test names:
+
+  - `passes accepted phase4 requires fields to rust engine`
+  - `engine blocks tenant missing predicate from accepted phase4 contract`
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/cli test -- security-check
+  cargo test -p drift-engine engine_blocks_tenant_missing_predicate_from_accepted_phase4_contract -- --nocapture
+  ```
+
+  Expected RED: fail because accepted Phase 4 contract fields are not wired from
+  TypeScript check orchestration into Rust check evaluation.
+
+- [ ] **Task 4.34: GREEN engine request path**
+
+  Implementation files:
+
+  - `packages/cli/src/engine/engine-check.ts`
+  - `crates/drift-engine/src/protocol.rs`
+  - `crates/drift-engine/src/check_command.rs`
+
+  Implement wiring only:
+
+  - Preserve accepted Phase 4 `requires.*` fields in the engine request.
+  - Preserve matcher path/method/file-role scope.
+  - Reject legacy `matcher.required_calls` as Phase 4 proof truth.
+  - Keep candidate evidence out of deterministic rule inputs.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/cli test -- security-check
+  cargo test -p drift-engine engine_blocks_tenant_missing_predicate_from_accepted_phase4_contract -- --nocapture
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.35: RED query, CLI, scan status, and repo map output**
+
+  Test files:
+
+  - `packages/query/test/security-boundary-proof.test.ts`
+  - `packages/cli/test/security-check.test.ts`
+  - `packages/cli/test/cli.test.ts`
+
+  Test names:
+
+  - `summarizes phase4 proof without synthesizing trust from raw facts`
+  - `returns phase4 proof in drift check json output`
+  - `scan status reports tenant authorization and session trust capabilities`
+  - `repo map reports route tenant authorization and session summaries`
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/query test -- security-boundary-proof
+  pnpm --filter @drift/cli test -- security-check
+  pnpm --filter @drift/cli test -- "scan status reports tenant authorization and session trust capabilities"
+  pnpm --filter @drift/cli test -- "repo map reports route tenant authorization and session summaries"
+  ```
+
+  Expected RED: fail because read models and CLI output do not expose Phase 4
+  Rust-owned proof truth.
+
+- [ ] **Task 4.36: GREEN query, CLI, scan status, and repo map output**
+
+  Implementation files:
+
+  - `packages/query/src/security-boundary-proof.ts`
+  - `packages/query/src/index.ts`
+  - `packages/cli/src/check/security-check.ts`
+  - `packages/cli/src/check/run-check.ts`
+  - `packages/cli/src/domain/scan-status.ts`
+  - `packages/cli/src/commands/scan.ts`
+  - `packages/cli/src/commands/repo-map.ts`
+
+  Implement read/output wiring only:
+
+  - Query consumes Rust proof and parser gaps; it does not infer proof from raw
+    facts.
+  - CLI JSON includes `session_trust`, `authorization`, and `tenant` proof
+    summaries.
+  - Human CLI output names contract, route/file, line ranges, proof status,
+    missing-proof code, capability, and lifecycle.
+  - Output contains no snippets or sensitive values.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/query test -- security-boundary-proof
+  pnpm --filter @drift/cli test -- security-check
+  pnpm --filter @drift/cli test -- "scan status reports tenant authorization and session trust capabilities"
+  pnpm --filter @drift/cli test -- "repo map reports route tenant authorization and session summaries"
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.37: RED MCP Phase 4 read model**
+
+  Test file: `packages/mcp/test/mcp.test.ts`
+
+  Test name: `exposes phase4 security proof summaries without snippets`
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/mcp test -- "phase4 security proof"
+  ```
+
+  Expected RED: fail because MCP read-only context does not expose Phase 4 proof
+  summaries from query output.
+
+- [ ] **Task 4.38: GREEN MCP Phase 4 read model**
+
+  Implementation files:
+
+  - `packages/mcp/src/security-context.ts`
+  - `packages/mcp/src/index.ts`
+  - `packages/mcp/src/tools.ts`
+  - `packages/query/src/security-boundary-proof.ts`
+
+  Implement read model only:
+
+  - MCP surfaces accepted Phase 4 contracts, route proof status, missing proof,
+    parser gaps, and capabilities.
+  - MCP does not duplicate rule logic.
+  - MCP output does not include snippets, session values, tenant values, user
+    values, headers, cookies, request payloads, tokens, or secrets.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/mcp test -- "phase4 security proof"
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.39: RED lifecycle, waiver, baseline, and diff-scope preservation**
+
+  Test files:
+
+  - `packages/cli/test/security-check.test.ts`
+  - `test/e2e/security-validation.test.ts`
+
+  Test names:
+
+  - `phase4 findings respect waivers baselines and lifecycle`
+  - `phase4 findings respect changed hunk scope`
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/cli test -- security-check
+  pnpm test:e2e -- security-validation
+  ```
+
+  Expected RED: fail if Phase 4 findings bypass existing waiver, baseline,
+  lifecycle, check-run, or diff-scope behavior.
+
+- [ ] **Task 4.40: GREEN lifecycle, waiver, baseline, and diff-scope preservation**
+
+  Implementation files:
+
+  - `packages/cli/src/check/run-check.ts`
+  - `packages/cli/src/check/security-check.ts`
+  - `packages/query/src/security-boundary-proof.ts`
+  - `packages/storage/src/sqlite-storage.ts`
+
+  Implement preservation:
+
+  - Reuse existing finding fingerprint and lifecycle machinery.
+  - Include stable Phase 4 finding metadata: contract ID, route ID, file path,
+    fact IDs, missing-proof code, parser-gap ID, capability, and proof status.
+  - Do not persist snippets or sensitive values.
+
+  Run:
+
+  ```bash
+  pnpm --filter @drift/cli test -- security-check
+  pnpm test:e2e -- security-validation
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.41: RED Phase 4 e2e fixture matrix**
+
+  Fixture names:
+
+  - `test/fixtures/security-tenant-missing`
+  - `test/fixtures/security-tenant-param-unused`
+  - `test/fixtures/security-tenant-bound-to-query`
+  - `test/fixtures/security-tenant-untrusted-source`
+  - `test/fixtures/security-tenant-parser-gap`
+  - `test/fixtures/security-role-missing`
+  - `test/fixtures/security-role-guard-present`
+  - `test/fixtures/security-role-branch-bypass`
+  - `test/fixtures/security-session-from-request-untrusted`
+  - `test/fixtures/security-session-trusted-helper`
+
+  Test file: `test/e2e/security-tenant-authorization.test.ts`
+
+  Test name:
+  `security tenant authorization fixture matrix proves phase4 trust and gaps`
+
+  Run:
+
+  ```bash
+  pnpm test:e2e -- security-tenant-authorization
+  ```
+
+  Expected RED: fail because Phase 4 fixtures and end-to-end assertions do not
+  exist.
+
+- [ ] **Task 4.42: GREEN Phase 4 e2e fixture matrix**
+
+  Implementation files:
+
+  - `test/e2e/security-tenant-authorization.test.ts`
+  - `test/fixtures/security-tenant-missing/package.json`
+  - `test/fixtures/security-tenant-missing/app/api/projects/route.ts`
+  - `test/fixtures/security-tenant-param-unused/package.json`
+  - `test/fixtures/security-tenant-param-unused/app/api/projects/route.ts`
+  - `test/fixtures/security-tenant-bound-to-query/package.json`
+  - `test/fixtures/security-tenant-bound-to-query/app/api/projects/route.ts`
+  - `test/fixtures/security-tenant-untrusted-source/package.json`
+  - `test/fixtures/security-tenant-untrusted-source/app/api/projects/route.ts`
+  - `test/fixtures/security-tenant-parser-gap/package.json`
+  - `test/fixtures/security-tenant-parser-gap/app/api/projects/route.ts`
+  - `test/fixtures/security-role-missing/package.json`
+  - `test/fixtures/security-role-missing/app/api/projects/route.ts`
+  - `test/fixtures/security-role-guard-present/package.json`
+  - `test/fixtures/security-role-guard-present/app/api/projects/route.ts`
+  - `test/fixtures/security-role-branch-bypass/package.json`
+  - `test/fixtures/security-role-branch-bypass/app/api/projects/route.ts`
+  - `test/fixtures/security-session-from-request-untrusted/package.json`
+  - `test/fixtures/security-session-from-request-untrusted/app/api/projects/route.ts`
+  - `test/fixtures/security-session-trusted-helper/package.json`
+  - `test/fixtures/security-session-trusted-helper/app/api/projects/route.ts`
+
+  Fixture expectations:
+
+  - Tenant missing predicate blocks.
+  - Tenant param read but unused blocks.
+  - Trusted session tenant bound to data predicate passes.
+  - Untrusted request-derived tenant source blocks.
+  - Dynamic tenant predicate emits parser-gap-backed evidence.
+  - Role-required route without accepted authorization guard blocks.
+  - Accepted role guard with trusted session passes.
+  - Role guard in only one branch blocks.
+  - Session object from request is untrusted.
+  - Accepted auth helper creates trusted session proof.
+  - No fixture expected output includes snippets, session values, tenant values,
+    user values, headers, cookies, request payloads, tokens, secrets, or raw SQL
+    values.
+
+  Run:
+
+  ```bash
+  pnpm test:e2e -- security-tenant-authorization
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.43: RED capability truth for Phase 4**
+
+  Test file: `crates/drift-engine/tests/security_capabilities.rs`
+
+  Test name: `phase4_capabilities_reflect_supported_parser_gaps_and_contracts`
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine phase4_capabilities_reflect_supported_parser_gaps_and_contracts -- --nocapture
+  ```
+
+  Expected RED: fail because capability reporting does not account for Phase 4
+  supported, partial, parser-gap, and unsupported states.
+
+- [ ] **Task 4.44: GREEN capability truth for Phase 4**
+
+  Implementation files:
+
+  - `crates/drift-engine/src/security_capabilities.rs`
+  - `crates/drift-engine/src/security_proof.rs`
+  - `packages/cli/src/domain/scan-status.ts`
+
+  Implement capability truth:
+
+  - Report `session_trust`, `authorization`, and `tenant_scope` separately.
+  - Mark deterministic support only when accepted contract input, proof
+    construction, parser-gap reporting, and rule evaluation are wired.
+  - Mark partial/unsupported for dynamic tenant shapes and unresolved wrappers.
+  - Do not mark candidate-only evidence as deterministic support.
+
+  Run:
+
+  ```bash
+  cargo test -p drift-engine phase4_capabilities_reflect_supported_parser_gaps_and_contracts -- --nocapture
+  pnpm --filter @drift/cli test -- "scan status reports tenant authorization and session trust capabilities"
+  ```
+
+  Expected GREEN: pass.
+
+- [ ] **Task 4.45: Phase 4 full gate**
+
+  Run all commands, no shortcuts:
+
+  ```bash
+  cargo test -p drift-engine security_
+  cargo test -p drift-engine
+  pnpm --filter @drift/core test
+  pnpm --filter @drift/engine-contract test
+  pnpm --filter @drift/query test
+  pnpm --filter @drift/cli test
+  pnpm --filter @drift/mcp test
+  pnpm test:e2e
+  pnpm typecheck
+  cargo fmt --all -- --check
+  cargo clippy -p drift-engine --all-targets -- -D warnings
+  git diff --check
+  ```
+
+  Expected: all pass.
+
+  Required completion notes:
+
+  - Phase 4 tasks completed.
+  - Files changed.
+  - Exact RED/GREEN commands run and pass/fail status.
+  - Exact final gates run and pass/fail status.
+  - Any baseline failures or blockers with exact command output summary.
+  - Any intentional snapshot/output changes.
+  - Confirmation that Phase 5+ was not implemented.
 
 ## Phase 5: Sensitive Response And Secrets Exposure
 

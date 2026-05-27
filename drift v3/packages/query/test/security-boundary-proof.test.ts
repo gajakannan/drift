@@ -84,6 +84,15 @@ describe("security boundary proof read model", () => {
       request_validation_required: false,
       request_validation_proven: false,
       request_validation_unvalidated_reasons: [],
+      session_trust_required: false,
+      session_trust_proven: false,
+      session_missing_trust_reasons: [],
+      authorization_required: false,
+      authorization_proven: false,
+      authorization_missing_reasons: [],
+      tenant_required: false,
+      tenant_proven: false,
+      tenant_missing_reasons: [],
       proof_status: "parser_gap",
       enforcement_result: "block",
       missing_proof_codes: ["missing_auth_guard"],
@@ -166,6 +175,90 @@ describe("security boundary proof read model", () => {
       request_validation_unvalidated_reasons: ["request_input_not_validated"]
     });
     expect(JSON.stringify(model)).not.toContain("request.json()");
+  });
+
+  it("summarizes phase4 proof without synthesizing trust from raw facts", () => {
+    const model = buildSecurityBoundaryProofReadModel({
+      proofs: [{
+        proof_id: "proof_phase4",
+        proof_version: "security-boundary-proof/v1",
+        route: {
+          route_id: "route_projects_delete",
+          file_path: "app/api/projects/route.ts",
+          file_role: "api_route"
+        },
+        contracts: [{
+          contract_id: "security_api_authorization",
+          kind: "api_route_requires_authorization",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }],
+        capability_status: [{
+          name: "authorization",
+          status: "partial",
+          can_block: true,
+          parser_gap_ids: [],
+          missing_proof_ids: ["missing_authz"]
+        }],
+        auth: {
+          required: false,
+          proven: false,
+          proof_kind: "none",
+          trusted_guard_calls: [],
+          dominated_sinks: [],
+          undominated_sinks: []
+        },
+        session_trust: {
+          required: true,
+          proven: false,
+          trusted_sessions: [],
+          missing_trust: [{ fact_id: "fact_session", variable: "session", reason: "derived_from_request" }]
+        },
+        authorization: {
+          required: true,
+          proven: false,
+          role_or_policy_guards: [],
+          missing: [{ reason: "session_not_trusted", sink_fact_id: "sink_delete" }]
+        },
+        tenant: {
+          required: true,
+          proven: false,
+          tenant_sources: [{ fact_id: "fact_tenant", source: "body", key: "tenantId", trusted: false }],
+          predicates: [],
+          missing: [{ data_operation_fact_id: "fact_delete", reason: "tenant_source_untrusted" }]
+        },
+        missing_proof: [{
+          id: "missing_authz",
+          capability: "authorization",
+          code: "session_not_trusted",
+          blocks_enforcement: true,
+          fact_ids: ["fact_session"],
+          graph_edge_ids: []
+        }],
+        parser_gaps: [],
+        result: {
+          proof_status: "missing_proof",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: ["finding_authz"]
+        }
+      }],
+      findings: [{ finding_id: "finding_authz", title: "missing", lifecycle: "new" }]
+    });
+
+    expect(model.routes[0]).toMatchObject({
+      session_trust_required: true,
+      session_trust_proven: false,
+      authorization_required: true,
+      authorization_proven: false,
+      authorization_missing_reasons: ["session_not_trusted"],
+      tenant_required: true,
+      tenant_proven: false,
+      tenant_missing_reasons: ["tenant_source_untrusted"]
+    });
+    expect(JSON.stringify(model)).not.toContain("tenant-");
+    expect(JSON.stringify(model)).not.toContain("session=");
   });
 
   it("does not report request validation proven from raw scan facts", () => {

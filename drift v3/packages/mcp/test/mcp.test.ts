@@ -1724,6 +1724,212 @@ describe("read-only MCP handlers", () => {
     expect(JSON.stringify(securityContext)).not.toContain("cookie");
   });
 
+  it("exposes phase4 security proof summaries without snippets", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const phase4Conventions = [{
+      id: "security_session_trust",
+      contract_id: "contract_abc",
+      kind: "session_object_must_come_from_trusted_helper" as const,
+      statement: "Session objects must come from accepted auth helpers.",
+      scope: { path_globs: ["apps/web/app/api/**/route.ts"], file_roles: ["api_route" as const] },
+      matcher: {
+        kind: "session_object_must_come_from_trusted_helper" as const,
+        applies_to_file_roles: ["api_route" as const]
+      },
+      requires: {
+        auth_helpers: [{ guard_id: "auth_require_user", symbol: "requireUser", behavior: "returns_session" }]
+      },
+      severity: "error" as const,
+      enforcement_mode: "block" as const,
+      enforcement_capability: "deterministic_check" as const,
+      exceptions: [],
+      evidence_refs: [],
+      counterexample_refs: [],
+      accepted_by: "local-user",
+      accepted_at: "2026-05-26T00:00:00.000Z",
+      updated_at: "2026-05-26T00:00:00.000Z"
+    }, {
+      id: "security_api_authorization",
+      contract_id: "contract_abc",
+      kind: "api_route_requires_authorization" as const,
+      statement: "API routes require accepted authorization guard proof.",
+      scope: { path_globs: ["apps/web/app/api/**/route.ts"], file_roles: ["api_route" as const] },
+      matcher: {
+        kind: "api_route_requires_authorization" as const,
+        applies_to_file_roles: ["api_route" as const]
+      },
+      requires: {
+        auth_helpers: [{ guard_id: "auth_require_user", symbol: "requireUser", behavior: "returns_session" }],
+        authorization_helpers: ["requireRole"]
+      },
+      severity: "error" as const,
+      enforcement_mode: "block" as const,
+      enforcement_capability: "deterministic_check" as const,
+      exceptions: [],
+      evidence_refs: [],
+      counterexample_refs: [],
+      accepted_by: "local-user",
+      accepted_at: "2026-05-26T00:00:00.000Z",
+      updated_at: "2026-05-26T00:00:00.000Z"
+    }, {
+      id: "security_api_tenant_scope",
+      contract_id: "contract_abc",
+      kind: "api_route_requires_tenant_scope" as const,
+      statement: "API routes require tenant scoped data access.",
+      scope: { path_globs: ["apps/web/app/api/**/route.ts"], file_roles: ["api_route" as const] },
+      matcher: {
+        kind: "api_route_requires_tenant_scope" as const,
+        applies_to_file_roles: ["api_route" as const]
+      },
+      requires: {
+        auth_helpers: [{ guard_id: "auth_require_user", symbol: "requireUser", behavior: "returns_session" }],
+        tenant_keys: ["tenantId"],
+        tenant_sources: ["session"]
+      },
+      severity: "error" as const,
+      enforcement_mode: "block" as const,
+      enforcement_capability: "deterministic_check" as const,
+      exceptions: [],
+      evidence_refs: [],
+      counterexample_refs: [],
+      accepted_by: "local-user",
+      accepted_at: "2026-05-26T00:00:00.000Z",
+      updated_at: "2026-05-26T00:00:00.000Z"
+    }];
+    for (const convention of phase4Conventions) {
+      storage.upsertAcceptedConvention("repo_abc", convention);
+    }
+    storage.upsertRepoContract({
+      id: "contract_abc",
+      repo_id: "repo_abc",
+      contract_schema_version: 1,
+      repo_fingerprint: "repo-fp",
+      created_at: "2026-05-26T00:00:00.000Z",
+      updated_at: "2026-05-26T00:00:00.000Z",
+      conventions: phase4Conventions,
+      rejected_inferences: [],
+      waivers: [],
+      risky_areas: [],
+      safe_commands: [],
+      required_checks: [],
+      context_egress: {
+        default_mode: "local_only",
+        denied_globs: [".env*", "**/*.pem"],
+        max_snippet_chars: 1200,
+        allow_full_file_content: false
+      },
+      agent_permissions: []
+    });
+    storage.upsertFacts([{
+      id: "fact_session",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "session_read",
+      file_path: "apps/web/app/api/projects/route.ts",
+      name: "session",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/projects/route.ts:GET",
+        variable: "session",
+        source: "auth_result",
+        trust: "trusted"
+      }),
+      imported_name: undefined,
+      start_line: 3,
+      end_line: 3,
+      ...factQuality("scan_abc")
+    }, {
+      id: "fact_authz",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "authorization_guard_called",
+      file_path: "apps/web/app/api/projects/route.ts",
+      name: "requireRole",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/projects/route.ts:GET",
+        policy_id: "authorization_require_role",
+        roles: ["admin"],
+        subject_var: "session.user"
+      }),
+      imported_name: undefined,
+      start_line: 4,
+      end_line: 4,
+      ...factQuality("scan_abc")
+    }, {
+      id: "fact_tenant_source",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "tenant_source",
+      file_path: "apps/web/app/api/projects/route.ts",
+      name: "tenantId",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/projects/route.ts:GET",
+        source: "session",
+        key: "tenantId",
+        variable: "session.user.tenantId",
+        trusted: true
+      }),
+      imported_name: undefined,
+      start_line: 5,
+      end_line: 5,
+      ...factQuality("scan_abc")
+    }]);
+    storage.upsertParserGaps([{
+      schema_version: "drift.parser_gap.v1",
+      gap_id: "parser_gap_tenant_dynamic",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "partial_parse",
+      file_path: "apps/web/app/api/projects/route.ts",
+      start_line: 8,
+      end_line: 8,
+      confidence_impact: "blocks_enforcement",
+      message: "unsupported_tenant_dynamic_property",
+      evidence_refs: ["parser_gap_tenant_dynamic"],
+      created_at: "2026-05-26T00:00:00.000Z"
+    }]);
+    storage.close();
+
+    const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
+      repo_id: "repo_abc"
+    } as never) as {
+      accepted_contracts: Array<{ kind: string }>;
+      session_trust: { routes: Array<{ proof_status: string; advisory_trusted_source_count: number }> };
+      authorization: { routes: Array<{ proof_status: string; advisory_guard_ids: string[]; advisory_role_count: number }> };
+      tenant_scope: {
+        routes: Array<{ proof_status: string; advisory_tenant_keys: string[]; advisory_trusted_source_count: number }>;
+        parser_gaps: Array<{ reason: string; blocking: boolean }>;
+      };
+    };
+
+    expect(securityContext.accepted_contracts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "session_object_must_come_from_trusted_helper" }),
+      expect.objectContaining({ kind: "api_route_requires_authorization" }),
+      expect.objectContaining({ kind: "api_route_requires_tenant_scope" })
+    ]));
+    expect(securityContext.session_trust.routes).toEqual([expect.objectContaining({
+      proof_status: "advisory_only",
+      advisory_trusted_source_count: 1
+    })]);
+    expect(securityContext.authorization.routes).toEqual([expect.objectContaining({
+      proof_status: "advisory_only",
+      advisory_guard_ids: ["authorization_require_role"],
+      advisory_role_count: 1
+    })]);
+    expect(securityContext.tenant_scope.routes).toEqual([expect.objectContaining({
+      proof_status: "advisory_only",
+      advisory_tenant_keys: ["tenantId"],
+      advisory_trusted_source_count: 1
+    })]);
+    expect(securityContext.tenant_scope.parser_gaps).toEqual([
+      { reason: "unsupported_tenant_dynamic_property", blocking: true }
+    ]);
+    expect(JSON.stringify(securityContext)).not.toContain("session.user.tenantId");
+    expect(JSON.stringify(securityContext)).not.toContain("cookie");
+    expect(JSON.stringify(securityContext)).not.toContain("request.json()");
+  });
+
   it("includes scan symbol identities in MCP change impact", async () => {
     const databasePath = await seedMcpDatabase();
     const storage = openDriftStorage({ databasePath });
