@@ -6,6 +6,8 @@ export const SecurityCapabilityNameSchema = z.enum([
   "control_flow_guard_dominance",
   "middleware_coverage",
   "request_validation_facts",
+  "response_shape_facts",
+  "secret_exposure",
   "session_trust",
   "authorization",
   "tenant_scope"
@@ -19,6 +21,9 @@ export const SecurityMissingProofCodeSchema = z.enum([
   "request_input_not_validated",
   "validation_result_not_used",
   "unknown_validator",
+  "sensitive_response_field_unfiltered",
+  "dynamic_response_shape_missing_proof",
+  "secret_exposure_not_excluded",
   "session_not_trusted",
   "authorization_guard_missing",
   "authorization_guard_not_dominating_sink",
@@ -38,6 +43,8 @@ export const SecurityParserGapCodeSchema = z.enum([
   "unsupported_dynamic_middleware_matcher",
   "unsupported_request_input_spread",
   "unsupported_request_input_destructure",
+  "dynamic_response_shape",
+  "unsupported_destructuring_or_spread",
   "unsupported_tenant_dynamic_property",
   "unsupported_tenant_query_object_alias",
   "unsupported_session_nested_destructure",
@@ -48,10 +55,61 @@ const SecurityContractKindSchema = z.enum([
   "api_route_requires_auth_helper",
   "middleware_must_cover_routes",
   "api_route_requires_request_validation",
+  "api_route_forbids_sensitive_response_fields",
+  "api_route_forbids_secret_exposure",
   "session_object_must_come_from_trusted_helper",
   "api_route_requires_authorization",
   "api_route_requires_tenant_scope"
 ]);
+
+const Phase5SensitiveFieldSchema = z.object({
+  field_path: z.string().min(1),
+  classification: z.enum(["pii", "credential", "token", "tenant_secret", "internal"]),
+  source: z.enum(["contract", "schema", "candidate"])
+});
+
+const Phase5ResponseSerializerSchema = z.object({
+  serializer_id: z.string().min(1),
+  import_source: z.string().min(1),
+  imported_name: z.string().min(1).optional(),
+  local_name: z.string().min(1).optional(),
+  policy: z.enum(["allowlist", "denylist"], {
+    errorMap: () => ({ message: "serializer policy must be allowlist or denylist" })
+  }),
+  filtered_fields: z.array(z.string().min(1))
+});
+
+const Phase5SensitiveResponseRequiresSchema = z.object({
+  sensitive_response_fields: z.array(Phase5SensitiveFieldSchema).optional(),
+  response_serializers: z.array(Phase5ResponseSerializerSchema).optional()
+}).strict();
+
+const Phase5SecretExposureRequiresSchema = z.object({
+  secret_sources: z.array(z.enum(["env", "config", "secret_manager"])).optional(),
+  log_sinks: z.array(z.string().min(1)).optional()
+}).strict();
+
+function containsSourceValue(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  if (Array.isArray(payload)) {
+    return payload.some(containsSourceValue);
+  }
+
+  return Object.entries(payload).some(([key, value]) =>
+    [
+      "source_value",
+      "secret_value",
+      "env_value",
+      "token_value",
+      "cookie_value",
+      "header_value",
+      "request_payload"
+    ].includes(key) || containsSourceValue(value)
+  );
+}
 
 export const SecurityConventionSchema = z.object({
   contract_id: z.string().min(1),
@@ -72,6 +130,7 @@ export const SecurityConventionSchema = z.object({
     check_scope: z.enum(["changed-hunks", "changed-files", "full"]),
     diff_status: z.array(z.enum(["added", "modified", "renamed"])).optional(),
     applies_to: z.enum(["route", "handler", "middleware", "data_operation", "response"]),
+    path_globs: z.array(z.string().min(1)).optional(),
     include_pre_existing: z.boolean().optional()
   }),
   requires: z.record(z.unknown()).optional(),
@@ -92,6 +151,50 @@ export const SecurityConventionSchema = z.object({
       code: z.ZodIssueCode.custom,
       message: "blocking security contracts require deterministic capability"
     });
+  }
+
+  if (
+    contract.kind !== "api_route_forbids_sensitive_response_fields" &&
+    contract.kind !== "api_route_forbids_secret_exposure"
+  ) {
+    return;
+  }
+
+  if (containsSourceValue(contract.requires)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "source values are not allowed in Phase 5 security contracts",
+      path: ["requires"]
+    });
+  }
+
+  const requiresResult = contract.kind === "api_route_forbids_sensitive_response_fields"
+    ? Phase5SensitiveResponseRequiresSchema.safeParse(contract.requires ?? {})
+    : Phase5SecretExposureRequiresSchema.safeParse(contract.requires ?? {});
+
+  if (!requiresResult.success) {
+    for (const issue of requiresResult.error.issues) {
+      context.addIssue({
+        ...issue,
+        path: ["requires", ...issue.path]
+      });
+    }
+    return;
+  }
+
+  if (
+    contract.enforcement_mode === "block" &&
+    contract.kind === "api_route_forbids_sensitive_response_fields"
+  ) {
+    const fields = Phase5SensitiveResponseRequiresSchema.parse(contract.requires ?? {})
+      .sensitive_response_fields ?? [];
+    if (fields.some((field) => field.source === "candidate")) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "candidate sensitive fields cannot back blocking enforcement",
+        path: ["requires", "sensitive_response_fields"]
+      });
+    }
   }
 });
 
@@ -243,6 +346,24 @@ const SecurityTenantProofSchema = z.object({
   }))
 });
 
+const SecurityResponseShapeProofSchema = z.object({
+  required: z.boolean(),
+  proven: z.boolean(),
+  sensitive_leaks: z.array(z.object({
+    field_fact_id: z.string().min(1),
+    field_path: z.string().min(1),
+    reason: z.enum(["sensitive_field_without_serializer"])
+  }))
+});
+
+const SecuritySecretSinkProofSchema = z.object({
+  secret_fact_id: z.string().min(1),
+  secret_class: z.enum(["api_key", "token", "password", "private_key", "unknown"]),
+  sink_kind: z.enum(["response", "log"]),
+  sink_line: z.number().int().positive(),
+  reason: z.enum(["secret_reaches_sink"])
+});
+
 const SecurityMissingProofSchema = z.object({
   id: z.string().min(1),
   capability: z.string().min(1),
@@ -299,6 +420,16 @@ export const SecurityBoundaryProofSchema = z.object({
     validations: [],
     validated_uses: [],
     unvalidated_uses: []
+  }),
+  response_shape: SecurityResponseShapeProofSchema.optional().default({
+    required: false,
+    proven: false,
+    sensitive_leaks: []
+  }),
+  sinks: z.object({
+    secrets: z.array(SecuritySecretSinkProofSchema)
+  }).optional().default({
+    secrets: []
   }),
   session_trust: SecuritySessionTrustProofSchema.optional().default({
     required: false,
@@ -390,6 +521,29 @@ export const SecurityBoundaryProofSchema = z.object({
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: "tenant proven proof requires at least one trusted tenant source"
+    });
+  }
+
+  const matchedSensitiveResponseContract = proof.contracts.some((contract) =>
+    contract.matched && contract.kind === "api_route_forbids_sensitive_response_fields"
+  );
+  if (matchedSensitiveResponseContract && !proof.response_shape.required) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "matched sensitive response contracts require response_shape proof"
+    });
+  }
+
+  const matchedSecretExposureContract = proof.contracts.some((contract) =>
+    contract.matched && contract.kind === "api_route_forbids_secret_exposure"
+  );
+  if (
+    matchedSecretExposureContract &&
+    !proof.capability_status.some((status) => status.name === "secret_exposure")
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "matched secret exposure contracts require secret_exposure capability status"
     });
   }
 });

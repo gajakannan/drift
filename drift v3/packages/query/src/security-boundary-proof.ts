@@ -23,6 +23,11 @@ export interface SecurityBoundaryProofRouteSummary {
   request_validation_required: boolean;
   request_validation_proven: boolean;
   request_validation_unvalidated_reasons: string[];
+  response_shape_required: boolean;
+  response_shape_proven: boolean;
+  sensitive_response_leak_reasons: string[];
+  secret_exposure_count: number;
+  secret_exposure_sink_kinds: string[];
   session_trust_required: boolean;
   session_trust_proven: boolean;
   session_missing_trust_reasons: string[];
@@ -68,6 +73,12 @@ export function buildSecurityBoundaryProofReadModel(
         validated_uses: [],
         unvalidated_uses: []
       };
+      const responseShape = proof.response_shape ?? {
+        required: false,
+        proven: false,
+        sensitive_leaks: []
+      };
+      const secretSinks = proof.sinks?.secrets ?? [];
       const sessionTrust = proof.session_trust ?? {
         required: false,
         proven: false,
@@ -102,6 +113,12 @@ export function buildSecurityBoundaryProofReadModel(
       request_validation_proven: requestValidation.proven,
       request_validation_unvalidated_reasons: [...new Set(requestValidation.unvalidated_uses
         .map((unvalidated) => unvalidated.reason))].sort(),
+      response_shape_required: responseShape.required,
+      response_shape_proven: responseShape.proven,
+      sensitive_response_leak_reasons: [...new Set(responseShape.sensitive_leaks
+        .map((leak) => leak.reason))].sort(),
+      secret_exposure_count: secretSinks.length,
+      secret_exposure_sink_kinds: [...new Set(secretSinks.map((secret) => secret.sink_kind))].sort(),
       session_trust_required: sessionTrust.required,
       session_trust_proven: sessionTrust.proven,
       session_missing_trust_reasons: [...new Set(sessionTrust.missing_trust

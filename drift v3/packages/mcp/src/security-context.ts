@@ -1,5 +1,6 @@
 import type { AcceptedConvention, FactRecord, ParserGap, RepoContract, ScanManifest } from "@drift/core";
 import type { openDriftStorage } from "@drift/storage";
+import { buildSecurityBoundaryProofReadModel } from "@drift/query";
 
 type DriftStorage = ReturnType<typeof openDriftStorage>;
 
@@ -42,6 +43,20 @@ interface TenantGuardValue {
   tenant_key?: string;
 }
 
+interface ResponseEmitsFieldValue {
+  route_id?: string;
+  field_path?: string;
+}
+
+interface SensitiveFieldDeclaredValue {
+  source?: string;
+}
+
+interface SecretReadValue {
+  secret_class?: string;
+  source?: string;
+}
+
 export function buildSecurityContextPayload(storage: DriftStorage, repoId: string, contract: RepoContract) {
   const latestScan = latestSecurityScan(storage.listScanManifests(repoId));
   const facts = latestScan ? storage.listFacts(latestScan.id, { kind: "middleware_protects_route" }) : [];
@@ -51,7 +66,32 @@ export function buildSecurityContextPayload(storage: DriftStorage, repoId: strin
   const authorizationGuardFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "authorization_guard_called" }) : [];
   const tenantSourceFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "tenant_source" }) : [];
   const tenantGuardFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "tenant_guard_called" }) : [];
+  const responseFieldFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "response_emits_field" }) : [];
+  const sensitiveFieldFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "sensitive_field_declared" }) : [];
+  const secretReadFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "secret_read" }) : [];
   const parserGaps = latestScan ? storage.listParserGaps(repoId, latestScan.id) : [];
+  const latestScanSecurityProofs = latestScan
+    ? storage.listSecurityBoundaryProofs(repoId, latestScan.id)
+    : [];
+  const securityProofs = latestScanSecurityProofs.length > 0
+    ? latestScanSecurityProofs
+    : storage.listSecurityBoundaryProofs(repoId);
+  const proofReadModel = buildSecurityBoundaryProofReadModel({
+    proofs: securityProofs,
+    findings: storage.listFindings(repoId).map((finding) => ({
+      finding_id: finding.id,
+      title: finding.title,
+      lifecycle: finding.status
+    }))
+  });
+  const sensitiveResponseProofRoutes = proofReadModel.routes.filter((route) =>
+    route.response_shape_required
+  );
+  const secretExposureProofRoutes = proofReadModel.routes.filter((route) =>
+    route.secret_exposure_count > 0 ||
+    route.missing_proof_codes.includes("secret_exposure_not_excluded") ||
+    route.parser_gap_codes.includes("unsupported_dynamic_control_flow")
+  );
 
   return {
     response_schema: "drift.security.context.v1",
@@ -65,6 +105,34 @@ export function buildSecurityContextPayload(storage: DriftStorage, repoId: strin
     request_validation: {
       routes: requestValidationRoutes(requestInputFacts, validatedUseFacts),
       parser_gaps: requestValidationParserGaps(parserGaps)
+    },
+    sensitive_response: {
+      routes: sensitiveResponseProofRoutes.length > 0
+        ? sensitiveResponseProofRoutes.map((route) => ({
+            route_id: route.route_id,
+            file_path: route.file_path,
+            proof_status: route.proof_status,
+            proven: route.response_shape_proven,
+            leak_reasons: route.sensitive_response_leak_reasons,
+            missing_proof_codes: route.missing_proof_codes,
+            parser_gap_codes: route.parser_gap_codes
+          }))
+        : sensitiveResponseRoutes(responseFieldFacts),
+      declared_field_sources: sensitiveFieldSources(sensitiveFieldFacts),
+      proof_status: proofStatusForRoutes(sensitiveResponseProofRoutes)
+    },
+    secret_exposure: {
+      reads: secretReadSummaries(secretReadFacts),
+      routes: secretExposureProofRoutes.map((route) => ({
+        route_id: route.route_id,
+        file_path: route.file_path,
+        proof_status: route.proof_status,
+        secret_exposure_count: route.secret_exposure_count,
+        sink_kinds: route.secret_exposure_sink_kinds,
+        missing_proof_codes: route.missing_proof_codes,
+        parser_gap_codes: route.parser_gap_codes
+      })),
+      proof_status: proofStatusForRoutes(secretExposureProofRoutes)
     },
     session_trust: {
       routes: sessionTrustRoutes(sessionReadFacts)
@@ -85,6 +153,19 @@ export function buildSecurityContextPayload(storage: DriftStorage, repoId: strin
   };
 }
 
+function proofStatusForRoutes(routes: Array<{ proof_status: string }>): string {
+  if (routes.length === 0) {
+    return "not_evaluated";
+  }
+  if (routes.some((route) => route.proof_status === "parser_gap")) {
+    return "parser_gap";
+  }
+  if (routes.some((route) => route.proof_status === "missing_proof")) {
+    return "missing_proof";
+  }
+  return routes.every((route) => route.proof_status === "proven") ? "proven" : "not_evaluated";
+}
+
 function latestSecurityScan(scans: ScanManifest[]): ScanManifest | undefined {
   return scans.find((scan) =>
     scan.status === "completed" &&
@@ -99,6 +180,8 @@ function securityConventions(conventions: AcceptedConvention[]) {
       convention.kind === "middleware_must_cover_routes" ||
       convention.kind === "api_route_requires_auth_helper" ||
       convention.kind === "api_route_requires_request_validation" ||
+      convention.kind === "api_route_forbids_sensitive_response_fields" ||
+      convention.kind === "api_route_forbids_secret_exposure" ||
       convention.kind === "session_object_must_come_from_trusted_helper" ||
       convention.kind === "api_route_requires_authorization" ||
       convention.kind === "api_route_requires_tenant_scope"
@@ -110,6 +193,50 @@ function securityConventions(conventions: AcceptedConvention[]) {
       enforcement_capability: convention.enforcement_capability,
       severity: convention.severity
     }));
+}
+
+function sensitiveResponseRoutes(responseFieldFacts: FactRecord[]) {
+  const byRoute = new Map<string, {
+    route_id: string;
+    file_path: string;
+    emitted_field_count: number;
+  }>();
+  for (const fact of responseFieldFacts) {
+    const value = parseResponseEmitsFieldValue(fact.value);
+    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const entry = byRoute.get(routeId) ?? {
+      route_id: routeId,
+      file_path: fact.file_path,
+      emitted_field_count: 0
+    };
+    if (value.field_path) {
+      entry.emitted_field_count += 1;
+    }
+    byRoute.set(routeId, entry);
+  }
+  return [...byRoute.values()].sort((left, right) => left.route_id.localeCompare(right.route_id));
+}
+
+function sensitiveFieldSources(facts: FactRecord[]) {
+  return [...new Set(facts
+    .map((fact) => parseSensitiveFieldDeclaredValue(fact.value).source)
+    .filter((source): source is string => typeof source === "string"))].sort();
+}
+
+function secretReadSummaries(facts: FactRecord[]) {
+  return facts
+    .map((fact) => {
+      const value = parseSecretReadValue(fact.value);
+      return {
+        file_path: fact.file_path,
+        source: value.source ?? "unknown",
+        secret_class: value.secret_class ?? "unknown"
+      };
+    })
+    .sort((left, right) =>
+      `${left.file_path}:${left.source}:${left.secret_class}`
+        .localeCompare(`${right.file_path}:${right.source}:${right.secret_class}`)
+    );
 }
 
 function sessionTrustRoutes(sessionFacts: FactRecord[]) {
@@ -324,6 +451,18 @@ function parseTenantSourceValue(value: string | undefined): TenantSourceValue {
 
 function parseTenantGuardValue(value: string | undefined): TenantGuardValue {
   return parseJsonObject<TenantGuardValue>(value);
+}
+
+function parseResponseEmitsFieldValue(value: string | undefined): ResponseEmitsFieldValue {
+  return parseJsonObject<ResponseEmitsFieldValue>(value);
+}
+
+function parseSensitiveFieldDeclaredValue(value: string | undefined): SensitiveFieldDeclaredValue {
+  return parseJsonObject<SensitiveFieldDeclaredValue>(value);
+}
+
+function parseSecretReadValue(value: string | undefined): SecretReadValue {
+  return parseJsonObject<SecretReadValue>(value);
 }
 
 function parseJsonObject<T>(value: string | undefined): T {

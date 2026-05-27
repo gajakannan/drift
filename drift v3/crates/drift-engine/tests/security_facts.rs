@@ -1,9 +1,10 @@
 use drift_engine::{
-    AcceptedAuthHelper, AcceptedAuthorizationHelper, AcceptedRequestValidator,
+    AcceptedAuthHelper, AcceptedAuthorizationHelper, AcceptedPhase5Contract,
+    AcceptedRequestValidator, AcceptedResponseSerializer, AcceptedSensitiveResponseField,
     AcceptedTenantHelper, AuthGuardBehavior, AuthorizationHelperBehavior, AuthorizationHelperKind,
     FactKind, Phase4SecurityPolicy, RequestValidatorBehavior, RequestValidatorKind,
-    extract_security_facts, extract_security_facts_with_policy,
-    extract_security_facts_with_validation,
+    ResponseSerializerPolicy, extract_security_facts, extract_security_facts_with_phase5,
+    extract_security_facts_with_policy, extract_security_facts_with_validation,
 };
 
 fn accepted_phase4_policy() -> Phase4SecurityPolicy {
@@ -99,6 +100,140 @@ export async function POST(request: Request, { params }: { params: { projectId: 
                 && fact.start_line == 5),
         "missing params request input read fact: {facts:#?}"
     );
+}
+
+#[test]
+fn security_phase5_secret_read_ignores_unknown_public_config_unless_explicitly_accepted() {
+    let source = r#"
+export async function GET() {
+  const publicName = config.publicName;
+  return Response.json({ ok: true });
+}
+"#;
+    let phase5 = AcceptedPhase5Contract {
+        sensitive_response_fields: Vec::new(),
+        response_serializers: Vec::new(),
+        secret_sources: vec!["config".to_string()],
+        log_sinks: Vec::new(),
+    };
+    let facts = extract_security_facts_with_phase5(
+        "app/api/config/route.ts",
+        source,
+        &[],
+        &[],
+        Some(&phase5),
+    )
+    .expect("facts");
+    assert!(
+        facts.iter().all(|fact| fact.kind != FactKind::SecretRead),
+        "{facts:#?}"
+    );
+}
+
+#[test]
+fn security_phase5_secret_read_fact_name_does_not_leak_env_key_shaped_variable() {
+    let source = r#"
+export async function GET() {
+  const API_KEY = process.env.API_KEY;
+  return Response.json({ ok: true });
+}
+"#;
+    let phase5 = AcceptedPhase5Contract {
+        sensitive_response_fields: Vec::new(),
+        response_serializers: Vec::new(),
+        secret_sources: vec!["env".to_string()],
+        log_sinks: Vec::new(),
+    };
+    let facts = extract_security_facts_with_phase5(
+        "app/api/config/route.ts",
+        source,
+        &[],
+        &[],
+        Some(&phase5),
+    )
+    .expect("facts");
+    let serialized = format!("{facts:#?}");
+    assert!(!serialized.contains("API_KEY"), "{serialized}");
+}
+
+#[test]
+fn security_phase5_sensitive_field_facts_from_contract_schema_and_candidates() {
+    let source = r#"
+const UserSchema = z.object({
+  email: z.string().meta({ driftSensitive: "pii" }),
+  password: z.string(),
+});
+
+export async function GET() {
+  const user = { email: "SECRET_VALUE_SHOULD_NOT_LEAK", password: "sk_live_should_not_leak" };
+  return Response.json({ ok: true });
+}
+"#;
+    let phase5 = AcceptedPhase5Contract {
+        sensitive_response_fields: vec![AcceptedSensitiveResponseField {
+            field_path: "user.email".to_string(),
+            classification: "pii".to_string(),
+            source: "contract".to_string(),
+        }],
+        response_serializers: Vec::new(),
+        secret_sources: Vec::new(),
+        log_sinks: Vec::new(),
+    };
+
+    let facts = extract_security_facts_with_phase5(
+        "app/api/users/route.ts",
+        source,
+        &[],
+        &[],
+        Some(&phase5),
+    )
+    .expect("security facts");
+
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::SensitiveFieldDeclared
+                && fact.name == "user.email"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"field_path\":\"user.email\"")
+                        && value.contains("\"classification\":\"pii\"")
+                        && value.contains("\"source\":\"contract\"")
+                })),
+        "missing contract sensitive field fact: {facts:#?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::SensitiveFieldDeclared
+                && fact.name == "email"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"field_path\":\"email\"")
+                        && value.contains("\"classification\":\"pii\"")
+                        && value.contains("\"source\":\"schema\"")
+                })),
+        "missing schema sensitive field fact: {facts:#?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::SensitiveFieldDeclared
+                && fact.name == "password"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"field_path\":\"password\"")
+                        && value.contains("\"classification\":\"credential\"")
+                        && value.contains("\"source\":\"candidate\"")
+                })),
+        "missing candidate sensitive field fact: {facts:#?}"
+    );
+
+    let serialized = facts
+        .iter()
+        .filter(|fact| fact.kind == FactKind::SensitiveFieldDeclared)
+        .filter_map(|fact| fact.value.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!serialized.contains("SECRET_VALUE_SHOULD_NOT_LEAK"));
+    assert!(!serialized.contains("sk_live_should_not_leak"));
 }
 
 #[test]
@@ -704,6 +839,214 @@ export default async function handler(req, res) {
                 && fact.start_line == 3),
         "missing res.json sink: {pages_facts:#?}"
     );
+}
+
+#[test]
+fn security_phase5_response_shape_facts_for_static_json_shapes() {
+    let source = r#"
+import { NextResponse } from "next/server";
+
+export async function GET() {
+  const email = "redacted@example.test";
+  return Response.json({ user: { email } });
+}
+
+export async function POST() {
+  const token = "redacted";
+  return NextResponse.json({ token });
+}
+
+export default async function handler(req, res) {
+  const user = { id: "u1" };
+  return res.json({ user });
+}
+
+export async function PUT() {
+  const email = "redacted@example.test";
+  const payload = { user: { email } };
+  return Response.json(payload);
+}
+
+export async function PATCH() {
+  const user = { email: "redacted@example.test" };
+  return Response.json({ ...user });
+}
+"#;
+    let facts =
+        extract_security_facts("app/api/users/route.ts", source, &[]).expect("security facts");
+
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::ResponseEmitsField
+                && fact.name == "user.email"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"field_path\":\"user.email\"")
+                        && value.contains("\"response_kind\":\"json\"")
+                        && value.contains("\"classification\":\"unknown\"")
+                })),
+        "missing nested Response.json field: {facts:#?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::ResponseEmitsField
+                && fact.name == "token"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"field_path\":\"token\"")
+                        && value.contains("\"route_id\":\"route:app/api/users/route.ts:POST\"")
+                })),
+        "missing NextResponse.json field: {facts:#?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::ResponseEmitsField
+                && fact.name == "user"
+                && fact
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| { value.contains("\"field_path\":\"user\"") })),
+        "missing res.json field: {facts:#?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::ResponseEmitsField
+                && fact.name == "user.email"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"source_var\":\"payload\"")
+                        && value.contains("\"route_id\":\"route:app/api/users/route.ts:PUT\"")
+                })),
+        "missing response variable field: {facts:#?}"
+    );
+    assert!(
+        !facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::ResponseEmitsField && fact.start_line == 26),
+        "object spread must not emit known-safe response fields: {facts:#?}"
+    );
+}
+
+#[test]
+fn security_phase5_serializer_facts_require_accepted_import_identity() {
+    let source = r#"
+import { serializePublicUser as publicUser } from "@/lib/serializers/user";
+import { serializePublicUser as unsafePublicUser } from "@/lib/unsafe-serializers";
+
+export async function GET() {
+  const user = { email: "redacted@example.test" };
+  const serialized = publicUser(user);
+  const unsafeSerialized = unsafePublicUser(user);
+  const localSerialized = serializePublicUser(user);
+  return Response.json({ serialized, unsafeSerialized, localSerialized });
+}
+"#;
+    let phase5 = AcceptedPhase5Contract {
+        sensitive_response_fields: Vec::new(),
+        response_serializers: vec![AcceptedResponseSerializer {
+            serializer_id: "serializePublicUser".to_string(),
+            import_source: "@/lib/serializers/user".to_string(),
+            imported_name: "serializePublicUser".to_string(),
+            local_name: Some("publicUser".to_string()),
+            policy: ResponseSerializerPolicy::Denylist,
+            filtered_fields: vec!["user.email".to_string()],
+        }],
+        secret_sources: Vec::new(),
+        log_sinks: Vec::new(),
+    };
+    let facts = extract_security_facts_with_phase5(
+        "app/api/users/route.ts",
+        source,
+        &[],
+        &[],
+        Some(&phase5),
+    )
+    .expect("security facts");
+
+    let serializer_facts = facts
+        .iter()
+        .filter(|fact| fact.kind == FactKind::SerializerCalled)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        serializer_facts.len(),
+        1,
+        "only the accepted import alias should produce serializer_called: {facts:#?}"
+    );
+    let fact = serializer_facts[0];
+    assert_eq!(fact.name, "publicUser");
+    assert!(
+        fact.value.as_deref().is_some_and(|value| {
+            value.contains("\"serializer_id\":\"serializePublicUser\"")
+                && value.contains("\"input_var\":\"user\"")
+                && value.contains("\"output_var\":\"serialized\"")
+                && value.contains("\"policy\":\"denylist\"")
+                && value.contains("\"filtered_fields\":[\"user.email\"]")
+        }),
+        "serializer fact did not preserve policy and filtered fields: {fact:#?}"
+    );
+}
+
+#[test]
+fn security_phase5_secret_read_facts_are_redacted() {
+    let source = r#"
+const config = { password: "SECRET_VALUE_SHOULD_NOT_LEAK" };
+const secretManager = { get: (key: string) => key };
+
+export async function GET() {
+  const apiKey = process.env.API_KEY;
+  const token = process.env["TOKEN"];
+  const password = config.password;
+  const privateKey = secretManager.get("PRIVATE_KEY");
+  return Response.json({ ok: true });
+}
+"#;
+    let phase5 = AcceptedPhase5Contract {
+        sensitive_response_fields: Vec::new(),
+        response_serializers: Vec::new(),
+        secret_sources: vec![
+            "env".to_string(),
+            "config".to_string(),
+            "secret_manager".to_string(),
+        ],
+        log_sinks: Vec::new(),
+    };
+    let facts = extract_security_facts_with_phase5(
+        "app/api/secrets/route.ts",
+        source,
+        &[],
+        &[],
+        Some(&phase5),
+    )
+    .expect("security facts");
+    let secret_facts = facts
+        .iter()
+        .filter(|fact| fact.kind == FactKind::SecretRead)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        secret_facts.len(),
+        4,
+        "missing secret_read facts: {facts:#?}"
+    );
+    let serialized = secret_facts
+        .iter()
+        .filter_map(|fact| fact.value.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(serialized.contains("\"source\":\"env\""));
+    assert!(serialized.contains("\"source\":\"config\""));
+    assert!(serialized.contains("\"source\":\"secret_manager\""));
+    assert!(serialized.contains("\"secret_class\":\"api_key\""));
+    assert!(serialized.contains("\"secret_class\":\"token\""));
+    assert!(serialized.contains("\"secret_class\":\"password\""));
+    assert!(serialized.contains("\"secret_class\":\"private_key\""));
+    assert!(serialized.contains("\"env_key_hash\""));
+    assert!(!serialized.contains("API_KEY"));
+    assert!(!serialized.contains("TOKEN"));
+    assert!(!serialized.contains("PRIVATE_KEY"));
+    assert!(!serialized.contains("SECRET_VALUE_SHOULD_NOT_LEAK"));
+    assert!(!serialized.contains("sk_live_should_not_leak"));
 }
 
 #[test]

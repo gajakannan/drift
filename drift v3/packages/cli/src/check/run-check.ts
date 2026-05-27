@@ -1931,6 +1931,8 @@ async function runEngineOwnedAuthCheck(input: {
       (
         convention.kind !== "api_route_requires_auth_helper" &&
         convention.kind !== "api_route_requires_request_validation" &&
+        convention.kind !== "api_route_forbids_sensitive_response_fields" &&
+        convention.kind !== "api_route_forbids_secret_exposure" &&
         convention.kind !== "session_object_must_come_from_trusted_helper" &&
         convention.kind !== "api_route_requires_authorization" &&
         convention.kind !== "api_route_requires_tenant_scope"
@@ -1984,15 +1986,20 @@ async function runEngineOwnedAuthCheck(input: {
         .map((fact) => fact.id);
       const preserved = preservedGovernanceStatus(input.existingFindings.get(engineFinding.fingerprint));
       const isRequestValidationFinding = engineFinding.rule_id === "api_route_requires_request_validation";
+      const isPhase5Finding = isPhase5SecurityFinding(engineFinding.rule_id);
       const isPhase4Finding = isPhase4SecurityFinding(engineFinding.rule_id);
       const proofForFinding = result.security_boundary_proofs.find((proof) =>
         proof.result.finding_ids.includes(engineFinding.id)
       );
-      const waiver = isPhase4Finding
+      const waiver = isPhase4Finding || isPhase5Finding
         ? findContractWaiverForImport(
             evidence.file_path,
-            phase4ExpectedLayer(engineFinding.rule_id),
-            phase4ActualLayer(proofForFinding),
+            isPhase5Finding
+              ? phase5ExpectedLayer(engineFinding.rule_id)
+              : phase4ExpectedLayer(engineFinding.rule_id),
+            isPhase5Finding
+              ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
+              : phase4ActualLayer(proofForFinding),
             input.contract,
             input.now
           )
@@ -2012,8 +2019,12 @@ async function runEngineOwnedAuthCheck(input: {
             scanId: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
             filePath: evidence.file_path,
             line: evidenceStartLine,
-            symbol: phase4ExpectedLayer(engineFinding.rule_id),
-            importSource: phase4ActualLayer(proofForFinding),
+            symbol: isPhase5Finding
+              ? phase5ExpectedLayer(engineFinding.rule_id)
+              : phase4ExpectedLayer(engineFinding.rule_id),
+            importSource: isPhase5Finding
+              ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
+              : phase4ActualLayer(proofForFinding),
             fileHash: snapshot?.content_hash ?? "",
             waiverId: waiver.id,
             now: input.now
@@ -2024,8 +2035,12 @@ async function runEngineOwnedAuthCheck(input: {
             waiver_id: waiver.id,
             convention_id: engineFinding.convention_id,
             file_path: evidence.file_path,
-            symbol: phase4ExpectedLayer(engineFinding.rule_id),
-            import_source: phase4ActualLayer(proofForFinding),
+            symbol: isPhase5Finding
+              ? phase5ExpectedLayer(engineFinding.rule_id)
+              : phase4ExpectedLayer(engineFinding.rule_id),
+            import_source: isPhase5Finding
+              ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
+              : phase4ActualLayer(proofForFinding),
             line: evidenceStartLine,
             reason: waiver.reason
           });
@@ -2058,17 +2073,23 @@ async function runEngineOwnedAuthCheck(input: {
         }],
         expected_layer: isRequestValidationFinding
           ? "request_validation"
+          : isPhase5Finding
+            ? phase5ExpectedLayer(engineFinding.rule_id)
           : isPhase4Finding
             ? phase4ExpectedLayer(engineFinding.rule_id)
             : "auth_guard",
         actual_layer: isRequestValidationFinding
           ? requestValidationActualLayer(proofForFinding)
+          : isPhase5Finding
+            ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
           : isPhase4Finding
             ? phase4ActualLayer(proofForFinding)
             : "missing_auth_guard",
         graph_path: [evidence.file_path],
         suggested_fix: isRequestValidationFinding
           ? "Validate request input with an accepted validator before using it at protected route sinks."
+          : isPhase5Finding
+            ? phase5SuggestedFix(engineFinding.rule_id)
           : isPhase4Finding
             ? "Add accepted session trust, authorization, and tenant-scope proof before protected route sinks."
             : "Call an accepted auth helper before route data operations or response sinks.",
@@ -2081,10 +2102,65 @@ async function runEngineOwnedAuthCheck(input: {
   return { findings, waivedFindings, waivedFindingsCount, securityBoundaryProofs };
 }
 
+function isPhase5SecurityFinding(ruleId: string): boolean {
+  return ruleId === "api_route_forbids_sensitive_response_fields" ||
+    ruleId === "api_route_forbids_secret_exposure";
+}
+
 function isPhase4SecurityFinding(ruleId: string): boolean {
   return ruleId === "session_object_must_come_from_trusted_helper" ||
     ruleId === "api_route_requires_authorization" ||
     ruleId === "api_route_requires_tenant_scope";
+}
+
+function phase5ExpectedLayer(ruleId: string): string {
+  return ruleId === "api_route_forbids_sensitive_response_fields"
+    ? "response_shape"
+    : "secret_exposure";
+}
+
+function phase5SuggestedFix(ruleId: string): string {
+  return ruleId === "api_route_forbids_sensitive_response_fields"
+    ? "Filter accepted sensitive response fields with an accepted serializer before responding."
+    : "Keep secret reads out of responses and accepted log sinks.";
+}
+
+function phase5ActualLayer(proof: unknown, ruleId: string): string {
+  if (!proof || typeof proof !== "object") {
+    return ruleId === "api_route_forbids_sensitive_response_fields"
+      ? "dynamic_response_shape_missing_proof"
+      : "secret_exposure_not_excluded";
+  }
+  const candidate = proof as {
+    parser_gaps?: Array<{ code?: unknown }>;
+    missing_proof?: Array<{ code?: unknown }>;
+    response_shape?: {
+      sensitive_leaks?: unknown[];
+    };
+    sinks?: {
+      secrets?: unknown[];
+    };
+  };
+  const missingProofCode = candidate.missing_proof?.find((missing) =>
+    typeof missing.code === "string"
+  )?.code;
+  if (typeof missingProofCode === "string") {
+    return missingProofCode;
+  }
+  const parserGapCode = candidate.parser_gaps?.find((gap) =>
+    typeof gap.code === "string"
+  )?.code;
+  if (typeof parserGapCode === "string") {
+    return parserGapCode;
+  }
+  if (ruleId === "api_route_forbids_sensitive_response_fields") {
+    return (candidate.response_shape?.sensitive_leaks?.length ?? 0) > 0
+      ? "sensitive_response_field_unfiltered"
+      : "dynamic_response_shape_missing_proof";
+  }
+  return (candidate.sinks?.secrets?.length ?? 0) > 0
+    ? "secret_exposure_not_excluded"
+    : "secret_exposure_not_excluded";
 }
 
 function phase4ExpectedLayer(ruleId: string): string {

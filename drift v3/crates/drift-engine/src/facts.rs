@@ -26,6 +26,10 @@ pub enum FactKind {
     AuthorizationGuardCalled,
     RequestValidationCalled,
     ValidatedInputUsed,
+    SensitiveFieldDeclared,
+    ResponseEmitsField,
+    SerializerCalled,
+    SecretRead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

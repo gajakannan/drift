@@ -21,10 +21,29 @@ fn reports_phase_one_security_capabilities() {
         "missing control_flow_guard_dominance: {capabilities:#?}"
     );
     assert!(
+        names.contains(&"response_shape_facts"),
+        "missing Phase 5 response_shape_facts: {capabilities:#?}"
+    );
+    assert!(
+        names.contains(&"secret_exposure"),
+        "missing Phase 5 secret_exposure: {capabilities:#?}"
+    );
+    assert!(
         capabilities
             .iter()
             .all(|capability| capability.block_requires_accepted_convention),
         "security capabilities must require accepted conventions: {capabilities:#?}"
+    );
+    assert!(
+        capabilities
+            .iter()
+            .filter(|capability| matches!(
+                capability.name.as_str(),
+                "response_shape_facts" | "secret_exposure"
+            ))
+            .all(|capability| capability.can_block
+                && capability.status == SecurityCapabilityStatus::Partial),
+        "Phase 5 capabilities should be partial deterministic blockers only behind accepted contracts: {capabilities:#?}"
     );
     assert!(
         capabilities

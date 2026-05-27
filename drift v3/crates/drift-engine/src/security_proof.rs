@@ -1,21 +1,26 @@
 use crate::{
-    AcceptedAuthHelper, AcceptedRequestValidator, Fact, FactExtractError, Phase4SecurityPolicy,
-    extract_security_facts, extract_security_facts_with_policy,
-    extract_security_facts_with_validation, extract_typescript_facts,
+    AcceptedAuthHelper, AcceptedPhase5Contract, AcceptedRequestValidator, Fact, FactExtractError,
+    Phase4SecurityPolicy, extract_security_facts, extract_security_facts_with_phase5,
+    extract_security_facts_with_policy, extract_security_facts_with_validation,
+    extract_typescript_facts,
     security_control_flow::{
         DominatedSink, MatchedMiddleware, MiddlewareMismatch, branch_bypass_reasons,
         callback_boundary_reasons, conditional_guard_without_else_reasons,
-        guard_dominates_straight_line_sinks, protected_sinks, static_middleware_coverage,
-        undominated_straight_line_reasons, unsupported_dynamic_control_flow,
+        guard_dominates_straight_line_sinks, indirect_secret_flow_parser_gaps, protected_sinks,
+        static_middleware_coverage, undominated_straight_line_reasons,
+        unsupported_dynamic_control_flow,
     },
     security_patterns::dynamic_middleware_matcher_line,
 };
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecurityBoundaryProof {
     pub auth: AuthBoundaryProof,
     pub middleware: MiddlewareBoundaryProof,
     pub request_validation: RequestValidationProof,
+    pub response_shape: ResponseShapeProof,
+    pub secret_exposure: SecretExposureProof,
     pub session_trust: SessionTrustProof,
     pub authorization: AuthorizationProof,
     pub tenant: TenantProof,
@@ -194,6 +199,36 @@ pub struct RequestUnvalidatedUseProof {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseShapeProof {
+    pub required: bool,
+    pub proven: bool,
+    pub sensitive_leaks: Vec<ResponseSensitiveLeakProof>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseSensitiveLeakProof {
+    pub field_fact_id: String,
+    pub field_path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretExposureProof {
+    pub required: bool,
+    pub proven: bool,
+    pub exposed_secrets: Vec<ExposedSecretProof>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExposedSecretProof {
+    pub secret_fact_id: String,
+    pub secret_class: String,
+    pub sink_kind: String,
+    pub sink_line: usize,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecurityProofResult {
     pub proof_status: SecurityProofStatus,
 }
@@ -270,6 +305,8 @@ pub fn build_auth_boundary_proof(
             mismatches: Vec::new(),
         },
         request_validation: RequestValidationProof::not_required(),
+        response_shape: ResponseShapeProof::not_required(),
+        secret_exposure: SecretExposureProof::not_required(),
         session_trust: build_session_trust_proof_from_facts(&facts),
         authorization: AuthorizationProof::not_required(),
         tenant: TenantProof::not_required(),
@@ -573,6 +610,8 @@ pub fn build_middleware_coverage_proof(
             mismatches,
         },
         request_validation: RequestValidationProof::not_required(),
+        response_shape: ResponseShapeProof::not_required(),
+        secret_exposure: SecretExposureProof::not_required(),
         session_trust: build_session_trust_proof_from_facts(&middleware_facts),
         authorization: AuthorizationProof::not_required(),
         tenant: TenantProof::not_required(),
@@ -663,6 +702,8 @@ pub fn build_request_validation_proof_with_scope(
                 mismatches: Vec::new(),
             },
             request_validation: RequestValidationProof::not_required(),
+            response_shape: ResponseShapeProof::not_required(),
+            secret_exposure: SecretExposureProof::not_required(),
             session_trust: build_session_trust_proof_from_facts(&facts),
             authorization: AuthorizationProof::not_required(),
             tenant: TenantProof::not_required(),
@@ -713,7 +754,178 @@ pub fn build_request_validation_proof_with_scope(
             validated_uses,
             unvalidated_uses,
         },
+        response_shape: ResponseShapeProof::not_required(),
+        secret_exposure: SecretExposureProof::not_required(),
         session_trust: build_session_trust_proof_from_facts(&facts),
+        authorization: AuthorizationProof::not_required(),
+        tenant: TenantProof::not_required(),
+        parser_gaps,
+        result: SecurityProofResult { proof_status },
+    })
+}
+
+pub fn build_response_shape_proof(
+    file_path: impl AsRef<std::path::Path>,
+    source: &str,
+    accepted_phase5: &AcceptedPhase5Contract,
+) -> Result<SecurityBoundaryProof, FactExtractError> {
+    let base_facts = extract_typescript_facts(&file_path, source)?;
+    let security_facts =
+        extract_security_facts_with_phase5(&file_path, source, &[], &[], Some(accepted_phase5))?;
+    let mut facts: Vec<Fact> = base_facts.into_iter().chain(security_facts).collect();
+    facts.sort_by_key(|fact| fact.start_line);
+
+    let sensitive_fields = facts
+        .iter()
+        .filter(|fact| fact.kind == crate::FactKind::SensitiveFieldDeclared)
+        .filter_map(sensitive_field_declared_value)
+        .filter(|field| field.source != "candidate")
+        .collect::<Vec<_>>();
+    let serializers = facts
+        .iter()
+        .filter(|fact| fact.kind == crate::FactKind::SerializerCalled)
+        .filter_map(serializer_called_value)
+        .collect::<Vec<_>>();
+    let file_path_string = file_path.as_ref().to_string_lossy().replace('\\', "/");
+    let parser_gaps = response_shape_parser_gaps(&file_path_string, source);
+    let mut leaks = Vec::new();
+    for response_field in facts
+        .iter()
+        .filter(|fact| fact.kind == crate::FactKind::ResponseEmitsField)
+        .filter_map(response_emits_field_value)
+    {
+        if !sensitive_fields
+            .iter()
+            .any(|field| field.field_path == response_field.field_path)
+        {
+            continue;
+        }
+        if serializers
+            .iter()
+            .any(|serializer| serializer_proves_response_field(serializer, &response_field))
+        {
+            continue;
+        }
+        leaks.push(ResponseSensitiveLeakProof {
+            field_fact_id: response_field.fact_id,
+            field_path: response_field.field_path,
+            reason: "sensitive_field_without_serializer".to_string(),
+        });
+    }
+    let proven = leaks.is_empty() && parser_gaps.is_empty();
+    let proof_status = if !parser_gaps.is_empty() {
+        SecurityProofStatus::ParserGap
+    } else if proven {
+        SecurityProofStatus::Proven
+    } else {
+        SecurityProofStatus::MissingProof
+    };
+
+    Ok(SecurityBoundaryProof {
+        auth: AuthBoundaryProof {
+            required: false,
+            proven: false,
+            dominated_sinks: Vec::new(),
+            undominated_sinks: Vec::new(),
+        },
+        middleware: MiddlewareBoundaryProof {
+            required: false,
+            proven: false,
+            matched_middleware: Vec::new(),
+            mismatches: Vec::new(),
+        },
+        request_validation: RequestValidationProof::not_required(),
+        response_shape: ResponseShapeProof {
+            required: true,
+            proven,
+            sensitive_leaks: leaks,
+        },
+        secret_exposure: SecretExposureProof::not_required(),
+        session_trust: SessionTrustProof::not_required(),
+        authorization: AuthorizationProof::not_required(),
+        tenant: TenantProof::not_required(),
+        parser_gaps,
+        result: SecurityProofResult { proof_status },
+    })
+}
+
+pub fn build_secret_exposure_proof(
+    file_path: impl AsRef<std::path::Path>,
+    source: &str,
+    accepted_phase5: &AcceptedPhase5Contract,
+) -> Result<SecurityBoundaryProof, FactExtractError> {
+    let base_facts = extract_typescript_facts(&file_path, source)?;
+    let security_facts =
+        extract_security_facts_with_phase5(&file_path, source, &[], &[], Some(accepted_phase5))?;
+    let mut facts: Vec<Fact> = base_facts.into_iter().chain(security_facts).collect();
+    facts.sort_by_key(|fact| fact.start_line);
+
+    let secret_reads = facts
+        .iter()
+        .filter(|fact| fact.kind == crate::FactKind::SecretRead)
+        .filter_map(|fact| secret_read_value(fact, source))
+        .collect::<Vec<_>>();
+    let secret_vars = secret_reads
+        .iter()
+        .filter_map(|secret| secret.variable.clone())
+        .collect::<Vec<_>>();
+    let direct_exposures = secret_sink_exposures(source, &secret_reads, &accepted_phase5.log_sinks);
+    let exposed_secrets = direct_exposures
+        .into_iter()
+        .map(|exposure| ExposedSecretProof {
+            secret_fact_id: exposure.secret_fact_id,
+            secret_class: exposure.secret_class,
+            sink_kind: exposure.sink_kind,
+            sink_line: exposure.sink_line,
+            reason: "secret_reaches_sink".to_string(),
+        })
+        .collect::<Vec<_>>();
+    let file_path_string = file_path.as_ref().to_string_lossy().replace('\\', "/");
+    let parser_gaps =
+        indirect_secret_flow_parser_gaps(source, &secret_vars, &accepted_phase5.log_sinks)
+            .into_iter()
+            .map(|gap| SecurityParserGap {
+                parser_gap_id: format!(
+                    "parser_gap:{}:{}:{}",
+                    file_path_string, gap.source_line, gap.code
+                ),
+                code: gap.code,
+                file_path: file_path_string.clone(),
+                reason: "Indirect helper secret flow prevents deterministic secret exposure proof"
+                    .to_string(),
+                blocks_enforcement: true,
+            })
+            .collect::<Vec<_>>();
+    let proven = exposed_secrets.is_empty() && parser_gaps.is_empty();
+    let proof_status = if !parser_gaps.is_empty() {
+        SecurityProofStatus::ParserGap
+    } else if proven {
+        SecurityProofStatus::Proven
+    } else {
+        SecurityProofStatus::MissingProof
+    };
+
+    Ok(SecurityBoundaryProof {
+        auth: AuthBoundaryProof {
+            required: false,
+            proven: false,
+            dominated_sinks: Vec::new(),
+            undominated_sinks: Vec::new(),
+        },
+        middleware: MiddlewareBoundaryProof {
+            required: false,
+            proven: false,
+            matched_middleware: Vec::new(),
+            mismatches: Vec::new(),
+        },
+        request_validation: RequestValidationProof::not_required(),
+        response_shape: ResponseShapeProof::not_required(),
+        secret_exposure: SecretExposureProof {
+            required: true,
+            proven,
+            exposed_secrets,
+        },
+        session_trust: SessionTrustProof::not_required(),
         authorization: AuthorizationProof::not_required(),
         tenant: TenantProof::not_required(),
         parser_gaps,
@@ -767,6 +979,8 @@ pub fn build_phase4_security_proof_with_policy(
             mismatches: Vec::new(),
         },
         request_validation: RequestValidationProof::not_required(),
+        response_shape: ResponseShapeProof::not_required(),
+        secret_exposure: SecretExposureProof::not_required(),
         session_trust,
         authorization,
         tenant,
@@ -1229,6 +1443,252 @@ fn build_session_trust_proof_from_facts(facts: &[Fact]) -> SessionTrustProof {
     }
 }
 
+struct SensitiveFieldValue {
+    field_path: String,
+    source: String,
+}
+
+struct ResponseFieldValue {
+    fact_id: String,
+    route_id: String,
+    field_path: String,
+    source_var: Option<String>,
+    source_expr: Option<String>,
+}
+
+struct SerializerValue {
+    route_id: String,
+    output_var: Option<String>,
+    filtered_fields: Vec<String>,
+}
+
+struct SecretReadValue {
+    fact_id: String,
+    line: usize,
+    variable: Option<String>,
+    secret_class: String,
+}
+
+struct SecretExposureCandidate {
+    secret_fact_id: String,
+    secret_class: String,
+    sink_kind: String,
+    sink_line: usize,
+}
+
+fn sensitive_field_declared_value(fact: &Fact) -> Option<SensitiveFieldValue> {
+    let value: Value = serde_json::from_str(fact.value.as_deref()?).ok()?;
+    Some(SensitiveFieldValue {
+        field_path: value.get("field_path")?.as_str()?.to_string(),
+        source: value.get("source")?.as_str()?.to_string(),
+    })
+}
+
+fn response_emits_field_value(fact: &Fact) -> Option<ResponseFieldValue> {
+    let value: Value = serde_json::from_str(fact.value.as_deref()?).ok()?;
+    Some(ResponseFieldValue {
+        fact_id: format!("fact:{}:{}", fact.file_path, fact.start_line),
+        route_id: value.get("route_id")?.as_str()?.to_string(),
+        field_path: value.get("field_path")?.as_str()?.to_string(),
+        source_var: value
+            .get("source_var")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        source_expr: value
+            .get("source_expr")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+    })
+}
+
+fn serializer_called_value(fact: &Fact) -> Option<SerializerValue> {
+    let value: Value = serde_json::from_str(fact.value.as_deref()?).ok()?;
+    Some(SerializerValue {
+        route_id: value.get("route_id")?.as_str()?.to_string(),
+        output_var: value
+            .get("output_var")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        filtered_fields: value
+            .get("filtered_fields")?
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToString::to_string)
+            .collect(),
+    })
+}
+
+fn serializer_proves_response_field(
+    serializer: &SerializerValue,
+    response_field: &ResponseFieldValue,
+) -> bool {
+    if serializer.route_id != response_field.route_id
+        || !serializer
+            .filtered_fields
+            .contains(&response_field.field_path)
+    {
+        return false;
+    }
+    let Some(output_var) = serializer.output_var.as_deref() else {
+        return false;
+    };
+    response_field.source_var.as_deref() == Some(output_var)
+        || response_field
+            .source_expr
+            .as_deref()
+            .is_some_and(|expr| expr == output_var || expr.starts_with(&format!("{output_var}.")))
+}
+
+fn secret_read_value(fact: &Fact, source: &str) -> Option<SecretReadValue> {
+    let value: Value = serde_json::from_str(fact.value.as_deref()?).ok()?;
+    let line = source.lines().nth(fact.start_line.saturating_sub(1));
+    Some(SecretReadValue {
+        fact_id: format!("fact:{}:{}", fact.file_path, fact.start_line),
+        line: fact.start_line,
+        variable: line.and_then(assigned_variable),
+        secret_class: value.get("secret_class")?.as_str()?.to_string(),
+    })
+}
+
+fn response_shape_parser_gaps(file_path: &str, source: &str) -> Vec<SecurityParserGap> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let spread_variables = response_spread_variables(&lines);
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| {
+            (line.contains("Response.json(")
+                || line.contains("NextResponse.json(")
+                || line.contains(".json("))
+                && (line.contains("...")
+                    || spread_variables
+                        .iter()
+                        .any(|variable| line_uses_identifier(line, variable)))
+        })
+        .map(|(index, _)| SecurityParserGap {
+            parser_gap_id: format!(
+                "parser_gap:{}:{}:unsupported_destructuring_or_spread",
+                file_path,
+                index + 1
+            ),
+            code: "unsupported_destructuring_or_spread".to_string(),
+            file_path: file_path.to_string(),
+            reason: "Dynamic response spread prevents deterministic response-shape proof"
+                .to_string(),
+            blocks_enforcement: true,
+        })
+        .collect()
+}
+
+fn response_spread_variables(lines: &[&str]) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|line| line.contains("..."))
+        .filter_map(|line| assigned_variable(line))
+        .collect()
+}
+
+fn secret_sink_exposures(
+    source: &str,
+    secret_reads: &[SecretReadValue],
+    log_sinks: &[String],
+) -> Vec<SecretExposureCandidate> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut tainted = secret_reads
+        .iter()
+        .filter_map(|secret| {
+            secret.variable.as_ref().map(|variable| {
+                (
+                    variable.clone(),
+                    secret.fact_id.clone(),
+                    secret.secret_class.clone(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for line in &lines {
+            let Some(assigned) = assigned_variable(line) else {
+                continue;
+            };
+            if tainted.iter().any(|(variable, _, _)| variable == &assigned) {
+                continue;
+            }
+            if let Some((_, fact_id, secret_class)) = tainted
+                .iter()
+                .find(|(variable, _, _)| line_uses_identifier(line, variable))
+            {
+                tainted.push((assigned, fact_id.clone(), secret_class.clone()));
+                changed = true;
+            }
+        }
+    }
+
+    let mut exposures = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let line_number = index + 1;
+        let sink_kind = if is_response_sink_line(line) {
+            Some("response")
+        } else if log_sinks.iter().any(|sink| line.contains(sink)) {
+            Some("log")
+        } else {
+            None
+        };
+        let Some(sink_kind) = sink_kind else {
+            continue;
+        };
+        if let Some(secret) = secret_reads
+            .iter()
+            .find(|secret| secret.line == line_number)
+        {
+            exposures.push(SecretExposureCandidate {
+                secret_fact_id: secret.fact_id.clone(),
+                secret_class: secret.secret_class.clone(),
+                sink_kind: sink_kind.to_string(),
+                sink_line: line_number,
+            });
+        }
+        for (variable, fact_id, secret_class) in &tainted {
+            if line_uses_identifier(line, variable) {
+                exposures.push(SecretExposureCandidate {
+                    secret_fact_id: fact_id.clone(),
+                    secret_class: secret_class.clone(),
+                    sink_kind: sink_kind.to_string(),
+                    sink_line: line_number,
+                });
+            }
+        }
+    }
+    exposures.sort_by(|left, right| {
+        (
+            left.secret_fact_id.as_str(),
+            left.sink_kind.as_str(),
+            left.sink_line,
+        )
+            .cmp(&(
+                right.secret_fact_id.as_str(),
+                right.sink_kind.as_str(),
+                right.sink_line,
+            ))
+    });
+    exposures.dedup_by(|left, right| {
+        left.secret_fact_id == right.secret_fact_id
+            && left.sink_kind == right.sink_kind
+            && left.sink_line == right.sink_line
+    });
+    exposures
+}
+
+fn is_response_sink_line(line: &str) -> bool {
+    line.contains("Response.json(")
+        || line.contains("NextResponse.json(")
+        || line.contains(".json(")
+}
+
 fn file_path_string(facts: &[Fact]) -> String {
     facts
         .first()
@@ -1290,6 +1750,37 @@ impl RequestValidationProof {
             validations: Vec::new(),
             validated_uses: Vec::new(),
             unvalidated_uses: Vec::new(),
+        }
+    }
+}
+
+impl ResponseShapeProof {
+    fn not_required() -> Self {
+        Self {
+            required: false,
+            proven: false,
+            sensitive_leaks: Vec::new(),
+        }
+    }
+}
+
+impl SecretExposureProof {
+    fn not_required() -> Self {
+        Self {
+            required: false,
+            proven: false,
+            exposed_secrets: Vec::new(),
+        }
+    }
+}
+
+impl SessionTrustProof {
+    fn not_required() -> Self {
+        Self {
+            required: false,
+            proven: false,
+            trusted_sessions: Vec::new(),
+            missing_trust: Vec::new(),
         }
     }
 }

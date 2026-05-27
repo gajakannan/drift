@@ -18,6 +18,7 @@ import type {
   RepoRecord,
   RequiredCheckExecution,
   ResolverDependency,
+  SecurityBoundaryProof,
   ScanCapabilityReport,
   ScanFileChange,
   ScanManifest,
@@ -40,6 +41,7 @@ import {
   RepoRecordSchema,
   RequiredCheckExecutionSchema,
   ResolverDependencySchema,
+  SecurityBoundaryProofSchema,
   ScanCapabilityReportSchema,
   ScanFileChangeSchema,
   ScanManifestSchema,
@@ -544,6 +546,66 @@ export class SqliteDriftStorage {
       .prepare("SELECT * FROM scan_capability_reports WHERE repo_id = ? AND scan_id = ?")
       .get(repoId, scanId);
     return row ? scanCapabilityReportFromRow(row) : undefined;
+  }
+
+  upsertSecurityBoundaryProofs(input: {
+    repo_id: string;
+    scan_id: string;
+    proofs: SecurityBoundaryProof[];
+    created_at: string;
+  }): void {
+    const proofs = input.proofs.map((proof) => SecurityBoundaryProofSchema.parse(proof));
+    const insert = this.db.prepare(`
+      INSERT INTO security_boundary_proofs (
+        proof_id, repo_id, scan_id, route_id, file_path, contract_kinds_json,
+        proof_status, enforcement_result, proof_json, created_at
+      )
+      VALUES (
+        @proof_id, @repo_id, @scan_id, @route_id, @file_path, @contract_kinds_json,
+        @proof_status, @enforcement_result, @proof_json, @created_at
+      )
+      ON CONFLICT(proof_id) DO UPDATE SET
+        repo_id = excluded.repo_id,
+        scan_id = excluded.scan_id,
+        route_id = excluded.route_id,
+        file_path = excluded.file_path,
+        contract_kinds_json = excluded.contract_kinds_json,
+        proof_status = excluded.proof_status,
+        enforcement_result = excluded.enforcement_result,
+        proof_json = excluded.proof_json,
+        created_at = excluded.created_at
+    `);
+    const transaction = this.db.transaction(() => {
+      for (const proof of proofs) {
+        insert.run({
+          proof_id: proof.proof_id,
+          repo_id: input.repo_id,
+          scan_id: input.scan_id,
+          route_id: proof.route.route_id,
+          file_path: proof.route.file_path,
+          contract_kinds_json: stringifyJson(proof.contracts.map((contract) => contract.kind)),
+          proof_status: proof.result.proof_status,
+          enforcement_result: proof.result.enforcement_result,
+          proof_json: stringifyJson(proof),
+          created_at: input.created_at
+        });
+      }
+    });
+    transaction();
+  }
+
+  listSecurityBoundaryProofs(repoId: string, scanId?: string): SecurityBoundaryProof[] {
+    const rows = scanId
+      ? this.db
+          .prepare("SELECT proof_json FROM security_boundary_proofs WHERE repo_id = ? AND scan_id = ? ORDER BY route_id, proof_id")
+          .all(repoId, scanId)
+      : this.db
+          .prepare("SELECT proof_json FROM security_boundary_proofs WHERE repo_id = ? ORDER BY scan_id, route_id, proof_id")
+          .all(repoId);
+
+    return rows.map((row) =>
+      SecurityBoundaryProofSchema.parse(JSON.parse(rowValue<string>(row, "proof_json")))
+    );
   }
 
   upsertSymbolIdentities(identities: SymbolIdentity[]): void {

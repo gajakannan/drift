@@ -1,3 +1,5 @@
+use serde_json::Value;
+
 use crate::{Fact, FactKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +154,163 @@ pub fn accepted_request_validator_for_call<'a>(
                     })
             }
         })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedPhase5Contract {
+    pub sensitive_response_fields: Vec<AcceptedSensitiveResponseField>,
+    pub response_serializers: Vec<AcceptedResponseSerializer>,
+    pub secret_sources: Vec<String>,
+    pub log_sinks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedSensitiveResponseField {
+    pub field_path: String,
+    pub classification: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedResponseSerializer {
+    pub serializer_id: String,
+    pub import_source: String,
+    pub imported_name: String,
+    pub local_name: Option<String>,
+    pub policy: ResponseSerializerPolicy,
+    pub filtered_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseSerializerPolicy {
+    Allowlist,
+    Denylist,
+}
+
+impl ResponseSerializerPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResponseSerializerPolicy::Allowlist => "allowlist",
+            ResponseSerializerPolicy::Denylist => "denylist",
+        }
+    }
+}
+
+pub fn accepted_phase5_contract_from_requires(requires: &Value) -> Option<AcceptedPhase5Contract> {
+    let sensitive_response_fields = requires
+        .get("sensitive_response_fields")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(accepted_sensitive_response_field)
+        .collect::<Vec<_>>();
+    let response_serializers = requires
+        .get("response_serializers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(accepted_response_serializer)
+        .collect::<Vec<_>>();
+    let secret_sources = string_array_field(requires, "secret_sources")
+        .into_iter()
+        .filter(|source| matches!(source.as_str(), "env" | "config" | "secret_manager"))
+        .collect::<Vec<_>>();
+    let log_sinks = string_array_field(requires, "log_sinks");
+
+    if sensitive_response_fields.is_empty()
+        && response_serializers.is_empty()
+        && secret_sources.is_empty()
+        && log_sinks.is_empty()
+    {
+        return None;
+    }
+
+    Some(AcceptedPhase5Contract {
+        sensitive_response_fields,
+        response_serializers,
+        secret_sources,
+        log_sinks,
+    })
+}
+
+pub fn accepted_response_serializer_for_call<'a>(
+    call: &Fact,
+    facts: &[Fact],
+    accepted_serializers: &'a [AcceptedResponseSerializer],
+) -> Option<&'a AcceptedResponseSerializer> {
+    accepted_serializers.iter().find(|serializer| {
+        let expected_local = serializer
+            .local_name
+            .as_deref()
+            .unwrap_or(serializer.serializer_id.as_str());
+        call.name == expected_local
+            && facts.iter().any(|fact| {
+                fact.kind == FactKind::ImportUsed
+                    && fact.name == call.name
+                    && fact.value.as_deref() == Some(serializer.import_source.as_str())
+                    && fact.imported_name.as_deref() == Some(serializer.imported_name.as_str())
+            })
+    })
+}
+
+fn accepted_sensitive_response_field(value: &Value) -> Option<AcceptedSensitiveResponseField> {
+    let field_path = value.get("field_path")?.as_str()?.to_string();
+    let classification = value.get("classification")?.as_str()?.to_string();
+    if !matches!(
+        classification.as_str(),
+        "pii" | "credential" | "token" | "tenant_secret" | "internal"
+    ) {
+        return None;
+    }
+    let source = value.get("source")?.as_str()?.to_string();
+    if !matches!(source.as_str(), "contract" | "schema" | "candidate") {
+        return None;
+    }
+    Some(AcceptedSensitiveResponseField {
+        field_path,
+        classification,
+        source,
+    })
+}
+
+fn accepted_response_serializer(value: &Value) -> Option<AcceptedResponseSerializer> {
+    let serializer_id = value.get("serializer_id")?.as_str()?.to_string();
+    let import_source = value.get("import_source")?.as_str()?.to_string();
+    let imported_name = value
+        .get("imported_name")
+        .and_then(Value::as_str)
+        .unwrap_or(serializer_id.as_str())
+        .to_string();
+    let local_name = value
+        .get("local_name")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let policy = match value.get("policy")?.as_str()? {
+        "allowlist" => ResponseSerializerPolicy::Allowlist,
+        "denylist" => ResponseSerializerPolicy::Denylist,
+        _ => return None,
+    };
+    let filtered_fields = string_array_field(value, "filtered_fields");
+
+    Some(AcceptedResponseSerializer {
+        serializer_id,
+        import_source,
+        imported_name,
+        local_name,
+        policy,
+        filtered_fields,
+    })
+}
+
+fn string_array_field(value: &Value, field: &str) -> Vec<String> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn imported_symbol_matches(facts: &[Fact], local_name: &str, accepted_symbol: &str) -> bool {
@@ -346,4 +505,103 @@ fn quoted_values(value: &str) -> Vec<String> {
         }
     }
     values
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn security_phase5_contract_input_normalizes_accepted_requires() {
+        let requires = json!({
+            "sensitive_response_fields": [{
+                "field_path": "user.email",
+                "classification": "pii",
+                "source": "contract"
+            }],
+            "response_serializers": [{
+                "serializer_id": "serializePublicUser",
+                "import_source": "@/lib/serializers/user",
+                "imported_name": "serializePublicUser",
+                "local_name": "publicUser",
+                "policy": "denylist",
+                "filtered_fields": ["user.email"]
+            }],
+            "secret_sources": ["env", "config", "secret_manager"],
+            "log_sinks": ["console.error", "logger.error"]
+        });
+        let accepted = accepted_phase5_contract_from_requires(&requires).expect("accepted input");
+
+        assert_eq!(
+            accepted.sensitive_response_fields[0].field_path,
+            "user.email"
+        );
+        assert_eq!(
+            accepted.response_serializers[0].serializer_id,
+            "serializePublicUser"
+        );
+        assert_eq!(accepted.secret_sources, ["env", "config", "secret_manager"]);
+        assert_eq!(accepted.log_sinks, ["console.error", "logger.error"]);
+    }
+
+    #[test]
+    fn security_phase5_contract_input_rejects_wrong_serializer_import_identity() {
+        let requires = json!({
+            "response_serializers": [{
+                "serializer_id": "serializePublicUser",
+                "import_source": "@/lib/serializers/user",
+                "imported_name": "serializePublicUser",
+                "local_name": "publicUser",
+                "policy": "denylist",
+                "filtered_fields": ["user.email"]
+            }]
+        });
+        let accepted = accepted_phase5_contract_from_requires(&requires).expect("accepted input");
+        let call = Fact {
+            kind: FactKind::SymbolCalled,
+            file_path: "app/api/users/route.ts".to_string(),
+            name: "publicUser".to_string(),
+            value: None,
+            imported_name: None,
+            start_line: 4,
+            end_line: 4,
+        };
+        let wrong_import_facts = vec![Fact {
+            kind: FactKind::ImportUsed,
+            file_path: "app/api/users/route.ts".to_string(),
+            name: "publicUser".to_string(),
+            value: Some("@/lib/unsafe-serializers".to_string()),
+            imported_name: Some("serializePublicUser".to_string()),
+            start_line: 1,
+            end_line: 1,
+        }];
+        assert!(
+            accepted_response_serializer_for_call(
+                &call,
+                &wrong_import_facts,
+                &accepted.response_serializers,
+            )
+            .is_none(),
+            "wrong import path must not satisfy serializer proof"
+        );
+
+        let right_import_facts = vec![Fact {
+            kind: FactKind::ImportUsed,
+            file_path: "app/api/users/route.ts".to_string(),
+            name: "publicUser".to_string(),
+            value: Some("@/lib/serializers/user".to_string()),
+            imported_name: Some("serializePublicUser".to_string()),
+            start_line: 1,
+            end_line: 1,
+        }];
+        let serializer = accepted_response_serializer_for_call(
+            &call,
+            &right_import_facts,
+            &accepted.response_serializers,
+        )
+        .expect("accepted serializer");
+        assert_eq!(serializer.serializer_id, "serializePublicUser");
+        assert_eq!(serializer.filtered_fields, ["user.email"]);
+    }
 }
