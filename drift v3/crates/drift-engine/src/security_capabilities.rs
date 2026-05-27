@@ -52,5 +52,26 @@ pub fn security_capabilities() -> Vec<SecurityScanCapability> {
             can_block: true,
             block_requires_accepted_convention: true,
         },
+        SecurityScanCapability {
+            name: "session_trust".to_string(),
+            capability: "deterministic_check".to_string(),
+            status: SecurityCapabilityStatus::Partial,
+            can_block: true,
+            block_requires_accepted_convention: true,
+        },
+        SecurityScanCapability {
+            name: "authorization".to_string(),
+            capability: "deterministic_check".to_string(),
+            status: SecurityCapabilityStatus::Partial,
+            can_block: true,
+            block_requires_accepted_convention: true,
+        },
+        SecurityScanCapability {
+            name: "tenant_scope".to_string(),
+            capability: "deterministic_check".to_string(),
+            status: SecurityCapabilityStatus::Partial,
+            can_block: true,
+            block_requires_accepted_convention: true,
+        },
     ]
 }

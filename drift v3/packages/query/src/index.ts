@@ -80,6 +80,23 @@ export interface RepoMapRouteSecurity {
     status: "not_required" | "not_evaluated" | "missing_proof";
     input_sources: string[];
   };
+  session_trust?: {
+    status: "advisory_only";
+    advisory_session_variables: string[];
+    advisory_trusted_source_count: number;
+    advisory_untrusted_source_count: number;
+  };
+  authorization?: {
+    status: "advisory_only";
+    advisory_guard_ids: string[];
+    advisory_role_count: number;
+  };
+  tenant_scope?: {
+    status: "advisory_only";
+    advisory_tenant_keys: string[];
+    advisory_trusted_source_count: number;
+    advisory_predicate_count: number;
+  };
 }
 
 export interface GraphRepoMap {
@@ -970,7 +987,19 @@ function routeSecurityFromFacts(fileFacts: FactRecord[]): RepoMapRouteSecurity |
   );
   const requestInputFacts = fileFacts.filter((fact) => fact.kind === "request_input_read");
   const validatedUseFacts = fileFacts.filter((fact) => fact.kind === "validated_input_used");
-  if (middlewareProtectionFacts.length === 0 && requestInputFacts.length === 0 && validatedUseFacts.length === 0) {
+  const sessionReadFacts = fileFacts.filter((fact) => fact.kind === "session_read");
+  const authorizationGuardFacts = fileFacts.filter((fact) => fact.kind === "authorization_guard_called");
+  const tenantSourceFacts = fileFacts.filter((fact) => fact.kind === "tenant_source");
+  const tenantGuardFacts = fileFacts.filter((fact) => fact.kind === "tenant_guard_called");
+  if (
+    middlewareProtectionFacts.length === 0 &&
+    requestInputFacts.length === 0 &&
+    validatedUseFacts.length === 0 &&
+    sessionReadFacts.length === 0 &&
+    authorizationGuardFacts.length === 0 &&
+    tenantSourceFacts.length === 0 &&
+    tenantGuardFacts.length === 0
+  ) {
     return undefined;
   }
   const middlewareIds = middlewareProtectionFacts.map((fact) => {
@@ -983,7 +1012,7 @@ function routeSecurityFromFacts(fileFacts: FactRecord[]): RepoMapRouteSecurity |
       ? metadata.protection_kind
       : fact.imported_name ?? "unknown";
   });
-  return {
+  const routeSecurity: RepoMapRouteSecurity = {
     middleware_coverage: {
       proven: middlewareProtectionFacts.length > 0,
       protection_kinds: unique(protectionKinds),
@@ -999,6 +1028,49 @@ function routeSecurityFromFacts(fileFacts: FactRecord[]): RepoMapRouteSecurity |
       }))
     }
   };
+  if (sessionReadFacts.length > 0) {
+    routeSecurity.session_trust = {
+      status: "advisory_only",
+      advisory_session_variables: unique(sessionReadFacts.map((fact) => fact.name)),
+      advisory_trusted_source_count: sessionReadFacts.filter((fact) => parseFactValue(fact.value).trust === "trusted").length,
+      advisory_untrusted_source_count: sessionReadFacts.filter((fact) => parseFactValue(fact.value).trust === "untrusted").length
+    };
+  }
+  if (authorizationGuardFacts.length > 0) {
+    routeSecurity.authorization = {
+      status: "advisory_only",
+      advisory_guard_ids: unique(authorizationGuardFacts.map((fact) => {
+        const metadata = parseFactValue(fact.value);
+        return typeof metadata.policy_id === "string"
+          ? metadata.policy_id
+          : typeof metadata.guard_id === "string"
+            ? metadata.guard_id
+            : fact.name;
+      })),
+      advisory_role_count: authorizationGuardFacts.reduce((count, fact) => {
+        const roles = parseFactValue(fact.value).roles;
+        return count + (Array.isArray(roles) ? roles.filter((role) => typeof role === "string").length : 0);
+      }, 0)
+    };
+  }
+  if (tenantSourceFacts.length > 0 || tenantGuardFacts.length > 0) {
+    routeSecurity.tenant_scope = {
+      status: "advisory_only",
+      advisory_tenant_keys: unique([
+        ...tenantSourceFacts.map((fact) => {
+          const metadata = parseFactValue(fact.value);
+          return typeof metadata.key === "string" ? metadata.key : fact.name;
+        }),
+        ...tenantGuardFacts.map((fact) => {
+          const metadata = parseFactValue(fact.value);
+          return typeof metadata.tenant_key === "string" ? metadata.tenant_key : fact.name;
+        })
+      ]),
+      advisory_trusted_source_count: tenantSourceFacts.filter((fact) => parseFactValue(fact.value).trusted === true).length,
+      advisory_predicate_count: tenantGuardFacts.length
+    };
+  }
+  return routeSecurity;
 }
 
 function mergeRouteSecurity(
@@ -1011,7 +1083,7 @@ function mergeRouteSecurity(
   if (!right) {
     return left;
   }
-  return {
+  const routeSecurity: RepoMapRouteSecurity = {
     middleware_coverage: {
       proven: left.middleware_coverage.proven || right.middleware_coverage.proven,
       protection_kinds: unique([
@@ -1035,6 +1107,10 @@ function mergeRouteSecurity(
       ])
     }
   };
+  routeSecurity.session_trust = left.session_trust ?? right.session_trust;
+  routeSecurity.authorization = left.authorization ?? right.authorization;
+  routeSecurity.tenant_scope = left.tenant_scope ?? right.tenant_scope;
+  return routeSecurity;
 }
 
 function parseFactValue(value: string | undefined): Record<string, unknown> {

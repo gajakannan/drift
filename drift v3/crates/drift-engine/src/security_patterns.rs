@@ -9,6 +9,32 @@ pub struct AcceptedAuthHelper {
     pub behavior: AuthGuardBehavior,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Phase4SecurityPolicy {
+    pub accepted_auth_helpers: Vec<AcceptedAuthHelper>,
+    pub auth_helper_imports: Vec<AcceptedHelperImport>,
+    pub authorization_helpers: Vec<AcceptedAuthorizationHelper>,
+    pub tenant_helpers: Vec<AcceptedTenantHelper>,
+    pub tenant_keys: Vec<String>,
+    pub tenant_sources: Vec<String>,
+    pub data_operations: Vec<String>,
+}
+
+impl Phase4SecurityPolicy {
+    pub fn from_auth_helpers(accepted_auth_helpers: &[AcceptedAuthHelper]) -> Self {
+        Self {
+            accepted_auth_helpers: accepted_auth_helpers.to_vec(),
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedHelperImport {
+    pub symbol: String,
+    pub import_source: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthGuardBehavior {
     Throws,
@@ -40,6 +66,28 @@ pub fn accepted_auth_helper_for_call<'a>(
             fact.kind == FactKind::ImportUsed
                 && fact.name == call.name
                 && fact.imported_name.as_deref() == Some(helper.symbol.as_str())
+        })
+    })
+}
+
+pub fn accepted_phase4_auth_helper_for_call<'a>(
+    call: &Fact,
+    facts: &[Fact],
+    policy: &'a Phase4SecurityPolicy,
+) -> Option<&'a AcceptedAuthHelper> {
+    policy.accepted_auth_helpers.iter().find(|helper| {
+        facts.iter().any(|fact| {
+            fact.kind == FactKind::ImportUsed
+                && fact.name == call.name
+                && fact.imported_name.as_deref() == Some(helper.symbol.as_str())
+                && helper_import_matches(
+                    fact,
+                    policy
+                        .auth_helper_imports
+                        .iter()
+                        .find(|contract| contract.symbol == helper.symbol)
+                        .and_then(|contract| contract.import_source.as_deref()),
+                )
         })
     })
 }
@@ -273,6 +321,24 @@ fn imported_symbol_matches(facts: &[Fact], local_name: &str, accepted_symbol: &s
     })
 }
 
+fn imported_symbol_matches_with_source(
+    facts: &[Fact],
+    local_name: &str,
+    accepted_symbol: &str,
+    import_source: Option<&str>,
+) -> bool {
+    facts.iter().any(|fact| {
+        fact.kind == FactKind::ImportUsed
+            && fact.name == local_name
+            && fact.imported_name.as_deref() == Some(accepted_symbol)
+            && helper_import_matches(fact, import_source)
+    })
+}
+
+fn helper_import_matches(fact: &Fact, import_source: Option<&str>) -> bool {
+    import_source.is_none_or(|expected| fact.value.as_deref() == Some(expected))
+}
+
 fn receiver_root(receiver: &str) -> &str {
     receiver.split('.').next().unwrap_or(receiver)
 }
@@ -351,6 +417,71 @@ pub fn dynamic_middleware_matcher_line(source: &str) -> Option<usize> {
         } else {
             None
         }
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedTenantHelper {
+    pub helper_id: String,
+    pub symbol: String,
+    pub import_source: Option<String>,
+    pub tenant_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedAuthorizationHelper {
+    pub guard_id: String,
+    pub symbol: String,
+    pub import_source: Option<String>,
+    pub kind: AuthorizationHelperKind,
+    pub behavior: AuthorizationHelperBehavior,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorizationHelperKind {
+    Role,
+    Policy,
+}
+
+impl AuthorizationHelperKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthorizationHelperKind::Role => "role",
+            AuthorizationHelperKind::Policy => "policy",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorizationHelperBehavior {
+    Throws,
+    Boolean,
+}
+
+impl AuthorizationHelperBehavior {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthorizationHelperBehavior::Throws => "throws",
+            AuthorizationHelperBehavior::Boolean => "boolean",
+        }
+    }
+}
+
+pub fn accepted_authorization_helper_for_call<'a>(
+    call: &Fact,
+    facts: &[Fact],
+    accepted_helpers: &'a [AcceptedAuthorizationHelper],
+) -> Option<&'a AcceptedAuthorizationHelper> {
+    accepted_helpers.iter().find(|helper| {
+        if helper.import_source.is_some() {
+            return imported_symbol_matches_with_source(
+                facts,
+                &call.name,
+                &helper.symbol,
+                helper.import_source.as_deref(),
+            );
+        }
+        call.name == helper.symbol || imported_symbol_matches(facts, &call.name, &helper.symbol)
     })
 }
 

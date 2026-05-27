@@ -1,14 +1,18 @@
 use drift_engine::{
-    AcceptedAuthHelper, AcceptedPhase5Contract, AcceptedRequestValidator,
-    AcceptedResponseSerializer, AcceptedSensitiveResponseField, AuthGuardBehavior,
-    RequestValidatorBehavior, RequestValidatorKind, ResponseSerializerPolicy, SecurityAuthContract,
-    SecurityContractCapability, SecurityEnforcementMode, SecurityFindingResult,
-    SecurityMiddlewareContract, SecurityPhase5Contract, SecurityProofStatus,
-    SecurityRequestValidationContract, build_request_validation_proof, build_response_shape_proof,
-    build_secret_exposure_proof, evaluate_api_route_forbids_secret_exposure,
+    AcceptedAuthHelper, AcceptedAuthorizationHelper, AcceptedPhase5Contract,
+    AcceptedRequestValidator, AcceptedResponseSerializer, AcceptedSensitiveResponseField,
+    AcceptedTenantHelper, AuthGuardBehavior, AuthorizationHelperBehavior, AuthorizationHelperKind,
+    Phase4SecurityPolicy, RequestValidatorBehavior, RequestValidatorKind, ResponseSerializerPolicy,
+    SecurityAuthContract, SecurityAuthorizationContract, SecurityContractCapability,
+    SecurityEnforcementMode, SecurityFindingResult, SecurityMiddlewareContract,
+    SecurityPhase5Contract, SecurityProofStatus, SecurityRequestValidationContract,
+    SecurityTenantScopeContract, build_phase4_security_proof_with_policy,
+    build_request_validation_proof, build_response_shape_proof, build_secret_exposure_proof,
+    evaluate_api_route_forbids_secret_exposure,
     evaluate_api_route_forbids_sensitive_response_fields, evaluate_api_route_requires_auth_helper,
     evaluate_api_route_requires_auth_helper_with_middleware,
-    evaluate_api_route_requires_request_validation, evaluate_middleware_must_cover_routes,
+    evaluate_api_route_requires_authorization, evaluate_api_route_requires_request_validation,
+    evaluate_api_route_requires_tenant_scope, evaluate_middleware_must_cover_routes,
 };
 
 #[test]
@@ -595,6 +599,570 @@ export async function GET() {
     assert_eq!(findings[0].enforcement_result, SecurityFindingResult::Block);
     assert_eq!(findings[0].drift_category, "missing_proof");
     assert_eq!(findings[0].confidence_label, "certain");
+}
+
+#[test]
+fn untrusted_session_cannot_satisfy_tenant_or_authorization_proof() {
+    let source = r#"
+import { db } from "@/server/db";
+import { requireRole } from "@/server/authorization";
+
+export async function GET(request: Request) {
+  const session = await request.json();
+  requireRole(session.user, "admin");
+  await db.project.findMany({ where: { tenantId: session.user.tenantId } });
+  return Response.json({});
+}
+"#;
+
+    let proof = build_phase4_security_proof_with_policy(
+        "app/api/projects/route.ts",
+        source,
+        &Phase4SecurityPolicy {
+            authorization_helpers: vec![AcceptedAuthorizationHelper {
+                guard_id: "authorization_require_role".to_string(),
+                symbol: "requireRole".to_string(),
+                import_source: None,
+                kind: AuthorizationHelperKind::Role,
+                behavior: AuthorizationHelperBehavior::Throws,
+            }],
+            tenant_keys: vec!["tenantId".to_string()],
+            tenant_sources: vec!["session".to_string()],
+            ..Phase4SecurityPolicy::default()
+        },
+    )
+    .expect("phase4 proof");
+
+    assert!(
+        !proof.session_trust.proven,
+        "request-derived session must not be trusted: {proof:#?}"
+    );
+    assert!(
+        !proof.authorization.proven,
+        "authorization must not be proven from untrusted session: {proof:#?}"
+    );
+    assert!(
+        proof
+            .authorization
+            .missing
+            .iter()
+            .any(|missing| missing.reason == "session_not_trusted"),
+        "authorization missing proof must include session_not_trusted: {proof:#?}"
+    );
+    assert!(
+        !proof.tenant.proven,
+        "tenant proof must not be proven from untrusted session: {proof:#?}"
+    );
+    assert!(
+        proof
+            .tenant
+            .missing
+            .iter()
+            .any(|missing| missing.reason == "tenant_source_untrusted"),
+        "tenant missing proof must include tenant_source_untrusted: {proof:#?}"
+    );
+}
+
+#[test]
+fn tenant_scoped_route_without_tenant_predicate_blocks() {
+    let source = r#"
+import { requireUser } from "@/server/auth";
+import { db } from "@/server/db";
+
+export async function GET(request: Request) {
+  const session = await requireUser(request);
+  await db.project.findMany();
+  return Response.json({});
+}
+"#;
+
+    let findings = evaluate_api_route_requires_tenant_scope(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityTenantScopeContract {
+            contract_id: "security_api_tenant_scope".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_auth_helpers: vec![AcceptedAuthHelper {
+                guard_id: "auth_require_user".to_string(),
+                symbol: "requireUser".to_string(),
+                behavior: AuthGuardBehavior::ReturnsSession,
+            }],
+            tenant_helpers: vec!["scopeProjectToTenant".to_string()],
+            tenant_keys: vec!["tenantId".to_string()],
+            tenant_sources: vec!["session".to_string()],
+            data_operations: Vec::new(),
+        },
+    )
+    .expect("tenant findings");
+
+    assert_eq!(findings.len(), 1, "expected one finding: {findings:#?}");
+    assert_eq!(findings[0].contract_id, "security_api_tenant_scope");
+    assert_eq!(
+        findings[0].title,
+        "API route missing required tenant scope proof"
+    );
+    assert_eq!(findings[0].expected_layer, "tenant_scope");
+    assert_eq!(findings[0].actual_layer, "tenant_predicate_missing");
+    assert_eq!(findings[0].enforcement_result, SecurityFindingResult::Block);
+    assert_eq!(findings[0].drift_category, "missing_proof");
+    assert_eq!(findings[0].confidence_label, "certain");
+}
+
+#[test]
+fn tenant_param_read_but_not_bound_to_data_operation_blocks() {
+    let source = r#"
+import { db } from "@/server/db";
+
+export async function GET(request: Request, { params }: { params: { tenantId: string } }) {
+  const tenantId = params.tenantId;
+  await db.project.findMany({ where: { archived: false } });
+  return Response.json({});
+}
+"#;
+
+    let findings = evaluate_api_route_requires_tenant_scope(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityTenantScopeContract {
+            contract_id: "security_api_tenant_scope".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_auth_helpers: Vec::new(),
+            tenant_helpers: vec!["scopeProjectToTenant".to_string()],
+            tenant_keys: vec!["tenantId".to_string()],
+            tenant_sources: vec!["path_param".to_string()],
+            data_operations: Vec::new(),
+        },
+    )
+    .expect("tenant findings");
+
+    assert_eq!(findings.len(), 1, "expected one finding: {findings:#?}");
+    assert_eq!(
+        findings[0].actual_layer,
+        "tenant_predicate_not_bound_to_query"
+    );
+    assert_eq!(findings[0].enforcement_result, SecurityFindingResult::Block);
+}
+
+#[test]
+fn trusted_tenant_source_bound_to_data_predicate_passes() {
+    let source = r#"
+import { requireUser } from "@/server/auth";
+import { db } from "@/server/db";
+
+export async function GET(request: Request) {
+  const session = await requireUser(request);
+  const projects = await db.project.findMany({
+    where: { tenantId: session.user.tenantId }
+  });
+  return Response.json(projects);
+}
+"#;
+
+    let findings = evaluate_api_route_requires_tenant_scope(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityTenantScopeContract {
+            contract_id: "security_api_tenant_scope".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_auth_helpers: vec![AcceptedAuthHelper {
+                guard_id: "auth_require_user".to_string(),
+                symbol: "requireUser".to_string(),
+                behavior: AuthGuardBehavior::ReturnsSession,
+            }],
+            tenant_helpers: vec!["scopeProjectToTenant".to_string()],
+            tenant_keys: vec!["tenantId".to_string()],
+            tenant_sources: vec!["session".to_string()],
+            data_operations: Vec::new(),
+        },
+    )
+    .expect("tenant findings");
+
+    assert!(
+        findings.is_empty(),
+        "trusted tenant predicate should satisfy tenant scope: {findings:#?}"
+    );
+}
+
+#[test]
+fn accepted_tenant_scope_helper_bound_to_data_operation_passes() {
+    let source = r#"
+import { requireUser } from "@/server/auth";
+import { db } from "@/server/db";
+import { scopeProjectToTenant } from "@/server/tenant";
+
+export async function GET(request: Request) {
+  const session = await requireUser(request);
+  const scoped = scopeProjectToTenant(db.project, session.user.tenantId);
+  const projects = await db.project.findMany();
+  return Response.json(projects);
+}
+"#;
+
+    let proof = build_phase4_security_proof_with_policy(
+        "app/api/projects/route.ts",
+        source,
+        &Phase4SecurityPolicy {
+            accepted_auth_helpers: vec![AcceptedAuthHelper {
+                guard_id: "auth_require_user".to_string(),
+                symbol: "requireUser".to_string(),
+                behavior: AuthGuardBehavior::ReturnsSession,
+            }],
+            tenant_helpers: vec![AcceptedTenantHelper {
+                helper_id: "tenant_scope_project".to_string(),
+                symbol: "scopeProjectToTenant".to_string(),
+                import_source: None,
+                tenant_key: "tenantId".to_string(),
+            }],
+            tenant_keys: vec!["tenantId".to_string()],
+            tenant_sources: vec!["session".to_string()],
+            ..Phase4SecurityPolicy::default()
+        },
+    )
+    .expect("phase4 proof");
+
+    assert!(
+        proof.tenant.required,
+        "tenant proof must be required: {proof:#?}"
+    );
+    assert!(
+        proof.tenant.proven,
+        "tenant helper should prove scope: {proof:#?}"
+    );
+    assert!(
+        proof
+            .tenant
+            .predicates
+            .iter()
+            .any(|predicate| predicate.predicate_kind == "scoped_helper"),
+        "scoped helper predicate must be preserved: {proof:#?}"
+    );
+
+    let findings = evaluate_api_route_requires_tenant_scope(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityTenantScopeContract {
+            contract_id: "security_api_tenant_scope".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_auth_helpers: vec![AcceptedAuthHelper {
+                guard_id: "auth_require_user".to_string(),
+                symbol: "requireUser".to_string(),
+                behavior: AuthGuardBehavior::ReturnsSession,
+            }],
+            tenant_helpers: vec!["scopeProjectToTenant".to_string()],
+            tenant_keys: vec!["tenantId".to_string()],
+            tenant_sources: vec!["session".to_string()],
+            data_operations: Vec::new(),
+        },
+    )
+    .expect("tenant findings");
+
+    assert!(
+        findings.is_empty(),
+        "accepted tenant helper should satisfy tenant scope: {findings:#?}"
+    );
+}
+
+#[test]
+fn authorization_required_route_without_guard_blocks() {
+    let source = r#"
+import { requireUser } from "@/server/auth";
+import { db } from "@/server/db";
+
+export async function DELETE(request: Request, { params }: { params: { projectId: string } }) {
+  const session = await requireUser(request);
+  await db.project.delete({ where: { id: params.projectId, tenantId: session.user.tenantId } });
+  return Response.json({});
+}
+"#;
+
+    let findings = evaluate_api_route_requires_authorization(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityAuthorizationContract {
+            contract_id: "security_api_authorization".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_auth_helpers: vec![AcceptedAuthHelper {
+                guard_id: "auth_require_user".to_string(),
+                symbol: "requireUser".to_string(),
+                behavior: AuthGuardBehavior::ReturnsSession,
+            }],
+            authorization_helpers: vec!["requireRole".to_string(), "canAccessProject".to_string()],
+            data_operations: Vec::new(),
+        },
+    )
+    .expect("authorization findings");
+
+    assert_eq!(findings.len(), 1, "expected one finding: {findings:#?}");
+    assert_eq!(findings[0].contract_id, "security_api_authorization");
+    assert_eq!(
+        findings[0].title,
+        "API route missing required authorization proof"
+    );
+    assert_eq!(findings[0].expected_layer, "authorization");
+    assert_eq!(findings[0].actual_layer, "authorization_guard_missing");
+    assert_eq!(findings[0].enforcement_result, SecurityFindingResult::Block);
+    assert_eq!(findings[0].drift_category, "missing_proof");
+    assert_eq!(findings[0].confidence_label, "certain");
+}
+
+#[test]
+fn accepted_authorization_guard_with_trusted_session_passes() {
+    let source = r#"
+import { requireUser } from "@/server/auth";
+import { requireRole } from "@/server/authorization";
+import { db } from "@/server/db";
+
+export async function DELETE(request: Request, { params }: { params: { projectId: string } }) {
+  const session = await requireUser(request);
+  requireRole(session.user, "admin");
+  await db.project.delete({ where: { id: params.projectId, tenantId: session.user.tenantId } });
+  return Response.json({});
+}
+"#;
+
+    let proof = build_phase4_security_proof_with_policy(
+        "app/api/projects/route.ts",
+        source,
+        &Phase4SecurityPolicy {
+            accepted_auth_helpers: vec![AcceptedAuthHelper {
+                guard_id: "auth_require_user".to_string(),
+                symbol: "requireUser".to_string(),
+                behavior: AuthGuardBehavior::ReturnsSession,
+            }],
+            authorization_helpers: vec![AcceptedAuthorizationHelper {
+                guard_id: "authorization_require_role".to_string(),
+                symbol: "requireRole".to_string(),
+                import_source: None,
+                kind: AuthorizationHelperKind::Role,
+                behavior: AuthorizationHelperBehavior::Throws,
+            }],
+            tenant_keys: vec!["tenantId".to_string()],
+            tenant_sources: vec!["session".to_string()],
+            ..Phase4SecurityPolicy::default()
+        },
+    )
+    .expect("phase4 proof");
+
+    assert!(
+        proof.authorization.required,
+        "authorization required: {proof:#?}"
+    );
+    assert!(
+        proof.authorization.proven,
+        "authorization should be proven: {proof:#?}"
+    );
+    assert!(
+        proof
+            .authorization
+            .role_or_policy_guards
+            .iter()
+            .any(|guard| {
+                guard.policy_id.as_deref() == Some("authorization_require_role")
+                    && guard.subject_var.as_deref() == Some("session.user")
+                    && guard.roles == vec!["admin".to_string()]
+            }),
+        "accepted role guard metadata must be preserved: {proof:#?}"
+    );
+
+    let findings = evaluate_api_route_requires_authorization(
+        "app/api/projects/route.ts",
+        source,
+        &SecurityAuthorizationContract {
+            contract_id: "security_api_authorization".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_auth_helpers: vec![AcceptedAuthHelper {
+                guard_id: "auth_require_user".to_string(),
+                symbol: "requireUser".to_string(),
+                behavior: AuthGuardBehavior::ReturnsSession,
+            }],
+            authorization_helpers: vec!["requireRole".to_string()],
+            data_operations: Vec::new(),
+        },
+    )
+    .expect("authorization findings");
+
+    assert!(
+        findings.is_empty(),
+        "accepted authorization guard should satisfy contract: {findings:#?}"
+    );
+}
+
+#[test]
+fn candidate_only_role_and_tenant_evidence_does_not_block() {
+    let source = r#"
+import { getSession } from "@/server/session";
+import { db } from "@/server/db";
+
+export async function GET(request: Request) {
+  const session = await getSession(request);
+  if (session.user.role === "admin") {
+    await db.project.findMany({ where: { tenantId: session.user.tenantId } });
+  }
+  return Response.json({});
+}
+"#;
+
+    let proof = build_phase4_security_proof_with_policy(
+        "app/api/projects/route.ts",
+        source,
+        &Phase4SecurityPolicy {
+            tenant_keys: vec!["tenantId".to_string()],
+            tenant_sources: vec!["session".to_string()],
+            ..Phase4SecurityPolicy::default()
+        },
+    )
+    .expect("phase4 proof");
+
+    assert!(
+        !proof.authorization.proven,
+        "inline role comparison must not satisfy authorization proof: {proof:#?}"
+    );
+    assert!(
+        proof.authorization.role_or_policy_guards.is_empty(),
+        "inline role comparison must not emit accepted authorization guard: {proof:#?}"
+    );
+    assert!(
+        !proof.tenant.proven,
+        "tenant-looking variable from unknown session helper must not satisfy tenant proof: {proof:#?}"
+    );
+    assert!(
+        proof
+            .tenant
+            .missing
+            .iter()
+            .any(|missing| missing.reason == "tenant_source_untrusted"),
+        "candidate tenant evidence must remain missing proof, not deterministic proof: {proof:#?}"
+    );
+}
+
+#[test]
+fn security_phase4_unaccepted_helpers_do_not_satisfy_proof() {
+    let authorization_source = r#"
+import { requireUser } from "@/server/auth";
+import { requireRole, canAccessProject } from "@/server/authorization";
+import { db } from "@/server/db";
+
+export async function DELETE(request: Request, { params }: { params: { projectId: string } }) {
+  const session = await requireUser(request);
+  requireRole(session.user, "admin");
+  if (!canAccessProject(session.user, params.projectId, "project:delete")) {
+    return new Response("forbidden", { status: 403 });
+  }
+  await db.project.delete({ where: { id: params.projectId, tenantId: session.user.tenantId } });
+  return Response.json({});
+}
+"#;
+
+    for authorization_helpers in [Vec::new(), vec!["someOtherGuard".to_string()]] {
+        let findings = evaluate_api_route_requires_authorization(
+            "app/api/projects/route.ts",
+            authorization_source,
+            &SecurityAuthorizationContract {
+                contract_id: "security_api_authorization".to_string(),
+                capability: SecurityContractCapability::DeterministicCheck,
+                enforcement_mode: SecurityEnforcementMode::Block,
+                accepted_auth_helpers: vec![AcceptedAuthHelper {
+                    guard_id: "auth_require_user".to_string(),
+                    symbol: "requireUser".to_string(),
+                    behavior: AuthGuardBehavior::ReturnsSession,
+                }],
+                authorization_helpers,
+                data_operations: Vec::new(),
+            },
+        )
+        .expect("authorization findings");
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "unaccepted requireRole/canAccessProject must not satisfy authorization proof: {findings:#?}"
+        );
+        assert_eq!(findings[0].actual_layer, "authorization_guard_missing");
+    }
+
+    let tenant_helper_source = r#"
+import { requireUser } from "@/server/auth";
+import { scopeProjectToTenant } from "@/server/tenant";
+import { db } from "@/server/db";
+
+export async function GET(request: Request) {
+  const session = await requireUser(request);
+  const scoped = scopeProjectToTenant(db.project, session.user.tenantId);
+  const projects = await db.project.findMany();
+  return Response.json(projects);
+}
+"#;
+
+    let findings = evaluate_api_route_requires_tenant_scope(
+        "app/api/projects/route.ts",
+        tenant_helper_source,
+        &SecurityTenantScopeContract {
+            contract_id: "security_api_tenant_scope".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_auth_helpers: vec![AcceptedAuthHelper {
+                guard_id: "auth_require_user".to_string(),
+                symbol: "requireUser".to_string(),
+                behavior: AuthGuardBehavior::ReturnsSession,
+            }],
+            tenant_helpers: Vec::new(),
+            tenant_keys: vec!["tenantId".to_string()],
+            tenant_sources: vec!["session".to_string()],
+            data_operations: Vec::new(),
+        },
+    )
+    .expect("tenant findings");
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "unaccepted scopeProjectToTenant must not satisfy tenant proof: {findings:#?}"
+    );
+
+    let tenant_key_source = r#"
+import { requireUser } from "@/server/auth";
+import { db } from "@/server/db";
+
+export async function GET(request: Request) {
+  const session = await requireUser(request);
+  const projects = await db.project.findMany({
+    where: { tenantId: session.user.tenantId }
+  });
+  return Response.json(projects);
+}
+"#;
+
+    let findings = evaluate_api_route_requires_tenant_scope(
+        "app/api/projects/route.ts",
+        tenant_key_source,
+        &SecurityTenantScopeContract {
+            contract_id: "security_api_tenant_scope".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            accepted_auth_helpers: vec![AcceptedAuthHelper {
+                guard_id: "auth_require_user".to_string(),
+                symbol: "requireUser".to_string(),
+                behavior: AuthGuardBehavior::ReturnsSession,
+            }],
+            tenant_helpers: Vec::new(),
+            tenant_keys: vec!["orgId".to_string()],
+            tenant_sources: vec!["session".to_string()],
+            data_operations: Vec::new(),
+        },
+    )
+    .expect("tenant findings");
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "tenantId must not satisfy tenant proof when only orgId is accepted: {findings:#?}"
+    );
 }
 
 #[test]

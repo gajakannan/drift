@@ -1,10 +1,51 @@
 use drift_engine::{
-    AcceptedAuthHelper, AcceptedPhase5Contract, AcceptedRequestValidator,
-    AcceptedResponseSerializer, AcceptedSensitiveResponseField, AuthGuardBehavior, FactKind,
-    RequestValidatorBehavior, RequestValidatorKind, ResponseSerializerPolicy,
-    extract_security_facts, extract_security_facts_with_phase5,
-    extract_security_facts_with_validation,
+    AcceptedAuthHelper, AcceptedAuthorizationHelper, AcceptedPhase5Contract,
+    AcceptedRequestValidator, AcceptedResponseSerializer, AcceptedSensitiveResponseField,
+    AcceptedTenantHelper, AuthGuardBehavior, AuthorizationHelperBehavior, AuthorizationHelperKind,
+    FactKind, Phase4SecurityPolicy, RequestValidatorBehavior, RequestValidatorKind,
+    ResponseSerializerPolicy, extract_security_facts, extract_security_facts_with_phase5,
+    extract_security_facts_with_policy, extract_security_facts_with_validation,
 };
+
+fn accepted_phase4_policy() -> Phase4SecurityPolicy {
+    Phase4SecurityPolicy {
+        accepted_auth_helpers: vec![AcceptedAuthHelper {
+            guard_id: "auth_require_user".to_string(),
+            symbol: "requireUser".to_string(),
+            behavior: AuthGuardBehavior::ReturnsSession,
+        }],
+        authorization_helpers: vec![
+            AcceptedAuthorizationHelper {
+                guard_id: "authorization_require_role".to_string(),
+                symbol: "requireRole".to_string(),
+                import_source: None,
+                kind: AuthorizationHelperKind::Role,
+                behavior: AuthorizationHelperBehavior::Throws,
+            },
+            AcceptedAuthorizationHelper {
+                guard_id: "authorization_can_access_project".to_string(),
+                symbol: "canAccessProject".to_string(),
+                import_source: None,
+                kind: AuthorizationHelperKind::Policy,
+                behavior: AuthorizationHelperBehavior::Boolean,
+            },
+        ],
+        tenant_helpers: vec![AcceptedTenantHelper {
+            helper_id: "tenant_scope_project".to_string(),
+            symbol: "scopeProjectToTenant".to_string(),
+            import_source: None,
+            tenant_key: "tenantId".to_string(),
+        }],
+        tenant_keys: vec!["tenantId".to_string()],
+        tenant_sources: vec![
+            "session".to_string(),
+            "path_param".to_string(),
+            "query".to_string(),
+            "body".to_string(),
+        ],
+        ..Phase4SecurityPolicy::default()
+    }
+}
 
 #[test]
 fn extracts_request_input_read_facts() {
@@ -423,6 +464,318 @@ export async function GET() {
                 && fact.start_line == 6
                 && fact.end_line == 6),
         "missing accepted auth call fact: {facts:#?}"
+    );
+}
+
+#[test]
+fn extracts_session_read_facts_from_trusted_and_untrusted_sources() {
+    let source = r#"
+import { requireUser } from "@/server/auth";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/server/auth";
+
+export async function POST(request: Request) {
+  const session = await requireUser(request);
+  const nextAuthSession = await getServerSession(authOptions);
+  const user = request.headers.get("x-user");
+  const bodySession = await request.json();
+  const token = request.cookies.get("session");
+  return Response.json({ ok: true });
+}
+"#;
+
+    let facts = extract_security_facts(
+        "app/api/projects/route.ts",
+        source,
+        &[
+            AcceptedAuthHelper {
+                guard_id: "auth_require_user".to_string(),
+                symbol: "requireUser".to_string(),
+                behavior: AuthGuardBehavior::ReturnsSession,
+            },
+            AcceptedAuthHelper {
+                guard_id: "auth_next_session".to_string(),
+                symbol: "getServerSession".to_string(),
+                behavior: AuthGuardBehavior::ReturnsSession,
+            },
+        ],
+    )
+    .expect("security facts");
+
+    let session_reads = facts
+        .iter()
+        .filter(|fact| format!("{:?}", fact.kind) == "SessionRead")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        session_reads.len(),
+        5,
+        "expected five sanitized session_read facts: {facts:#?}"
+    );
+    assert!(
+        session_reads.iter().any(|fact| {
+            fact.name == "session"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"source\":\"auth_result\"")
+                        && value.contains("\"trust\":\"unknown\"")
+                        && value.contains("\"variable\":\"session\"")
+                })
+        }),
+        "missing accepted requireUser session read fact: {facts:#?}"
+    );
+    assert!(
+        session_reads.iter().any(|fact| {
+            fact.name == "nextAuthSession"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"source\":\"auth_result\"")
+                        && value.contains("\"trust\":\"unknown\"")
+                        && value.contains("\"variable\":\"nextAuthSession\"")
+                })
+        }),
+        "missing accepted getServerSession read fact: {facts:#?}"
+    );
+    for variable in ["user", "bodySession", "token"] {
+        assert!(
+            session_reads.iter().any(|fact| {
+                fact.name == variable
+                    && fact
+                        .value
+                        .as_deref()
+                        .is_some_and(|value| value.contains("\"trust\":\"untrusted\""))
+            }),
+            "missing untrusted session read fact for {variable}: {facts:#?}"
+        );
+    }
+    for fact in session_reads {
+        let value = fact.value.as_deref().unwrap_or_default();
+        for forbidden in ["x-user", "tenant-123", "user-123", "payload-secret"] {
+            assert!(
+                !value.contains(forbidden),
+                "session read fact leaked sensitive/source value {forbidden}: {fact:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn extracts_tenant_sources_from_session_params_and_query() {
+    let source = r#"
+import { requireUser } from "@/server/auth";
+
+export async function GET(request: Request, { params }: { params: { tenantId: string } }) {
+  const session = await requireUser(request);
+  const sessionTenant = session.user.tenantId;
+  const tenantId = params.tenantId;
+  const queryTenant = request.nextUrl.searchParams.get("tenantId");
+  const { tenantId: destructuredTenantId } = params;
+  const body = await request.json();
+  const bodyTenant = body.tenantId;
+  return Response.json({ sessionTenant, tenantId, queryTenant, destructuredTenantId, bodyTenant });
+}
+"#;
+
+    let facts = extract_security_facts_with_policy(
+        "app/api/projects/route.ts",
+        source,
+        &accepted_phase4_policy(),
+        &[],
+    )
+    .expect("security facts");
+
+    let tenant_sources = facts
+        .iter()
+        .filter(|fact| format!("{:?}", fact.kind) == "TenantSource")
+        .collect::<Vec<_>>();
+    assert!(
+        tenant_sources.iter().any(|fact| {
+            fact.name == "sessionTenant"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"source\":\"session\"")
+                        && value.contains("\"trusted\":true")
+                        && value.contains("\"tenant_key\":\"tenantId\"")
+                        && value.contains("\"session_variable\":\"session\"")
+                })
+        }),
+        "missing trusted session tenant source: {facts:#?}"
+    );
+    assert!(
+        tenant_sources.iter().any(|fact| {
+            fact.name == "tenantId"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"source\":\"path_param\"")
+                        && value.contains("\"trusted\":false")
+                        && value.contains("\"tenant_key\":\"tenantId\"")
+                })
+        }),
+        "missing path param tenant source: {facts:#?}"
+    );
+    assert!(
+        tenant_sources.iter().any(|fact| {
+            fact.name == "queryTenant"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"source\":\"query\"")
+                        && value.contains("\"trusted\":false")
+                        && value.contains("\"tenant_key\":\"tenantId\"")
+                })
+        }),
+        "missing query tenant source: {facts:#?}"
+    );
+    assert!(
+        tenant_sources.iter().any(|fact| {
+            fact.name == "bodyTenant"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"source\":\"body\"")
+                        && value.contains("\"trusted\":false")
+                        && value.contains("\"tenant_key\":\"tenantId\"")
+                })
+        }),
+        "missing body tenant source: {facts:#?}"
+    );
+    assert!(
+        tenant_sources
+            .iter()
+            .any(|fact| fact.name == "destructuredTenantId")
+            || facts.iter().any(|fact| {
+                format!("{:?}", fact.kind) == "ParserGap"
+                    && fact.value.as_deref().is_some_and(|value| {
+                        value.contains("unsupported_tenant_source_destructure")
+                    })
+            }),
+        "destructured path tenant source must be extracted or parser-gapped: {facts:#?}"
+    );
+}
+
+#[test]
+fn extracts_tenant_predicates_and_accepted_tenant_helpers() {
+    let source = r#"
+import { requireUser } from "@/server/auth";
+import { db } from "@/server/db";
+import { scopeProjectToTenant, unknownTenantScope } from "@/server/tenant";
+
+export async function GET(request: Request, { params }: { params: { projectId: string } }) {
+  const session = await requireUser(request);
+  await db.project.findMany({ where: { tenantId: session.user.tenantId } });
+  await db.project.findUnique({ where: { id: params.projectId, tenantId: session.user.tenantId } });
+  await scopeProjectToTenant(db.project, session.user.tenantId).findMany();
+  await unknownTenantScope(db.project, session.user.tenantId).findMany();
+  return Response.json({});
+}
+"#;
+
+    let facts = extract_security_facts_with_policy(
+        "app/api/projects/route.ts",
+        source,
+        &accepted_phase4_policy(),
+        &[],
+    )
+    .expect("security facts");
+
+    let tenant_guards = facts
+        .iter()
+        .filter(|fact| format!("{:?}", fact.kind) == "TenantGuardCalled")
+        .collect::<Vec<_>>();
+    assert!(
+        tenant_guards.iter().any(|fact| {
+            fact.value.as_deref().is_some_and(|value| {
+                value.contains("\"predicate_kind\":\"equality\"")
+                    && value.contains("\"tenant_key\":\"tenantId\"")
+                    && value.contains("\"data_operation\":\"db.project.findMany\"")
+            })
+        }),
+        "missing equality tenant guard for findMany: {facts:#?}"
+    );
+    assert!(
+        tenant_guards.iter().any(|fact| {
+            fact.value.as_deref().is_some_and(|value| {
+                value.contains("\"predicate_kind\":\"equality\"")
+                    && value.contains("\"data_operation\":\"db.project.findUnique\"")
+            })
+        }),
+        "missing equality tenant guard for findUnique: {facts:#?}"
+    );
+    assert!(
+        tenant_guards.iter().any(|fact| {
+            fact.name == "scopeProjectToTenant"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"predicate_kind\":\"scoped_helper\"")
+                        && value.contains("\"helper_symbol\":\"scopeProjectToTenant\"")
+                })
+        }),
+        "missing accepted scoped helper tenant guard: {facts:#?}"
+    );
+    assert!(
+        !tenant_guards
+            .iter()
+            .any(|fact| fact.name == "unknownTenantScope"),
+        "unknown tenant helper must not emit accepted tenant guard: {facts:#?}"
+    );
+}
+
+#[test]
+fn extracts_authorization_guard_called_for_accepted_role_and_policy_helpers() {
+    let source = r#"
+import { requireUser } from "@/server/auth";
+import { db } from "@/server/db";
+import { requireRole, canAccessProject } from "@/server/authorization";
+
+export async function GET(request: Request, { params }: { params: { projectId: string } }) {
+  const session = await requireUser(request);
+  requireRole(session.user, "admin");
+  await db.project.findMany();
+  if (!canAccessProject(session.user, params.projectId, "project:read")) {
+    return new Response("forbidden", { status: 403 });
+  }
+  await db.project.findUnique({ where: { id: params.projectId } });
+  if (session.user.role === "admin") {
+    await db.project.findFirst();
+  }
+  return Response.json({});
+}
+"#;
+
+    let facts = extract_security_facts_with_policy(
+        "app/api/projects/route.ts",
+        source,
+        &accepted_phase4_policy(),
+        &[],
+    )
+    .expect("security facts");
+
+    let authorization_guards = facts
+        .iter()
+        .filter(|fact| format!("{:?}", fact.kind) == "AuthorizationGuardCalled")
+        .collect::<Vec<_>>();
+    assert!(
+        authorization_guards.iter().any(|fact| {
+            fact.name == "requireRole"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"guard_kind\":\"role\"")
+                        && value.contains("\"subject_var\":\"session.user\"")
+                        && value.contains("\"roles\":[\"admin\"]")
+                })
+        }),
+        "missing accepted role authorization guard: {facts:#?}"
+    );
+    assert!(
+        authorization_guards.iter().any(|fact| {
+            fact.name == "canAccessProject"
+                && fact.value.as_deref().is_some_and(|value| {
+                    value.contains("\"guard_kind\":\"policy\"")
+                        && value.contains("\"subject_var\":\"session.user\"")
+                        && value.contains("\"resource_var\":\"params.projectId\"")
+                        && value.contains("\"permissions\":[\"project:read\"]")
+                        && value.contains("\"dominates_sinks\":true")
+                })
+        }),
+        "missing accepted boolean policy authorization guard: {facts:#?}"
+    );
+    assert!(
+        !authorization_guards
+            .iter()
+            .any(|fact| fact.value.as_deref().is_some_and(|value| {
+                value.contains("inline_role_check")
+                    || value.contains("\"roles\":[\"admin\"]") && fact.name != "requireRole"
+            })),
+        "inline role comparison must not emit accepted authorization proof: {facts:#?}"
     );
 }
 

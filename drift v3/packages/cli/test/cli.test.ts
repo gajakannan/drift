@@ -10199,6 +10199,77 @@ describe("drift CLI convention review", () => {
     });
   });
 
+  it("scan status reports tenant authorization and session trust capabilities", async () => {
+    const { databasePath, repoId } = await seedStartedDoctorState("drift-scan-status-phase4-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const scanId = storage.listScanManifests(repoId)
+      .find((scan) => scan.status === "completed" && !scan.id.startsWith("scan_baseline_"))!.id;
+    storage.upsertScanCapabilityReport({
+      schema_version: "drift.scan_capability_report.v1",
+      repo_id: repoId,
+      scan_id: scanId,
+      engine_source: "rust",
+      engine_version: "0.1.0",
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      certified_capabilities: ["file_discovery", "syntax_facts", "session_trust", "authorization", "tenant_scope"],
+      required_capabilities: ["file_discovery", "syntax_facts", "session_trust", "authorization", "tenant_scope"],
+      missing_capabilities: [],
+      completeness: [{
+        scope: "route-flow",
+        rule_id: "session_object_must_come_from_trusted_helper",
+        complete: true,
+        can_block: true,
+        reasons: []
+      }, {
+        scope: "route-flow",
+        rule_id: "api_route_requires_authorization",
+        complete: true,
+        can_block: true,
+        reasons: []
+      }, {
+        scope: "route-flow",
+        rule_id: "api_route_requires_tenant_scope",
+        complete: false,
+        can_block: true,
+        reasons: ["unsupported_tenant_dynamic_property"]
+      }],
+      parser_gap_count: 1,
+      parser_gap_kinds: { unsupported_tenant_dynamic_property: 1 },
+      fallback_used: false,
+      enforcement_degraded: false,
+      created_at: "2026-05-26T00:00:00.000Z"
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", repoId,
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.security_capabilities.session_trust).toMatchObject({
+      certified: true,
+      can_block: true,
+      missing: false
+    });
+    expect(payload.security_capabilities.authorization).toMatchObject({
+      certified: true,
+      can_block: true,
+      missing: false
+    });
+    expect(payload.security_capabilities.tenant_scope).toMatchObject({
+      certified: true,
+      can_block: true,
+      missing: false,
+      complete: false
+    });
+  });
+
   it("repo map reports route middleware coverage summary", async () => {
     const { databasePath, repoId } = await seedStartedDoctorState("drift-repo-map-middleware-");
     const storage = openDriftStorage({ databasePath });
@@ -10283,6 +10354,114 @@ describe("drift CLI convention review", () => {
       input_sources: ["body"]
     });
     expect(result.stdout).not.toContain("request.json()");
+  });
+
+  it("repo map reports route tenant authorization and session summaries", async () => {
+    const { databasePath, repoId } = await seedStartedDoctorState("drift-repo-map-phase4-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const scanId = storage.listScanManifests(repoId)
+      .find((scan) => scan.status === "completed" && !scan.id.startsWith("scan_baseline_"))!.id;
+    storage.upsertFacts([{
+      id: "fact_session",
+      repo_id: repoId,
+      scan_id: scanId,
+      kind: "session_read",
+      file_path: "apps/web/app/api/users/route.ts",
+      name: "session",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/users/route.ts:GET",
+        variable: "session",
+        source: "auth_result",
+        trust: "trusted"
+      }),
+      imported_name: undefined,
+      start_line: 2,
+      end_line: 2,
+      ...factQuality(scanId)
+    }, {
+      id: "fact_authorization",
+      repo_id: repoId,
+      scan_id: scanId,
+      kind: "authorization_guard_called",
+      file_path: "apps/web/app/api/users/route.ts",
+      name: "requireRole",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/users/route.ts:GET",
+        policy_id: "authorization_require_role",
+        roles: ["admin"],
+        subject_var: "session.user"
+      }),
+      imported_name: undefined,
+      start_line: 3,
+      end_line: 3,
+      ...factQuality(scanId)
+    }, {
+      id: "fact_tenant_source",
+      repo_id: repoId,
+      scan_id: scanId,
+      kind: "tenant_source",
+      file_path: "apps/web/app/api/users/route.ts",
+      name: "tenantId",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/users/route.ts:GET",
+        source: "session",
+        key: "tenantId",
+        variable: "session.user.tenantId",
+        trusted: true
+      }),
+      imported_name: undefined,
+      start_line: 4,
+      end_line: 4,
+      ...factQuality(scanId)
+    }, {
+      id: "fact_tenant_guard",
+      repo_id: repoId,
+      scan_id: scanId,
+      kind: "tenant_guard_called",
+      file_path: "apps/web/app/api/users/route.ts",
+      name: "tenantId",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/users/route.ts:GET",
+        tenant_key: "tenantId",
+        predicate_kind: "where_equals",
+        data_operation_fact_id: "fact_data"
+      }),
+      imported_name: undefined,
+      start_line: 5,
+      end_line: 5,
+      ...factQuality(scanId)
+    }]);
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "repo", "map",
+      "--repo", repoId,
+      "--path", "apps/web/app/api/users/route.ts",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.files[0].route_security.session_trust).toMatchObject({
+      status: "advisory_only",
+      advisory_session_variables: ["session"],
+      advisory_trusted_source_count: 1,
+      advisory_untrusted_source_count: 0
+    });
+    expect(payload.files[0].route_security.authorization).toMatchObject({
+      status: "advisory_only",
+      advisory_guard_ids: ["authorization_require_role"],
+      advisory_role_count: 1
+    });
+    expect(payload.files[0].route_security.tenant_scope).toMatchObject({
+      status: "advisory_only",
+      advisory_tenant_keys: ["tenantId"],
+      advisory_trusted_source_count: 1,
+      advisory_predicate_count: 1
+    });
+    expect(result.stdout).not.toContain("session.user.tenantId");
   });
 
   it("prints prepare summary and governance in human output", async () => {

@@ -1,7 +1,9 @@
 use crate::{
-    AcceptedAuthHelper, AcceptedPhase5Contract, AcceptedRequestValidator, FactExtractError,
-    RequestValidationProofScope, SecurityProofStatus, build_auth_boundary_proof,
-    build_middleware_coverage_proof, build_request_validation_proof_with_scope,
+    AcceptedAuthHelper, AcceptedAuthorizationHelper, AcceptedPhase5Contract,
+    AcceptedRequestValidator, AcceptedTenantHelper, AuthorizationHelperBehavior,
+    AuthorizationHelperKind, FactExtractError, Phase4SecurityPolicy, RequestValidationProofScope,
+    SecurityProofStatus, build_auth_boundary_proof, build_middleware_coverage_proof,
+    build_phase4_security_proof_with_policy, build_request_validation_proof_with_scope,
     build_response_shape_proof, build_secret_exposure_proof,
 };
 
@@ -31,6 +33,28 @@ pub struct SecurityRequestValidationContract {
     pub input_sources: Vec<String>,
     pub sinks: Vec<String>,
     pub accepted_validators: Vec<AcceptedRequestValidator>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityTenantScopeContract {
+    pub contract_id: String,
+    pub capability: SecurityContractCapability,
+    pub enforcement_mode: SecurityEnforcementMode,
+    pub accepted_auth_helpers: Vec<AcceptedAuthHelper>,
+    pub tenant_helpers: Vec<String>,
+    pub tenant_keys: Vec<String>,
+    pub tenant_sources: Vec<String>,
+    pub data_operations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityAuthorizationContract {
+    pub contract_id: String,
+    pub capability: SecurityContractCapability,
+    pub enforcement_mode: SecurityEnforcementMode,
+    pub accepted_auth_helpers: Vec<AcceptedAuthHelper>,
+    pub authorization_helpers: Vec<String>,
+    pub data_operations: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +284,88 @@ pub fn evaluate_api_route_requires_request_validation(
     }])
 }
 
+pub fn evaluate_api_route_requires_tenant_scope(
+    file_path: impl AsRef<std::path::Path>,
+    source: &str,
+    contract: &SecurityTenantScopeContract,
+) -> Result<Vec<SecurityFinding>, FactExtractError> {
+    if contract.enforcement_mode == SecurityEnforcementMode::Off
+        || contract.capability != SecurityContractCapability::DeterministicCheck
+    {
+        return Ok(Vec::new());
+    }
+
+    let proof = build_phase4_security_proof_with_policy(
+        file_path,
+        source,
+        &tenant_phase4_policy(contract),
+    )?;
+    if !proof.tenant.required || proof.tenant.proven {
+        return Ok(Vec::new());
+    }
+
+    Ok(vec![SecurityFinding {
+        contract_id: contract.contract_id.clone(),
+        title: "API route missing required tenant scope proof".to_string(),
+        expected_layer: "tenant_scope".to_string(),
+        actual_layer: proof
+            .tenant
+            .missing
+            .first()
+            .map(|missing| missing.reason.clone())
+            .unwrap_or_else(|| "tenant_predicate_missing".to_string()),
+        enforcement_result: match contract.enforcement_mode {
+            SecurityEnforcementMode::Brief => SecurityFindingResult::Brief,
+            SecurityEnforcementMode::Warn => SecurityFindingResult::Warn,
+            SecurityEnforcementMode::Block => SecurityFindingResult::Block,
+            SecurityEnforcementMode::Off => return Ok(Vec::new()),
+        },
+        drift_category: "missing_proof".to_string(),
+        confidence_label: "certain".to_string(),
+    }])
+}
+
+pub fn evaluate_api_route_requires_authorization(
+    file_path: impl AsRef<std::path::Path>,
+    source: &str,
+    contract: &SecurityAuthorizationContract,
+) -> Result<Vec<SecurityFinding>, FactExtractError> {
+    if contract.enforcement_mode == SecurityEnforcementMode::Off
+        || contract.capability != SecurityContractCapability::DeterministicCheck
+    {
+        return Ok(Vec::new());
+    }
+
+    let proof = build_phase4_security_proof_with_policy(
+        file_path,
+        source,
+        &authorization_phase4_policy(contract),
+    )?;
+    if !proof.authorization.required || proof.authorization.proven {
+        return Ok(Vec::new());
+    }
+
+    Ok(vec![SecurityFinding {
+        contract_id: contract.contract_id.clone(),
+        title: "API route missing required authorization proof".to_string(),
+        expected_layer: "authorization".to_string(),
+        actual_layer: proof
+            .authorization
+            .missing
+            .first()
+            .map(|missing| missing.reason.clone())
+            .unwrap_or_else(|| "authorization_guard_missing".to_string()),
+        enforcement_result: match contract.enforcement_mode {
+            SecurityEnforcementMode::Brief => SecurityFindingResult::Brief,
+            SecurityEnforcementMode::Warn => SecurityFindingResult::Warn,
+            SecurityEnforcementMode::Block => SecurityFindingResult::Block,
+            SecurityEnforcementMode::Off => return Ok(Vec::new()),
+        },
+        drift_category: "missing_proof".to_string(),
+        confidence_label: "certain".to_string(),
+    }])
+}
+
 pub fn evaluate_api_route_forbids_sensitive_response_fields(
     file_path: impl AsRef<std::path::Path>,
     source: &str,
@@ -376,6 +482,58 @@ fn finding_result(
         SecurityEnforcementMode::Warn => Ok(SecurityFindingResult::Warn),
         SecurityEnforcementMode::Block => Ok(SecurityFindingResult::Block),
         SecurityEnforcementMode::Off => unreachable!("off mode is filtered before findings"),
+    }
+}
+
+fn tenant_phase4_policy(contract: &SecurityTenantScopeContract) -> Phase4SecurityPolicy {
+    Phase4SecurityPolicy {
+        accepted_auth_helpers: contract.accepted_auth_helpers.clone(),
+        tenant_helpers: contract
+            .tenant_helpers
+            .iter()
+            .map(|symbol| AcceptedTenantHelper {
+                helper_id: format!("tenant:{symbol}"),
+                symbol: symbol.clone(),
+                import_source: None,
+                tenant_key: contract
+                    .tenant_keys
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "tenantId".to_string()),
+            })
+            .collect(),
+        tenant_keys: contract.tenant_keys.clone(),
+        tenant_sources: contract.tenant_sources.clone(),
+        data_operations: contract.data_operations.clone(),
+        ..Phase4SecurityPolicy::default()
+    }
+}
+
+fn authorization_phase4_policy(contract: &SecurityAuthorizationContract) -> Phase4SecurityPolicy {
+    Phase4SecurityPolicy {
+        accepted_auth_helpers: contract.accepted_auth_helpers.clone(),
+        authorization_helpers: contract
+            .authorization_helpers
+            .iter()
+            .map(|symbol| AcceptedAuthorizationHelper {
+                guard_id: format!("authorization:{symbol}"),
+                symbol: symbol.clone(),
+                import_source: None,
+                kind: if symbol.to_ascii_lowercase().contains("role") {
+                    AuthorizationHelperKind::Role
+                } else {
+                    AuthorizationHelperKind::Policy
+                },
+                behavior: if symbol.to_ascii_lowercase().starts_with("can") {
+                    AuthorizationHelperBehavior::Boolean
+                } else {
+                    AuthorizationHelperBehavior::Throws
+                },
+            })
+            .collect(),
+        tenant_keys: Vec::new(),
+        data_operations: contract.data_operations.clone(),
+        ..Phase4SecurityPolicy::default()
     }
 }
 

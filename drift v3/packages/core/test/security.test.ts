@@ -435,6 +435,99 @@ describe("security domain schemas", () => {
     expect(JSON.stringify(proof)).not.toContain("SECRET_VALUE_SHOULD_NOT_LEAK");
   });
 
+  it("validates phase4 tenant authorization and session trust contracts", () => {
+    expect(SecurityMissingProofCodeSchema.parse("session_not_trusted")).toBe("session_not_trusted");
+    expect(SecurityMissingProofCodeSchema.parse("authorization_guard_missing")).toBe("authorization_guard_missing");
+    expect(SecurityMissingProofCodeSchema.parse("tenant_predicate_missing")).toBe("tenant_predicate_missing");
+
+    const authorization = SecurityConventionSchema.parse({
+      contract_id: "security_api_authorization",
+      kind: "api_route_requires_authorization",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: { file_roles: ["api_route"], methods: ["DELETE"] },
+      scope: { check_scope: "changed-files", applies_to: "route" },
+      requires: {
+        auth_helpers: ["requireUser"],
+        authorization_helpers: ["requireRole", "canAccessProject"],
+        data_operations: ["delete"]
+      }
+    });
+    const tenant = SecurityConventionSchema.parse({
+      contract_id: "security_api_tenant_scope",
+      kind: "api_route_requires_tenant_scope",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: { file_roles: ["api_route"] },
+      scope: { check_scope: "changed-files", applies_to: "route" },
+      requires: {
+        auth_helpers: ["requireUser"],
+        tenant_helpers: ["scopeProjectToTenant"],
+        tenant_keys: ["tenantId"],
+        tenant_sources: ["session"],
+        data_operations: ["findMany", "delete"]
+      }
+    });
+    const session = SecurityConventionSchema.parse({
+      contract_id: "security_session_trust",
+      kind: "session_object_must_come_from_trusted_helper",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: { file_roles: ["api_route"] },
+      scope: { check_scope: "changed-files", applies_to: "route" },
+      requires: { auth_helpers: ["requireUser"] }
+    });
+
+    expect(authorization.kind).toBe("api_route_requires_authorization");
+    expect(tenant.kind).toBe("api_route_requires_tenant_scope");
+    expect(session.kind).toBe("session_object_must_come_from_trusted_helper");
+  });
+
+  it("rejects impossible phase4 proof states", () => {
+    const proof = {
+      proof_id: "proof_phase4",
+      proof_version: "security-boundary-proof/v1",
+      route: {
+        route_id: "route_projects_delete",
+        file_path: "app/api/projects/route.ts",
+        file_role: "api_route"
+      },
+      contracts: [],
+      capability_status: [],
+      auth: { required: false, proven: false, proof_kind: "none", trusted_guard_calls: [], dominated_sinks: [], undominated_sinks: [] },
+      session_trust: {
+        required: true,
+        proven: true,
+        trusted_sessions: [],
+        missing_trust: [{ fact_id: "fact_session", variable: "session", reason: "derived_from_request" }]
+      },
+      authorization: {
+        required: true,
+        proven: true,
+        role_or_policy_guards: [{ fact_id: "fact_role", policy_id: "authorization_require_role", roles: ["admin"], permissions: [], subject_var: "session.user" }],
+        missing: [{ reason: "session_not_trusted", sink_fact_id: "sink_delete" }]
+      },
+      tenant: {
+        required: true,
+        proven: true,
+        tenant_sources: [{ fact_id: "fact_tenant", source: "body", key: "tenantId", trusted: false }],
+        predicates: [{ fact_id: "fact_predicate", data_operation_fact_id: "fact_delete", tenant_key: "tenantId", predicate_kind: "equality" }],
+        missing: [{ data_operation_fact_id: "fact_delete", reason: "tenant_source_untrusted" }]
+      },
+      missing_proof: [],
+      parser_gaps: [],
+      result: { proof_status: "proven", enforcement_result: "pass", can_block: false, finding_ids: [] }
+    };
+
+    expect(() => SecurityBoundaryProofSchema.parse(proof)).toThrow(/phase4 proven proof cannot include missing/i);
+  });
+
+  it("validates phase4 parser gaps from engine output", () => {
+    expect(SecurityParserGapCodeSchema.parse("unsupported_tenant_dynamic_property")).toBe("unsupported_tenant_dynamic_property");
+    expect(SecurityParserGapCodeSchema.parse("unsupported_tenant_query_object_alias")).toBe("unsupported_tenant_query_object_alias");
+    expect(SecurityParserGapCodeSchema.parse("unsupported_session_nested_destructure")).toBe("unsupported_session_nested_destructure");
+  });
+
   it("rejects impossible request validation proof states", () => {
     const proof = validSecurityBoundaryProof({
       request_validation: {

@@ -38,7 +38,7 @@ import {
   findingFingerprint
 } from "./finding-fingerprint.js";
 import { enforcementResultFor,isActiveConvention,isForbiddenImport } from "./rule-evaluation.js";
-import { findContractWaiverForImport,findContractWaiverForPath,isExceptedImport,isExceptedPath,waiverRequiresReapproval } from "./waivers.js";
+import { findContractWaiverForImport,isExceptedImport,isExceptedPath,waiverRequiresReapproval } from "./waivers.js";
 
 export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs): Promise<CommandPayload> {
   const repoId = resolveRepoId(parsed);
@@ -490,12 +490,6 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     machine_contract_versions: machineContractVersions,
     started_at: now,
     completed_at: now
-  });
-  storage.upsertSecurityBoundaryProofs({
-    repo_id: repoId,
-    scan_id: checkData.snapshots[0]?.scan_id ?? checkScanId,
-    proofs: securityBoundaryProofs,
-    created_at: now
   });
   const openNewCount = findings.filter((finding) => finding.status === "new").length;
   const outcome = checkOutcomeSummary(findings, {
@@ -1923,14 +1917,14 @@ async function runEngineOwnedAuthCheck(input: {
   checkScanId: string;
 }): Promise<{
   findings: Finding[];
-  securityBoundaryProofs: SecurityBoundaryProof[];
   waivedFindings: WaivedFinding[];
   waivedFindingsCount: number;
+  securityBoundaryProofs: SecurityBoundaryProof[];
 }> {
   const findings: Finding[] = [];
-  const securityBoundaryProofs: SecurityBoundaryProof[] = [];
   const waivedFindings: WaivedFinding[] = [];
   let waivedFindingsCount = 0;
+  const securityBoundaryProofs: SecurityBoundaryProof[] = [];
 
   for (const convention of input.contract.conventions) {
     if (
@@ -1938,7 +1932,10 @@ async function runEngineOwnedAuthCheck(input: {
         convention.kind !== "api_route_requires_auth_helper" &&
         convention.kind !== "api_route_requires_request_validation" &&
         convention.kind !== "api_route_forbids_sensitive_response_fields" &&
-        convention.kind !== "api_route_forbids_secret_exposure"
+        convention.kind !== "api_route_forbids_secret_exposure" &&
+        convention.kind !== "session_object_must_come_from_trusted_helper" &&
+        convention.kind !== "api_route_requires_authorization" &&
+        convention.kind !== "api_route_requires_tenant_scope"
       ) ||
       convention.enforcement_mode === "off" ||
       convention.enforcement_capability !== "deterministic_check" ||
@@ -1989,48 +1986,66 @@ async function runEngineOwnedAuthCheck(input: {
         .map((fact) => fact.id);
       const preserved = preservedGovernanceStatus(input.existingFindings.get(engineFinding.fingerprint));
       const isRequestValidationFinding = engineFinding.rule_id === "api_route_requires_request_validation";
+      const isPhase5Finding = isPhase5SecurityFinding(engineFinding.rule_id);
+      const isPhase4Finding = isPhase4SecurityFinding(engineFinding.rule_id);
       const proofForFinding = result.security_boundary_proofs.find((proof) =>
         proof.result.finding_ids.includes(engineFinding.id)
       );
-      const isPhase5Finding = engineFinding.rule_id === "api_route_forbids_sensitive_response_fields" ||
-        engineFinding.rule_id === "api_route_forbids_secret_exposure";
-      if (isPhase5Finding) {
-        const waiver = findContractWaiverForPath(evidence.file_path, input.contract, input.now);
-        if (waiver) {
-          const staleWaiver = waiverRequiresReapproval(
-            waiver,
+      const waiver = isPhase4Finding || isPhase5Finding
+        ? findContractWaiverForImport(
             evidence.file_path,
-            snapshot?.content_hash
-          );
-          if (!staleWaiver) {
-            waivedFindingsCount += 1;
-            waivedFindings.push({
-              waiver_id: waiver.id,
-              convention_id: engineFinding.convention_id,
-              file_path: evidence.file_path,
-              symbol: "",
-              import_source: "",
-              line: evidenceStartLine,
-              reason: waiver.reason
-            });
-            continue;
-          }
+            isPhase5Finding
+              ? phase5ExpectedLayer(engineFinding.rule_id)
+              : phase4ExpectedLayer(engineFinding.rule_id),
+            isPhase5Finding
+              ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
+              : phase4ActualLayer(proofForFinding),
+            input.contract,
+            input.now
+          )
+        : undefined;
+      if (waiver) {
+        const staleWaiver = waiverRequiresReapproval(
+          waiver,
+          evidence.file_path,
+          snapshot?.content_hash
+        );
+        if (staleWaiver) {
           findings.push(waiverReapprovalFinding({
             repoId: input.repoId,
             repoContractId: input.contract.id,
-            conventionId: convention.id,
+            conventionId: engineFinding.convention_id,
             checkId: input.checkId,
             scanId: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
             filePath: evidence.file_path,
             line: evidenceStartLine,
-            symbol: "",
-            importSource: "",
+            symbol: isPhase5Finding
+              ? phase5ExpectedLayer(engineFinding.rule_id)
+              : phase4ExpectedLayer(engineFinding.rule_id),
+            importSource: isPhase5Finding
+              ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
+              : phase4ActualLayer(proofForFinding),
             fileHash: snapshot?.content_hash ?? "",
             waiverId: waiver.id,
             now: input.now
           }));
-          continue;
+        } else {
+          waivedFindingsCount += 1;
+          waivedFindings.push({
+            waiver_id: waiver.id,
+            convention_id: engineFinding.convention_id,
+            file_path: evidence.file_path,
+            symbol: isPhase5Finding
+              ? phase5ExpectedLayer(engineFinding.rule_id)
+              : phase4ExpectedLayer(engineFinding.rule_id),
+            import_source: isPhase5Finding
+              ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
+              : phase4ActualLayer(proofForFinding),
+            line: evidenceStartLine,
+            reason: waiver.reason
+          });
         }
+        continue;
       }
       findings.push({
         id: engineFinding.id,
@@ -2056,19 +2071,27 @@ async function runEngineOwnedAuthCheck(input: {
           file_hash: snapshot?.content_hash ?? "",
           redaction_state: "none"
         }],
-        expected_layer: isPhase5Finding
-          ? phase5ExpectedLayer(engineFinding.rule_id)
-          : isRequestValidationFinding ? "request_validation" : "auth_guard",
-        actual_layer: isPhase5Finding
-          ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
-          : isRequestValidationFinding
-            ? requestValidationActualLayer(proofForFinding)
+        expected_layer: isRequestValidationFinding
+          ? "request_validation"
+          : isPhase5Finding
+            ? phase5ExpectedLayer(engineFinding.rule_id)
+          : isPhase4Finding
+            ? phase4ExpectedLayer(engineFinding.rule_id)
+            : "auth_guard",
+        actual_layer: isRequestValidationFinding
+          ? requestValidationActualLayer(proofForFinding)
+          : isPhase5Finding
+            ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
+          : isPhase4Finding
+            ? phase4ActualLayer(proofForFinding)
             : "missing_auth_guard",
         graph_path: [evidence.file_path],
-        suggested_fix: isPhase5Finding
-          ? phase5SuggestedFix(engineFinding.rule_id)
-          : isRequestValidationFinding
-            ? "Validate request input with an accepted validator before using it at protected route sinks."
+        suggested_fix: isRequestValidationFinding
+          ? "Validate request input with an accepted validator before using it at protected route sinks."
+          : isPhase5Finding
+            ? phase5SuggestedFix(engineFinding.rule_id)
+          : isPhase4Finding
+            ? "Add accepted session trust, authorization, and tenant-scope proof before protected route sinks."
             : "Call an accepted auth helper before route data operations or response sinks.",
         related_node_ids: engineFinding.related_node_ids,
         created_at: input.now
@@ -2076,7 +2099,18 @@ async function runEngineOwnedAuthCheck(input: {
     }
   }
 
-  return { findings, securityBoundaryProofs, waivedFindings, waivedFindingsCount };
+  return { findings, waivedFindings, waivedFindingsCount, securityBoundaryProofs };
+}
+
+function isPhase5SecurityFinding(ruleId: string): boolean {
+  return ruleId === "api_route_forbids_sensitive_response_fields" ||
+    ruleId === "api_route_forbids_secret_exposure";
+}
+
+function isPhase4SecurityFinding(ruleId: string): boolean {
+  return ruleId === "session_object_must_come_from_trusted_helper" ||
+    ruleId === "api_route_requires_authorization" ||
+    ruleId === "api_route_requires_tenant_scope";
 }
 
 function phase5ExpectedLayer(ruleId: string): string {
@@ -2087,19 +2121,25 @@ function phase5ExpectedLayer(ruleId: string): string {
 
 function phase5SuggestedFix(ruleId: string): string {
   return ruleId === "api_route_forbids_sensitive_response_fields"
-    ? "Remove the sensitive field from the response or pass it through an accepted serializer."
+    ? "Filter accepted sensitive response fields with an accepted serializer before responding."
     : "Keep secret reads out of responses and accepted log sinks.";
 }
 
 function phase5ActualLayer(proof: unknown, ruleId: string): string {
   if (!proof || typeof proof !== "object") {
     return ruleId === "api_route_forbids_sensitive_response_fields"
-      ? "sensitive_response_field_unfiltered"
+      ? "dynamic_response_shape_missing_proof"
       : "secret_exposure_not_excluded";
   }
   const candidate = proof as {
-    missing_proof?: Array<{ code?: unknown }>;
     parser_gaps?: Array<{ code?: unknown }>;
+    missing_proof?: Array<{ code?: unknown }>;
+    response_shape?: {
+      sensitive_leaks?: unknown[];
+    };
+    sinks?: {
+      secrets?: unknown[];
+    };
   };
   const missingProofCode = candidate.missing_proof?.find((missing) =>
     typeof missing.code === "string"
@@ -2110,11 +2150,34 @@ function phase5ActualLayer(proof: unknown, ruleId: string): string {
   const parserGapCode = candidate.parser_gaps?.find((gap) =>
     typeof gap.code === "string"
   )?.code;
-  return typeof parserGapCode === "string"
-    ? parserGapCode
-    : ruleId === "api_route_forbids_sensitive_response_fields"
+  if (typeof parserGapCode === "string") {
+    return parserGapCode;
+  }
+  if (ruleId === "api_route_forbids_sensitive_response_fields") {
+    return (candidate.response_shape?.sensitive_leaks?.length ?? 0) > 0
       ? "sensitive_response_field_unfiltered"
-      : "secret_exposure_not_excluded";
+      : "dynamic_response_shape_missing_proof";
+  }
+  return (candidate.sinks?.secrets?.length ?? 0) > 0
+    ? "secret_exposure_not_excluded"
+    : "secret_exposure_not_excluded";
+}
+
+function phase4ExpectedLayer(ruleId: string): string {
+  if (ruleId === "session_object_must_come_from_trusted_helper") {
+    return "session_trust";
+  }
+  if (ruleId === "api_route_requires_authorization") {
+    return "authorization";
+  }
+  if (ruleId === "api_route_requires_tenant_scope") {
+    return "tenant_scope";
+  }
+  return "security_boundary";
+}
+
+function phase4ActualLayer(proof: SecurityBoundaryProof | undefined): string {
+  return proof?.missing_proof[0]?.code ?? proof?.parser_gaps[0]?.code ?? "missing_proof";
 }
 
 function requestValidationActualLayer(proof: unknown): string {

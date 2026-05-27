@@ -355,6 +355,91 @@ describe("engine security contract schemas", () => {
     expect(JSON.stringify(event)).not.toContain("cookie=");
   });
 
+  it("validates phase4 parser gaps from engine output", () => {
+    const event = parseEngineSecurityProofEvent({
+      event: "SecurityProof",
+      schema_version: "engine.security.proof/v1",
+      proofs: [{
+        proof_id: "proof_phase4_parser_gap",
+        proof_version: "security-boundary-proof/v1",
+        route: {
+          route_id: "route_projects_get",
+          file_path: "app/api/projects/route.ts",
+          file_role: "api_route"
+        },
+        contracts: [{
+          contract_id: "security_api_tenant_scope",
+          kind: "api_route_requires_tenant_scope",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }],
+        capability_status: [{
+          name: "tenant_scope",
+          status: "partial",
+          can_block: true,
+          parser_gap_ids: ["gap_tenant_dynamic"],
+          missing_proof_ids: ["missing_tenant"]
+        }],
+        auth: {
+          required: false,
+          proven: false,
+          proof_kind: "none",
+          trusted_guard_calls: [],
+          dominated_sinks: [],
+          undominated_sinks: []
+        },
+        session_trust: {
+          required: true,
+          proven: true,
+          trusted_sessions: [{ fact_id: "fact_session", variable: "session", source: "auth_result", trust: "trusted" }],
+          missing_trust: []
+        },
+        authorization: {
+          required: false,
+          proven: false,
+          role_or_policy_guards: [],
+          missing: []
+        },
+        tenant: {
+          required: true,
+          proven: false,
+          tenant_sources: [{ fact_id: "fact_tenant", source: "session", key: "tenantId", trusted: true }],
+          predicates: [],
+          missing: [{ data_operation_fact_id: "fact_find_many", reason: "parser_gap" }]
+        },
+        missing_proof: [{
+          id: "missing_tenant",
+          capability: "tenant_scope",
+          code: "tenant_predicate_missing",
+          blocks_enforcement: true,
+          fact_ids: ["fact_find_many"],
+          graph_edge_ids: []
+        }],
+        parser_gaps: [{
+          parser_gap_id: "gap_tenant_dynamic",
+          capability: "tenant_scope",
+          code: "unsupported_tenant_dynamic_property",
+          file_path: "app/api/projects/route.ts",
+          reason: "Computed tenant predicate key prevents deterministic tenant proof",
+          affected_contract_kinds: ["api_route_requires_tenant_scope"],
+          affected_route_ids: ["route_projects_get"],
+          missing_proof_ids: ["missing_tenant"],
+          blocks_enforcement: true
+        }],
+        result: {
+          proof_status: "parser_gap",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: ["finding_tenant"]
+        }
+      }]
+    });
+
+    expect(event.proofs[0]?.parser_gaps[0]?.code).toBe("unsupported_tenant_dynamic_property");
+    expect(JSON.stringify(event)).not.toContain("tenant-");
+  });
+
   it("rejects impossible request validation proof states", () => {
     const event = {
       event: "SecurityProof",

@@ -7,7 +7,10 @@ export const SecurityCapabilityNameSchema = z.enum([
   "middleware_coverage",
   "request_validation_facts",
   "response_shape_facts",
-  "secret_exposure"
+  "secret_exposure",
+  "session_trust",
+  "authorization",
+  "tenant_scope"
 ]);
 
 export const SecurityMissingProofCodeSchema = z.enum([
@@ -21,6 +24,12 @@ export const SecurityMissingProofCodeSchema = z.enum([
   "sensitive_response_field_unfiltered",
   "dynamic_response_shape_missing_proof",
   "secret_exposure_not_excluded",
+  "session_not_trusted",
+  "authorization_guard_missing",
+  "authorization_guard_not_dominating_sink",
+  "tenant_predicate_missing",
+  "tenant_source_untrusted",
+  "tenant_predicate_not_bound_to_query",
   "unsupported_callback_boundary",
   "unsupported_dynamic_control_flow",
   "route_binding_unresolved",
@@ -36,6 +45,9 @@ export const SecurityParserGapCodeSchema = z.enum([
   "unsupported_request_input_destructure",
   "dynamic_response_shape",
   "unsupported_destructuring_or_spread",
+  "unsupported_tenant_dynamic_property",
+  "unsupported_tenant_query_object_alias",
+  "unsupported_session_nested_destructure",
   "unsupported_callback_boundary"
 ]);
 
@@ -44,7 +56,10 @@ const SecurityContractKindSchema = z.enum([
   "middleware_must_cover_routes",
   "api_route_requires_request_validation",
   "api_route_forbids_sensitive_response_fields",
-  "api_route_forbids_secret_exposure"
+  "api_route_forbids_secret_exposure",
+  "session_object_must_come_from_trusted_helper",
+  "api_route_requires_authorization",
+  "api_route_requires_tenant_scope"
 ]);
 
 const Phase5SensitiveFieldSchema = z.object({
@@ -277,6 +292,60 @@ const SecurityRequestValidationProofSchema = z.object({
   }))
 });
 
+const SecuritySessionTrustProofSchema = z.object({
+  required: z.boolean(),
+  proven: z.boolean(),
+  trusted_sessions: z.array(z.object({
+    fact_id: z.string().min(1),
+    variable: z.string().min(1),
+    source: z.string().min(1).optional(),
+    trust: z.enum(["trusted", "untrusted", "unknown"])
+  }).passthrough()),
+  missing_trust: z.array(z.object({
+    fact_id: z.string().min(1),
+    variable: z.string().min(1),
+    reason: z.enum(["derived_from_request", "unknown_helper", "missing_auth_guard", "parser_gap"])
+  }))
+});
+
+const SecurityAuthorizationProofSchema = z.object({
+  required: z.boolean(),
+  proven: z.boolean(),
+  role_or_policy_guards: z.array(z.object({
+    fact_id: z.string().min(1),
+    policy_id: z.string().min(1).optional(),
+    roles: z.array(z.string().min(1)).optional().default([]),
+    permissions: z.array(z.string().min(1)).optional().default([]),
+    resource_var: z.string().min(1).optional(),
+    subject_var: z.string().min(1).optional()
+  })),
+  missing: z.array(z.object({
+    reason: z.enum(["no_authorization_guard", "guard_not_dominating_sink", "unknown_policy_helper", "session_not_trusted", "authorization_guard_missing", "authorization_guard_not_dominating_sink"]),
+    sink_fact_id: z.string().min(1).optional()
+  }))
+});
+
+const SecurityTenantProofSchema = z.object({
+  required: z.boolean(),
+  proven: z.boolean(),
+  tenant_sources: z.array(z.object({
+    fact_id: z.string().min(1),
+    source: z.enum(["session", "path_param", "header", "body", "query"]),
+    key: z.string().min(1).optional(),
+    trusted: z.boolean()
+  })),
+  predicates: z.array(z.object({
+    fact_id: z.string().min(1),
+    data_operation_fact_id: z.string().min(1),
+    tenant_key: z.string().min(1),
+    predicate_kind: z.enum(["equality", "scoped_helper", "policy_helper"])
+  })),
+  missing: z.array(z.object({
+    data_operation_fact_id: z.string().min(1),
+    reason: z.enum(["no_tenant_predicate", "untrusted_tenant_source", "predicate_not_bound_to_query", "parser_gap", "tenant_predicate_missing", "tenant_source_untrusted", "tenant_predicate_not_bound_to_query"])
+  }))
+});
+
 const SecurityResponseShapeProofSchema = z.object({
   required: z.boolean(),
   proven: z.boolean(),
@@ -362,6 +431,25 @@ export const SecurityBoundaryProofSchema = z.object({
   }).optional().default({
     secrets: []
   }),
+  session_trust: SecuritySessionTrustProofSchema.optional().default({
+    required: false,
+    proven: false,
+    trusted_sessions: [],
+    missing_trust: []
+  }),
+  authorization: SecurityAuthorizationProofSchema.optional().default({
+    required: false,
+    proven: false,
+    role_or_policy_guards: [],
+    missing: []
+  }),
+  tenant: SecurityTenantProofSchema.optional().default({
+    required: false,
+    proven: false,
+    tenant_sources: [],
+    predicates: [],
+    missing: []
+  }),
   missing_proof: z.array(SecurityMissingProofSchema),
   parser_gaps: z.array(SecurityParserGapSchema),
   result: z.object({
@@ -404,6 +492,35 @@ export const SecurityBoundaryProofSchema = z.object({
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: "request validation unvalidated uses require a non-proven proof status"
+    });
+  }
+
+  if (
+    (proof.session_trust.proven && proof.session_trust.missing_trust.length > 0) ||
+    (proof.authorization.proven && proof.authorization.missing.length > 0) ||
+    (proof.tenant.proven && proof.tenant.missing.length > 0)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "phase4 proven proof cannot include missing trust, authorization, or tenant proof"
+    });
+  }
+
+  if (proof.authorization.proven && proof.session_trust.missing_trust.length > 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "authorization proven proof cannot reference untrusted session sources"
+    });
+  }
+
+  if (
+    proof.tenant.proven &&
+    proof.tenant.tenant_sources.length > 0 &&
+    proof.tenant.tenant_sources.every((source) => !source.trusted)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "tenant proven proof requires at least one trusted tenant source"
     });
   }
 
