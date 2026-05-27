@@ -1084,12 +1084,16 @@ export class SqliteDriftStorage {
       .prepare(`
         INSERT INTO convention_candidates (
           id, repo_id, scan_id, kind, statement, rationale, scope_json, matcher_json,
+          requires_json, matcher_fingerprint, scope_fingerprint, graph_fingerprint,
+          evidence_fingerprint, required_capabilities_json, reason_not_blocking,
           suggested_severity, suggested_enforcement_mode, enforcement_capability,
           confidence_label, scoring_json, evidence_refs_json, counterexample_refs_json,
           status, created_at
         )
         VALUES (
           @id, @repo_id, @scan_id, @kind, @statement, @rationale, @scope_json, @matcher_json,
+          @requires_json, @matcher_fingerprint, @scope_fingerprint, @graph_fingerprint,
+          @evidence_fingerprint, @required_capabilities_json, @reason_not_blocking,
           @suggested_severity, @suggested_enforcement_mode, @enforcement_capability,
           @confidence_label, @scoring_json, @evidence_refs_json, @counterexample_refs_json,
           @status, @created_at
@@ -1099,6 +1103,13 @@ export class SqliteDriftStorage {
           rationale = excluded.rationale,
           scope_json = excluded.scope_json,
           matcher_json = excluded.matcher_json,
+          requires_json = excluded.requires_json,
+          matcher_fingerprint = excluded.matcher_fingerprint,
+          scope_fingerprint = excluded.scope_fingerprint,
+          graph_fingerprint = excluded.graph_fingerprint,
+          evidence_fingerprint = excluded.evidence_fingerprint,
+          required_capabilities_json = excluded.required_capabilities_json,
+          reason_not_blocking = excluded.reason_not_blocking,
           suggested_severity = excluded.suggested_severity,
           suggested_enforcement_mode = excluded.suggested_enforcement_mode,
           enforcement_capability = excluded.enforcement_capability,
@@ -1106,13 +1117,27 @@ export class SqliteDriftStorage {
           scoring_json = excluded.scoring_json,
           evidence_refs_json = excluded.evidence_refs_json,
           counterexample_refs_json = excluded.counterexample_refs_json,
-          status = excluded.status
+          status = CASE
+            WHEN convention_candidates.status = 'rejected'
+              AND COALESCE(convention_candidates.evidence_fingerprint, '') = COALESCE(excluded.evidence_fingerprint, '')
+            THEN convention_candidates.status
+            ELSE excluded.status
+          END
       `)
       .run({
         ...parsed,
         rationale: parsed.rationale ?? null,
         scope_json: stringifyJson(parsed.scope),
         matcher_json: stringifyJson(parsed.matcher),
+        requires_json: parsed.requires ? stringifyJson(parsed.requires) : null,
+        matcher_fingerprint: parsed.matcher_fingerprint ?? null,
+        scope_fingerprint: parsed.scope_fingerprint ?? null,
+        graph_fingerprint: parsed.graph_fingerprint ?? null,
+        evidence_fingerprint: parsed.evidence_fingerprint ?? null,
+        required_capabilities_json: parsed.required_capabilities
+          ? stringifyJson(parsed.required_capabilities)
+          : null,
+        reason_not_blocking: parsed.reason_not_blocking ?? null,
         scoring_json: stringifyJson(parsed.scoring),
         evidence_refs_json: stringifyJson(parsed.evidence_refs),
         counterexample_refs_json: stringifyJson(parsed.counterexample_refs)
@@ -1147,13 +1172,13 @@ export class SqliteDriftStorage {
       .prepare(`
         INSERT INTO accepted_conventions (
           id, repo_id, contract_id, kind, statement, rationale, scope_json, matcher_json,
-          severity, enforcement_mode, enforcement_capability, exceptions_json,
+          requires_json, severity, enforcement_mode, enforcement_capability, exceptions_json,
           evidence_refs_json, counterexample_refs_json, accepted_by, accepted_at,
           updated_at, expires_at
         )
         VALUES (
           @id, @repo_id, @contract_id, @kind, @statement, @rationale, @scope_json, @matcher_json,
-          @severity, @enforcement_mode, @enforcement_capability, @exceptions_json,
+          @requires_json, @severity, @enforcement_mode, @enforcement_capability, @exceptions_json,
           @evidence_refs_json, @counterexample_refs_json, @accepted_by, @accepted_at,
           @updated_at, @expires_at
         )
@@ -1163,6 +1188,7 @@ export class SqliteDriftStorage {
           rationale = excluded.rationale,
           scope_json = excluded.scope_json,
           matcher_json = excluded.matcher_json,
+          requires_json = excluded.requires_json,
           severity = excluded.severity,
           enforcement_mode = excluded.enforcement_mode,
           enforcement_capability = excluded.enforcement_capability,
@@ -1178,6 +1204,7 @@ export class SqliteDriftStorage {
         rationale: parsed.rationale ?? null,
         scope_json: stringifyJson(parsed.scope),
         matcher_json: stringifyJson(parsed.matcher),
+        requires_json: parsed.requires ? stringifyJson(parsed.requires) : null,
         exceptions_json: stringifyJson(parsed.exceptions),
         evidence_refs_json: stringifyJson(parsed.evidence_refs),
         counterexample_refs_json: stringifyJson(parsed.counterexample_refs),
@@ -1759,9 +1786,18 @@ function conventionCandidateFromRow(row: unknown): ConventionCandidate {
     rationale: record.rationale ?? undefined,
     scope: parseJsonObject(record.scope_json),
     matcher: parseJsonObject(record.matcher_json),
+    requires: record.requires_json ? parseJsonObject(record.requires_json) : undefined,
     scoring: parseJsonObject(record.scoring_json),
     evidence_refs: parseJsonArray(record.evidence_refs_json),
-    counterexample_refs: parseJsonArray(record.counterexample_refs_json)
+    counterexample_refs: parseJsonArray(record.counterexample_refs_json),
+    matcher_fingerprint: record.matcher_fingerprint ?? undefined,
+    scope_fingerprint: record.scope_fingerprint ?? undefined,
+    graph_fingerprint: record.graph_fingerprint ?? undefined,
+    evidence_fingerprint: record.evidence_fingerprint ?? undefined,
+    required_capabilities: record.required_capabilities_json
+      ? parseJsonArray(record.required_capabilities_json)
+      : undefined,
+    reason_not_blocking: record.reason_not_blocking ?? undefined
   });
 }
 
@@ -1772,6 +1808,7 @@ function acceptedConventionFromRow(row: unknown): AcceptedConvention {
     rationale: record.rationale ?? undefined,
     scope: parseJsonObject(record.scope_json),
     matcher: parseJsonObject(record.matcher_json),
+    requires: record.requires_json ? parseJsonObject(record.requires_json) : undefined,
     exceptions: parseJsonArray(record.exceptions_json),
     evidence_refs: parseJsonArray(record.evidence_refs_json),
     counterexample_refs: parseJsonArray(record.counterexample_refs_json),

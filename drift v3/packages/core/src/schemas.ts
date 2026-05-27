@@ -111,7 +111,14 @@ export const ConventionMatcherSchema = z.object({
   allowed_imports: z.array(z.string().min(1)).optional(),
   required_calls: z.array(z.string().min(1)).optional(),
   allowed_delegate_imports: z.array(z.string().min(1)).optional(),
-  applies_to_file_roles: z.array(FileRoleSchema).optional()
+  applies_to_file_roles: z.array(FileRoleSchema).optional(),
+  file_roles: z.array(FileRoleSchema).optional(),
+  path_globs: z.array(RepoRelativePatternSchema).optional(),
+  route_paths: z.array(z.string().min(1)).optional(),
+  methods: z.array(z.string().min(1)).optional(),
+  protection_kinds: z.array(z.string().min(1)).optional(),
+  middleware_ids: z.array(z.string().min(1)).optional(),
+  matcher_fact_ids: z.array(z.string().min(1)).optional()
 });
 
 export const EnforcementCapabilitySchema = z.enum([
@@ -686,6 +693,7 @@ export const ConventionCandidateSchema = z.object({
   rationale: z.string().optional(),
   scope: ConventionScopeSchema,
   matcher: ConventionMatcherSchema,
+  requires: z.record(z.unknown()).optional(),
   suggested_severity: SeveritySchema,
   suggested_enforcement_mode: EnforcementModeSchema,
   enforcement_capability: EnforcementCapabilitySchema,
@@ -693,6 +701,16 @@ export const ConventionCandidateSchema = z.object({
   scoring: ConventionScoreSchema,
   evidence_refs: z.array(EvidenceRefSchema),
   counterexample_refs: z.array(EvidenceRefSchema),
+  matcher_fingerprint: z.string().min(1).optional(),
+  scope_fingerprint: z.string().min(1).optional(),
+  graph_fingerprint: z.string().min(1).optional(),
+  evidence_fingerprint: z.string().min(1).optional(),
+  required_capabilities: z.array(z.string().min(1)).optional(),
+  reason_not_blocking: z.enum([
+    "candidate_not_accepted",
+    "candidate_incomplete",
+    "candidate_heuristic"
+  ]).optional(),
   status: ConventionStatusSchema,
   created_at: z.string().datetime()
 });
@@ -720,6 +738,9 @@ export const AcceptedConventionSchema = z.object({
 
 export const RejectedInferenceSchema = z.object({
   candidate_id: z.string().min(1),
+  evidence_fingerprint: z.string().min(1).optional(),
+  matcher_fingerprint: z.string().min(1).optional(),
+  scope_fingerprint: z.string().min(1).optional(),
   reason: z.string().min(1),
   rejected_by: z.string().min(1),
   rejected_at: z.string().datetime()

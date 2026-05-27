@@ -35,6 +35,7 @@ try {
   ]);
   const databasePath = started.state.database_path;
   const repoId = started.repo.id;
+  promoteDirectDataAccessConventionToBlock({ databasePath, repoId });
 
   const requiredCheckCommand = "node -e \"process.stdout.write('ok')\"";
   addRequiredProofContract({
@@ -312,6 +313,34 @@ async function createFixture(dir) {
     ""
   ].join("\n"));
   return { repoRoot, stateRoot };
+}
+
+function promoteDirectDataAccessConventionToBlock({ databasePath, repoId }) {
+  const storage = openDriftStorage({ databasePath });
+  try {
+    const contract = storage.getRepoContract(repoId);
+    if (!contract) {
+      throw new Error(`No repo contract exists for ${repoId}.`);
+    }
+    const conventions = storage.listAcceptedConventions(repoId).map((convention) =>
+      convention.kind === "api_route_no_direct_data_access"
+        ? { ...convention, enforcement_mode: "block" }
+        : convention
+    );
+    for (const convention of conventions) {
+      storage.upsertAcceptedConvention(repoId, convention);
+    }
+    storage.upsertRepoContract({
+      ...contract,
+      conventions: conventions.map((convention) =>
+        convention.kind === "api_route_no_direct_data_access"
+          ? { ...convention, enforcement_mode: "block" }
+          : convention
+      )
+    });
+  } finally {
+    storage.close();
+  }
 }
 
 function addRequiredProofContract({ databasePath, repoId, command }) {

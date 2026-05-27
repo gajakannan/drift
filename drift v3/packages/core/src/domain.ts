@@ -94,6 +94,13 @@ export interface ConventionMatcher {
   required_calls?: string[];
   allowed_delegate_imports?: string[];
   applies_to_file_roles?: FileRole[];
+  file_roles?: FileRole[];
+  path_globs?: string[];
+  route_paths?: string[];
+  methods?: string[];
+  protection_kinds?: string[];
+  middleware_ids?: string[];
+  matcher_fact_ids?: string[];
 }
 
 export type EnforcementCapability =
@@ -639,6 +646,7 @@ export interface ConventionCandidate {
   rationale?: string;
   scope: ConventionScope;
   matcher: ConventionMatcher;
+  requires?: Record<string, unknown>;
   suggested_severity: Severity;
   suggested_enforcement_mode: EnforcementMode;
   enforcement_capability: EnforcementCapability;
@@ -646,6 +654,12 @@ export interface ConventionCandidate {
   scoring: ConventionScore;
   evidence_refs: EvidenceRef[];
   counterexample_refs: EvidenceRef[];
+  matcher_fingerprint?: string;
+  scope_fingerprint?: string;
+  graph_fingerprint?: string;
+  evidence_fingerprint?: string;
+  required_capabilities?: string[];
+  reason_not_blocking?: "candidate_not_accepted" | "candidate_incomplete" | "candidate_heuristic";
   status: ConventionStatus;
   created_at: string;
 }
@@ -673,6 +687,9 @@ export interface AcceptedConvention {
 
 export interface RejectedInference {
   candidate_id: string;
+  evidence_fingerprint?: string;
+  matcher_fingerprint?: string;
+  scope_fingerprint?: string;
   reason: string;
   rejected_by: string;
   rejected_at: string;
