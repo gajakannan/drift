@@ -63,7 +63,8 @@ describe("SQLite Drift storage", () => {
       "020_machine_contract_versions",
       "021_graph_evidence_confidence",
       "022_fact_imported_name",
-      "023_security_boundary_proofs"
+      "023_security_boundary_proofs",
+      "024_phase7_candidate_election_metadata"
     ]);
     storage.close();
   });
@@ -132,7 +133,8 @@ describe("SQLite Drift storage", () => {
       "020_machine_contract_versions",
       "021_graph_evidence_confidence",
       "022_fact_imported_name",
-      "023_security_boundary_proofs"
+      "023_security_boundary_proofs",
+      "024_phase7_candidate_election_metadata"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -1786,6 +1788,7 @@ describe("SQLite Drift storage", () => {
         forbidden_imports: ["@/lib/prisma"],
         applies_to_file_roles: ["api_route"]
       },
+      requires: { forbidden_imports: ["@/lib/prisma"] },
       suggested_severity: "error",
       suggested_enforcement_mode: "block",
       enforcement_capability: "deterministic_check",
@@ -1799,6 +1802,12 @@ describe("SQLite Drift storage", () => {
       },
       evidence_refs: [],
       counterexample_refs: [],
+      matcher_fingerprint: "matcher_fp",
+      scope_fingerprint: "scope_fp",
+      graph_fingerprint: "graph_fp",
+      evidence_fingerprint: "evidence_fp",
+      required_capabilities: ["syntax_facts"],
+      reason_not_blocking: "candidate_not_accepted",
       status: "candidate",
       created_at: "2026-05-10T00:00:01.000Z"
     });
@@ -1814,6 +1823,7 @@ describe("SQLite Drift storage", () => {
         forbidden_imports: ["@/lib/prisma"],
         applies_to_file_roles: ["api_route" as const]
       },
+      requires: { forbidden_imports: ["@/lib/prisma"] },
       severity: "error" as const,
       enforcement_mode: "block" as const,
       enforcement_capability: "deterministic_check" as const,
@@ -1848,9 +1858,17 @@ describe("SQLite Drift storage", () => {
       agent_permissions: []
     });
 
-    expect(storage.getConventionCandidate("candidate_no_direct_db")?.status).toBe("candidate");
+    expect(storage.getConventionCandidate("candidate_no_direct_db")).toMatchObject({
+      status: "candidate",
+      requires: { forbidden_imports: ["@/lib/prisma"] },
+      evidence_fingerprint: "evidence_fp",
+      reason_not_blocking: "candidate_not_accepted"
+    });
     expect(storage.listConventionCandidates("repo_abc", { status: "candidate" })).toHaveLength(1);
-    expect(storage.listAcceptedConventions("repo_abc")[0]?.id).toBe("convention_no_direct_db");
+    expect(storage.listAcceptedConventions("repo_abc")[0]).toMatchObject({
+      id: "convention_no_direct_db",
+      requires: { forbidden_imports: ["@/lib/prisma"] }
+    });
     expect(storage.getRepoContract("repo_abc")?.conventions[0]?.id).toBe("convention_no_direct_db");
     storage.close();
   });

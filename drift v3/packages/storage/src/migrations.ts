@@ -695,5 +695,19 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_security_boundary_proofs_repo_route
         ON security_boundary_proofs(repo_id, route_id);
     `
+  },
+  {
+    id: "024_phase7_candidate_election_metadata",
+    sql: `
+      ALTER TABLE convention_candidates ADD COLUMN requires_json TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN matcher_fingerprint TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN scope_fingerprint TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN graph_fingerprint TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN evidence_fingerprint TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN required_capabilities_json TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN reason_not_blocking TEXT;
+
+      ALTER TABLE accepted_conventions ADD COLUMN requires_json TEXT;
+    `
   }
 ];

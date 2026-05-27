@@ -51,6 +51,7 @@ export async function inferConventionCandidatesFromEngine(input: {
       rationale: candidate.rationale,
       scope: candidate.scope,
       matcher: candidate.matcher,
+      requires: candidate.requires,
       suggested_severity: candidate.suggested_severity,
       suggested_enforcement_mode: candidate.suggested_enforcement_mode,
       enforcement_capability: candidate.enforcement_capability,
@@ -58,6 +59,12 @@ export async function inferConventionCandidatesFromEngine(input: {
       scoring: candidate.scoring,
       evidence_refs: candidate.evidence_refs,
       counterexample_refs: candidate.counterexample_refs,
+      matcher_fingerprint: candidate.matcher_fingerprint,
+      scope_fingerprint: candidate.scope_fingerprint,
+      graph_fingerprint: candidate.graph_fingerprint,
+      evidence_fingerprint: candidate.evidence_fingerprint,
+      required_capabilities: candidate.required_capabilities,
+      reason_not_blocking: candidate.reason_not_blocking,
       status: "candidate",
       created_at: input.now
     })

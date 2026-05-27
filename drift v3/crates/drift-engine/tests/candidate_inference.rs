@@ -56,7 +56,7 @@ fn infer_candidates_emits_governance_free_candidate_proposals() {
     assert!(candidates.iter().any(|candidate| {
         candidate["kind"] == "api_route_no_direct_data_access"
             && candidate["enforcement_capability"] == "deterministic_check"
-            && candidate["suggested_enforcement_mode"] == "block"
+            && candidate["suggested_enforcement_mode"] == "warn"
             && candidate.get("status").is_none()
     }));
     assert!(candidates.iter().any(|candidate| {
@@ -279,6 +279,82 @@ fn infer_candidates_ignores_repo_fixture_routes_when_repo_root_is_not_the_fixtur
         payload["candidates"].as_array().expect("candidates").len(),
         0
     );
+}
+
+#[test]
+fn infer_candidates_emits_security_phase_candidates_as_non_blocking_elections() {
+    let route_a = "app/api/users/route.ts";
+    let route_b = "app/api/projects/route.ts";
+    let facts = json!([
+        { "kind": "file_role_detected", "file_path": route_a, "name": "api_route", "start_line": 1, "end_line": 5 },
+        { "kind": "file_role_detected", "file_path": route_b, "name": "api_route", "start_line": 1, "end_line": 5 },
+        { "kind": "import_used", "file_path": route_a, "name": "requireUser", "value": "@/auth", "start_line": 1, "end_line": 1 },
+        { "kind": "import_used", "file_path": route_b, "name": "requireUser", "value": "@/auth", "start_line": 1, "end_line": 1 },
+        { "kind": "symbol_called", "file_path": route_a, "name": "requireUser", "start_line": 4, "end_line": 4 },
+        { "kind": "symbol_called", "file_path": route_b, "name": "requireUser", "start_line": 4, "end_line": 4 },
+        { "kind": "request_validation_called", "file_path": route_a, "name": "validateBody", "start_line": 5, "end_line": 5 },
+        { "kind": "request_validation_called", "file_path": route_b, "name": "validateBody", "start_line": 5, "end_line": 5 },
+        { "kind": "authorization_guard_called", "file_path": route_a, "name": "requireRole", "start_line": 6, "end_line": 6 },
+        { "kind": "authorization_guard_called", "file_path": route_b, "name": "requireRole", "start_line": 6, "end_line": 6 },
+        { "kind": "tenant_guard_called", "file_path": route_a, "name": "scopeTenant", "start_line": 7, "end_line": 7 },
+        { "kind": "tenant_guard_called", "file_path": route_b, "name": "scopeTenant", "start_line": 7, "end_line": 7 },
+        { "kind": "serializer_called", "file_path": route_a, "name": "serializeUser", "start_line": 8, "end_line": 8 },
+        { "kind": "serializer_called", "file_path": route_b, "name": "serializeUser", "start_line": 8, "end_line": 8 },
+        { "kind": "parameterized_sql_used", "file_path": route_a, "name": "safeQuery", "start_line": 9, "end_line": 9 },
+        { "kind": "parameterized_sql_used", "file_path": route_b, "name": "safeQuery", "start_line": 9, "end_line": 9 },
+        { "kind": "symbol_called", "file_path": route_a, "name": "allowlistedUrl", "start_line": 9, "end_line": 9 },
+        { "kind": "symbol_called", "file_path": route_b, "name": "allowlistedUrl", "start_line": 9, "end_line": 9 },
+        { "kind": "csrf_guard_called", "file_path": route_a, "name": "requireCsrf", "start_line": 10, "end_line": 10 },
+        { "kind": "csrf_guard_called", "file_path": route_b, "name": "requireCsrf", "start_line": 10, "end_line": 10 },
+        { "kind": "rate_limit_guard_called", "file_path": route_a, "name": "rateLimit", "start_line": 11, "end_line": 11 },
+        { "kind": "rate_limit_guard_called", "file_path": route_b, "name": "rateLimit", "start_line": 11, "end_line": 11 },
+        { "kind": "cors_policy_declared", "file_path": route_a, "name": "cors", "value": "{\"origin\":\"https://app.example.com\",\"allow_credentials\":true}", "start_line": 12, "end_line": 12 },
+        { "kind": "sensitive_field_declared", "file_path": route_a, "name": "password", "value": "{\"field_path\":\"password\",\"classification\":\"credential\"}", "start_line": 13, "end_line": 13 }
+    ]);
+    let request = json!({
+        "repo": { "repo_id": "repo_abc" },
+        "graph": { "graph_nodes": [], "graph_edges": [], "graph_evidence": [] },
+        "scan": {
+            "scan_id": "scan_abc",
+            "file_snapshots": [
+                { "file_path": route_a, "content_hash": "a".repeat(64), "byte_size": 120, "indexed": true },
+                { "file_path": route_b, "content_hash": "b".repeat(64), "byte_size": 120, "indexed": true }
+            ],
+            "facts": facts
+        }
+    });
+
+    let payload = run_infer_candidates(request);
+    let candidates = payload["candidates"].as_array().expect("candidates");
+    for expected in [
+        "api_route_requires_auth_helper",
+        "api_route_requires_request_validation",
+        "api_route_requires_authorization",
+        "api_route_requires_tenant_scope",
+        "api_route_forbids_sensitive_response_fields",
+        "api_route_forbids_raw_sql_without_params",
+        "api_route_forbids_untrusted_ssrf",
+        "api_route_requires_csrf_for_mutation",
+        "api_route_requires_rate_limit",
+        "api_route_cors_must_match_policy",
+    ] {
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate["kind"] == expected)
+            .unwrap_or_else(|| panic!("missing {expected}: {payload:#?}"));
+        assert_eq!(candidate["suggested_enforcement_mode"], "warn");
+        assert_eq!(candidate["reason_not_blocking"], "candidate_not_accepted");
+        assert!(
+            candidate["requires"].is_object(),
+            "missing requires for {expected}"
+        );
+        assert!(
+            candidate["evidence_fingerprint"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()),
+            "missing evidence fingerprint for {expected}: {candidate:#?}"
+        );
+    }
 }
 
 fn run_infer_candidates(request: Value) -> Value {

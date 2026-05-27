@@ -356,6 +356,18 @@ export const EngineCandidateSchema = z.object({
     "api_route_no_direct_data_access",
     "api_route_requires_service_delegation",
     "api_route_requires_auth_helper",
+    "middleware_must_cover_routes",
+    "api_route_requires_request_validation",
+    "session_object_must_come_from_trusted_helper",
+    "api_route_requires_authorization",
+    "api_route_requires_tenant_scope",
+    "api_route_forbids_sensitive_response_fields",
+    "api_route_forbids_secret_exposure",
+    "api_route_forbids_untrusted_ssrf",
+    "api_route_forbids_raw_sql_without_params",
+    "api_route_cors_must_match_policy",
+    "api_route_requires_csrf_for_mutation",
+    "api_route_requires_rate_limit",
     "test_expected_for_changed_module",
     "custom_briefing"
   ]),
@@ -369,6 +381,7 @@ export const EngineCandidateSchema = z.object({
   rationale: z.string().min(1).optional(),
   scope: z.record(z.unknown()),
   matcher: z.record(z.unknown()),
+  requires: z.record(z.unknown()).optional(),
   suggested_severity: z.enum(["info", "warning", "error"]),
   suggested_enforcement_mode: z.enum(["off", "brief", "warn", "block"]),
   enforcement_capability: z.enum(["briefing_only", "heuristic_check", "deterministic_check"]),
@@ -377,6 +390,12 @@ export const EngineCandidateSchema = z.object({
   required_capabilities: z.array(z.string().min(1)),
   evidence_refs: z.array(EngineCandidateEvidenceRefSchema),
   counterexample_refs: z.array(EngineCandidateEvidenceRefSchema),
+  reason_not_blocking: z.enum([
+    "candidate_not_accepted",
+    "candidate_incomplete",
+    "candidate_heuristic"
+  ]),
+  evidence_fingerprint: z.string().min(1),
   supersedes_candidate_id: z.string().min(1).optional()
 });
 

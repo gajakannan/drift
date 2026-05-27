@@ -50,6 +50,7 @@ async function seedDatabase(): Promise<string> {
       forbidden_imports: ["@/lib/prisma"],
       applies_to_file_roles: ["api_route"]
     },
+    requires: { forbidden_imports: ["@/lib/prisma"] },
     suggested_severity: "error",
     suggested_enforcement_mode: "block",
     enforcement_capability: "deterministic_check",
@@ -63,6 +64,12 @@ async function seedDatabase(): Promise<string> {
     },
     evidence_refs: [],
     counterexample_refs: [],
+    matcher_fingerprint: "matcher_fp",
+    scope_fingerprint: "scope_fp",
+    graph_fingerprint: "graph_fp",
+    evidence_fingerprint: "evidence_fp",
+    required_capabilities: ["syntax_facts", "import_resolution"],
+    reason_not_blocking: "candidate_not_accepted",
     status: "candidate",
     created_at: "2026-05-10T00:00:01.000Z"
   });
@@ -454,7 +461,7 @@ describe("drift CLI convention review", () => {
     expect(payload.runtime).toMatchObject({
       cli_version: "0.1.0",
       core_version: "0.1.0",
-      supported_sqlite_schema_version: 23,
+      supported_sqlite_schema_version: 24,
       storage_driver: "sqlite"
     });
     expect(payload.v1_scope).toMatchObject({
@@ -939,6 +946,65 @@ describe("drift CLI convention review", () => {
       "scan_completed"
     ]);
     storage.close();
+  });
+
+  it("does not re-propose a rejected candidate without new evidence", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-rejected-candidate-rescan-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      [
+        "import { prisma } from \"@/lib/prisma\";",
+        "",
+        "export async function GET() {",
+        "  return Response.json(await prisma.user.findMany());",
+        "}",
+        ""
+      ].join("\n")
+    );
+
+    const first = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:10.000Z",
+      "--json"
+    ]);
+    const firstPayload = JSON.parse(first.stdout);
+    const directCandidate = firstPayload.candidates.find(
+      (candidate: { kind: string }) => candidate.kind === "api_route_no_direct_data_access"
+    );
+    if (!directCandidate) {
+      throw new Error("expected direct data access candidate");
+    }
+
+    const rejected = await runCli([
+      "--db", firstPayload.database_path,
+      "conventions", "reject",
+      directCandidate.id,
+      "--repo", firstPayload.repo.id,
+      "--reason", "false inference",
+      "--confirm",
+      "--json"
+    ]);
+    expect(rejected.exitCode).toBe(0);
+
+    const second = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:20.000Z",
+      "--json"
+    ]);
+    const secondPayload = JSON.parse(second.stdout);
+
+    expect(second.exitCode).toBe(0);
+    expect(secondPayload.candidates.some(
+      (candidate: { id: string }) => candidate.id === directCandidate.id
+    )).toBe(false);
   });
 
   it("rejects scan repo roots that are files", async () => {
@@ -2445,7 +2511,7 @@ describe("drift CLI convention review", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("Drift doctor");
-    expect(result.stdout).toContain("Runtime: Drift CLI 0.1.0, SQLite schema 23");
+    expect(result.stdout).toContain("Runtime: Drift CLI 0.1.0, SQLite schema 24");
     expect(result.stdout).toContain("V1 scope: local-first CLI, TypeScript API route layering");
     expect(result.stdout).toContain("TS/JS files: 1 indexable file");
     expect(result.stdout).toContain("API routes: 1 API route file");
@@ -2526,7 +2592,7 @@ describe("drift CLI convention review", () => {
       typescript_adapter_version: "0.1.0",
       rule_engine_version: "0.1.0",
       contract_schema_version: 1,
-      supported_sqlite_schema_version: 23,
+      supported_sqlite_schema_version: 24,
       storage_driver: "sqlite"
     });
     expect(payload.engine).toMatchObject({
@@ -2544,7 +2610,7 @@ describe("drift CLI convention review", () => {
       deferred: ["desktop_ui", "cloud_sync", "python_adapter", "duplicate_helper_detection"]
     });
     expect(payload.state_summary).toMatchObject({
-      supported_schema_version: 23
+      supported_schema_version: 24
     });
     expect(payload.state_summary).toMatchObject({
       exists: true,
@@ -2882,7 +2948,7 @@ describe("drift CLI convention review", () => {
       typescript_adapter_version: "0.1.0",
       rule_engine_version: "0.1.0",
       contract_schema_version: 1,
-      supported_sqlite_schema_version: 23,
+      supported_sqlite_schema_version: 24,
       storage_driver: "sqlite"
     });
     expect(payload.engine).toMatchObject({
@@ -3120,7 +3186,7 @@ describe("drift CLI convention review", () => {
       machine_contract_versions: {
         schema_version: "drift.machine_contract_versions.v1",
         cli_version: "0.1.0",
-        storage_schema_version: 23,
+        storage_schema_version: 24,
         factgraph_schema_version: "factgraph.v2"
       }
     });
@@ -3210,7 +3276,7 @@ describe("drift CLI convention review", () => {
       blocking_count: 1,
       machine_contract_versions: expect.objectContaining({
         schema_version: "drift.machine_contract_versions.v1",
-        storage_schema_version: 23
+        storage_schema_version: 24
       })
     });
     expect(storage.listFindings("repo_abc")[0]?.title).toBe("API route imports data access directly");
@@ -7411,7 +7477,7 @@ describe("drift CLI convention review", () => {
     expect(payload.summary).toMatchObject({
       write_intent: true,
       artifact_exists: true,
-      schema_version: 23
+      schema_version: 24
     });
     expect(payload.review_item).toMatchObject({
       id: payload.manifest.id,
@@ -7421,7 +7487,7 @@ describe("drift CLI convention review", () => {
     });
     expect(payload.manifest).toMatchObject({
       repo_id: "repo_abc",
-      schema_version: 23,
+      schema_version: 24,
       created_at: "2026-05-10T00:00:04.000Z"
     });
     expect(payload.manifest.backup_path).toContain(backupDir);
@@ -7646,7 +7712,7 @@ describe("drift CLI convention review", () => {
         id: backup[0],
         repo_id: "repo_abc",
         repo_fingerprint: "repo-fp",
-        schema_version: 23,
+        schema_version: 24,
         source_database_path: databasePath,
         backup_path: `/tmp/${backup[0]}.sqlite`,
         checksum_sha256: "a".repeat(64),
@@ -7698,7 +7764,7 @@ describe("drift CLI convention review", () => {
       id: "backup_valid",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 23,
+      schema_version: 24,
       source_database_path: databasePath,
       backup_path: validPath,
       checksum_sha256: validChecksum,
@@ -7709,7 +7775,7 @@ describe("drift CLI convention review", () => {
       id: "backup_missing",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 23,
+      schema_version: 24,
       source_database_path: databasePath,
       backup_path: join(dir, "missing.sqlite"),
       checksum_sha256: "b".repeat(64),
@@ -7720,7 +7786,7 @@ describe("drift CLI convention review", () => {
       id: "backup_mismatch",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 23,
+      schema_version: 24,
       source_database_path: databasePath,
       backup_path: mismatchPath,
       checksum_sha256: mismatchChecksum,
@@ -7981,7 +8047,7 @@ describe("drift CLI convention review", () => {
         surface: "artifact"
       },
       checksum_matches: true,
-      schema_version: 23
+      schema_version: 24
     });
     expect(JSON.parse(verified.stdout).summary).toMatchObject({
       valid: true,
@@ -8162,7 +8228,7 @@ describe("drift CLI convention review", () => {
       valid: false,
       repo_id: "repo_abc",
       schema_supported: false,
-      schema_version: 23,
+      schema_version: 24,
       unsupported_migrations: ["004_unknown_future_schema"]
     });
   });
@@ -8391,7 +8457,7 @@ describe("drift CLI convention review", () => {
       repo_id: "repo_abc",
       backup_path: backupPath,
       restored_database_path: targetDatabasePath,
-      schema_version: 23
+      schema_version: 24
     });
     expect(payload.governance).toMatchObject({
       read_only: false,
@@ -8432,7 +8498,7 @@ describe("drift CLI convention review", () => {
         backup_path: backupPath,
         checksum_sha256: payload.restore.checksum_sha256,
         checksum_matches: true,
-        schema_version: 23,
+        schema_version: 24,
         graph_stale: payload.restore.graph_stale,
         requires_rescan: payload.restore.requires_rescan,
         staleness_reason: payload.restore.staleness_reason
@@ -9098,7 +9164,7 @@ describe("drift CLI convention review", () => {
       relevant_file_count: 3,
       risky_area_count: 1,
       finding_count: 1,
-      blocking_finding_count: 1,
+      blocking_finding_count: 0,
       required_check_count: 1,
       safe_command_count: 0,
       baseline_active_count: 1,
@@ -9128,7 +9194,7 @@ describe("drift CLI convention review", () => {
     });
     expect(payload.conventions[0]).toMatchObject({
       kind: "api_route_no_direct_data_access",
-      enforcement_mode: "block",
+      enforcement_mode: "warn",
       enforcement_capability: "deterministic_check"
     });
     expect(payload.agent_contract_packet).toMatchObject({
@@ -9423,7 +9489,13 @@ describe("drift CLI convention review", () => {
         runtime: expect.any(Object),
         engine: expect.any(Object),
         migrations: expect.any(Object),
-        audit: expect.any(Object)
+        audit: expect.any(Object),
+        elections: {
+          candidate_count: 0,
+          accepted_count: 0,
+          rejected_count: 0,
+          rejected_inference_count: 0
+        }
       }
     });
     expect(JSON.stringify(payload)).not.toContain("Route imports prisma directly");
@@ -12285,8 +12357,14 @@ describe("drift CLI convention review", () => {
     const storage = openDriftStorage({ databasePath });
     storage.migrate();
     expect(storage.getConventionCandidate("candidate_no_direct_db")?.status).toBe("accepted");
-    expect(storage.listAcceptedConventions("repo_abc")[0]?.severity).toBe("warning");
-    expect(storage.getRepoContract("repo_abc")?.conventions[0]?.enforcement_mode).toBe("warn");
+    expect(storage.listAcceptedConventions("repo_abc")[0]).toMatchObject({
+      severity: "warning",
+      requires: { forbidden_imports: ["@/lib/prisma"] }
+    });
+    expect(storage.getRepoContract("repo_abc")?.conventions[0]).toMatchObject({
+      enforcement_mode: "warn",
+      requires: { forbidden_imports: ["@/lib/prisma"] }
+    });
     expect(storage.listAuditEvents("repo_abc")[0]?.action).toBe("election_accepted");
     storage.close();
   });
@@ -12596,7 +12674,13 @@ describe("drift CLI convention review", () => {
     const storage = openDriftStorage({ databasePath });
     storage.migrate();
     expect(storage.getConventionCandidate("candidate_no_direct_db")?.status).toBe("rejected");
-    expect(storage.listAuditEvents("repo_abc")[0]?.metadata).toEqual({ reason: "false inference" });
+    expect(storage.listAuditEvents("repo_abc")[0]?.metadata).toMatchObject({ reason: "false inference" });
+    expect(storage.getRepoContract("repo_abc")?.rejected_inferences[0]).toMatchObject({
+      candidate_id: "candidate_no_direct_db",
+      evidence_fingerprint: "evidence_fp",
+      reason: "false inference",
+      rejected_by: "geoff"
+    });
     storage.close();
   });
 
@@ -12906,6 +12990,83 @@ describe("drift CLI convention review", () => {
       }
     });
     storage.close();
+  });
+
+  it("rejects contract validate when a blocking convention is not deterministic", async () => {
+    const { databasePath } = await seedAcceptedDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const contract = storage.getRepoContract("repo_abc")!;
+    storage.upsertRepoContract({
+      ...contract,
+      conventions: contract.conventions.map((convention) => ({
+        ...convention,
+        enforcement_capability: "heuristic_check"
+      }))
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "contract", "validate",
+      "--repo", "repo_abc",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      valid: false,
+      compatibility: {
+        compatible: false,
+        reasons: ["blocking_non_deterministic_convention"]
+      }
+    });
+  });
+
+  it("rejects imported blocking security contracts backed by candidate sensitive fields", async () => {
+    const { databasePath } = await seedAcceptedDatabase();
+    const dir = await mkdtemp(join(tmpdir(), "drift-contract-candidate-sensitive-"));
+    tempDirs.push(dir);
+    const contractPath = join(dir, "contract.json");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const contract = storage.getRepoContract("repo_abc")!;
+    await writeFile(contractPath, JSON.stringify({
+      ...contract,
+      conventions: contract.conventions.map((convention) => ({
+        ...convention,
+        kind: "api_route_forbids_sensitive_response_fields",
+        matcher: {
+          kind: "api_route_forbids_sensitive_response_fields",
+          applies_to_file_roles: ["api_route"]
+        },
+        requires: {
+          sensitive_response_fields: [{
+            field_path: "user.email",
+            classification: "pii",
+            source: "candidate"
+          }]
+        }
+      }))
+    }, null, 2));
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "contract", "import",
+      contractPath,
+      "--repo", "repo_abc",
+      "--dry-run",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      compatibility: {
+        compatible: false,
+        reasons: ["candidate_sensitive_fields_blocking"]
+      }
+    });
   });
 
   it("guards contract export artifact paths and overwrites", async () => {

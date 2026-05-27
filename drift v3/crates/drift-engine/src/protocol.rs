@@ -279,6 +279,8 @@ pub struct EngineCandidate {
     pub rationale: String,
     pub scope: Value,
     pub matcher: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires: Option<Value>,
     pub suggested_severity: String,
     pub suggested_enforcement_mode: String,
     pub enforcement_capability: String,
@@ -287,6 +289,8 @@ pub struct EngineCandidate {
     pub required_capabilities: Vec<String>,
     pub evidence_refs: Vec<EngineCandidateEvidenceRef>,
     pub counterexample_refs: Vec<EngineCandidateEvidenceRef>,
+    pub reason_not_blocking: String,
+    pub evidence_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -12,7 +12,7 @@ import { buildFactGraphArtifact } from "../engine/fact-graph.js";
 import { walkIndexableFiles } from "../engine/ts-fallback-scanner.js";
 import { fileContentHash } from "../io/file-hash.js";
 import { gitOutput } from "../io/git.js";
-import { inferConventionCandidates } from "./convention-candidates.js";
+import { filterRejectedConventionCandidates,inferConventionCandidates } from "./convention-candidates.js";
 import { auditEvent,preflightGovernance } from "./governance.js";
 import { hashStable,scanFingerprint } from "./identifiers.js";
 import { repoRecordForRoot } from "./repo-paths.js";
@@ -95,7 +95,7 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
       repoRoot,
       reuseManifestPath: reuseManifest?.path
     });
-    const candidates = scanData.engineSource === "rust"
+    const inferredCandidates = scanData.engineSource === "rust"
       ? await inferConventionCandidatesFromEngine({
           repoId: repo.id,
           scanId,
@@ -109,6 +109,7 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
           facts: scanData.facts,
           now
         });
+    const candidates = filterRejectedConventionCandidates(storage, repo.id, inferredCandidates);
     const scan: ScanManifest = {
       id: scanId,
       repo_id: repo.id,
