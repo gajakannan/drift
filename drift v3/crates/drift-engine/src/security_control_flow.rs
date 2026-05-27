@@ -32,6 +32,13 @@ pub struct ValidatedInputUse {
     pub end_line: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretFlowParserGap {
+    pub source_line: usize,
+    pub sink_line: usize,
+    pub code: String,
+}
+
 pub fn guard_dominates_straight_line_sinks(facts: &[Fact]) -> Vec<DominatedSink> {
     let Some(first_guard_line) = facts
         .iter()
@@ -156,6 +163,138 @@ pub fn unsupported_dynamic_control_flow(source: &str) -> bool {
     source.contains("guards[")
         || source.contains("await guard(")
         || source.contains("computed_handler")
+}
+
+pub fn indirect_secret_flow_parser_gaps(
+    source: &str,
+    secret_vars: &[String],
+    log_sinks: &[String],
+) -> Vec<SecretFlowParserGap> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let secret_returning_helpers = secret_returning_helpers(&lines);
+    let mut gaps = Vec::new();
+    for (helper_name, source_line) in secret_returning_helpers {
+        for (index, line) in lines.iter().enumerate() {
+            if !line.contains(&format!("{helper_name}(")) {
+                continue;
+            }
+            let Some(assigned) = assigned_variable(line) else {
+                continue;
+            };
+            if secret_vars.iter().any(|secret_var| secret_var == &assigned) {
+                continue;
+            }
+            for (sink_index, sink_line) in lines.iter().enumerate().skip(index + 1) {
+                if !line_uses_identifier(sink_line, &assigned) {
+                    continue;
+                }
+                if is_response_sink_line(sink_line)
+                    || log_sinks.iter().any(|sink| sink_line.contains(sink))
+                {
+                    gaps.push(SecretFlowParserGap {
+                        source_line,
+                        sink_line: sink_index + 1,
+                        code: "unsupported_dynamic_control_flow".to_string(),
+                    });
+                }
+            }
+        }
+    }
+    gaps
+}
+
+fn secret_returning_helpers(lines: &[&str]) -> Vec<(String, usize)> {
+    let mut helpers = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if let Some(after_function) = trimmed.strip_prefix("function ")
+            && let Some((name, _)) = after_function.split_once('(')
+            && !name.is_empty()
+        {
+            let end_line = closing_block_line(lines, index + 1).unwrap_or(index + 1);
+            if lines
+                .iter()
+                .take(end_line)
+                .skip(index + 1)
+                .any(line_returns_secret)
+            {
+                helpers.push((name.to_string(), index + 1));
+            }
+            continue;
+        }
+        if let Some(name) = arrow_secret_helper_name(trimmed) {
+            helpers.push((name, index + 1));
+            continue;
+        }
+        if let Some(name) = imported_secret_helper_name(trimmed) {
+            helpers.push((name, index + 1));
+        }
+    }
+    helpers
+}
+
+fn line_returns_secret(candidate: &&str) -> bool {
+    candidate.contains("return ")
+        && (candidate.contains("process.env")
+            || candidate.contains("config.")
+            || candidate.contains("secretManager.get(")
+            || candidate.contains("secret_manager.get("))
+}
+
+fn arrow_secret_helper_name(line: &str) -> Option<String> {
+    if !(line.contains("=>")
+        && (line.contains("process.env")
+            || line.contains("config.")
+            || line.contains("secretManager.get(")
+            || line.contains("secret_manager.get(")))
+    {
+        return None;
+    }
+    assigned_variable(line)
+}
+
+fn imported_secret_helper_name(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with("import ") || !trimmed.contains(" from ") {
+        return None;
+    }
+    let names = if let Some(start) = trimmed.find('{') {
+        let end = trimmed[start + 1..].find('}')?;
+        trimmed[start + 1..start + 1 + end]
+            .split(',')
+            .filter_map(|part| {
+                let local = part
+                    .split(" as ")
+                    .nth(1)
+                    .or_else(|| part.split(" as ").next())
+                    .unwrap_or("")
+                    .trim();
+                (!local.is_empty()).then(|| local.to_string())
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let after_import = trimmed.strip_prefix("import ")?;
+        let name = after_import.split(" from ").next()?.trim();
+        vec![name.to_string()]
+    };
+    names
+        .into_iter()
+        .find(|name| secret_helper_name_is_ambiguous(name))
+}
+
+fn secret_helper_name_is_ambiguous(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    normalized.contains("secret")
+        || normalized.contains("token")
+        || normalized.contains("apikey")
+        || normalized.contains("api_key")
+        || normalized.contains("password")
+}
+
+fn is_response_sink_line(line: &str) -> bool {
+    line.contains("Response.json(")
+        || line.contains("NextResponse.json(")
+        || line.contains(".json(")
 }
 
 pub fn protected_sinks(facts: &[Fact]) -> Vec<&Fact> {

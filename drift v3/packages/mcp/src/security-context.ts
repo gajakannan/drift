@@ -1,5 +1,6 @@
 import type { AcceptedConvention, FactRecord, ParserGap, RepoContract, ScanManifest } from "@drift/core";
 import type { openDriftStorage } from "@drift/storage";
+import { buildSecurityBoundaryProofReadModel } from "@drift/query";
 
 type DriftStorage = ReturnType<typeof openDriftStorage>;
 
@@ -19,12 +20,85 @@ interface ValidatedInputUsedValue {
   sink_kind?: string;
 }
 
+interface SessionReadValue {
+  route_id?: string;
+  trust?: string;
+}
+
+interface AuthorizationGuardValue {
+  route_id?: string;
+  guard_id?: string;
+  policy_id?: string;
+  roles?: unknown[];
+}
+
+interface TenantSourceValue {
+  route_id?: string;
+  key?: string;
+  trusted?: boolean;
+}
+
+interface TenantGuardValue {
+  route_id?: string;
+  tenant_key?: string;
+}
+
+interface ResponseEmitsFieldValue {
+  route_id?: string;
+  field_path?: string;
+}
+
+interface SensitiveFieldDeclaredValue {
+  source?: string;
+}
+
+interface SecretReadValue {
+  secret_class?: string;
+  source?: string;
+}
+
 export function buildSecurityContextPayload(storage: DriftStorage, repoId: string, contract: RepoContract) {
   const latestScan = latestSecurityScan(storage.listScanManifests(repoId));
   const facts = latestScan ? storage.listFacts(latestScan.id, { kind: "middleware_protects_route" }) : [];
   const requestInputFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "request_input_read" }) : [];
   const validatedUseFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "validated_input_used" }) : [];
+  const sessionReadFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "session_read" }) : [];
+  const authorizationGuardFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "authorization_guard_called" }) : [];
+  const tenantSourceFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "tenant_source" }) : [];
+  const tenantGuardFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "tenant_guard_called" }) : [];
+  const responseFieldFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "response_emits_field" }) : [];
+  const sensitiveFieldFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "sensitive_field_declared" }) : [];
+  const secretReadFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "secret_read" }) : [];
   const parserGaps = latestScan ? storage.listParserGaps(repoId, latestScan.id) : [];
+  const latestScanSecurityProofs = latestScan
+    ? storage.listSecurityBoundaryProofs(repoId, latestScan.id)
+    : [];
+  const securityProofs = latestScanSecurityProofs.length > 0
+    ? latestScanSecurityProofs
+    : storage.listSecurityBoundaryProofs(repoId);
+  const proofReadModel = buildSecurityBoundaryProofReadModel({
+    proofs: securityProofs,
+    findings: storage.listFindings(repoId).map((finding) => ({
+      finding_id: finding.id,
+      title: finding.title,
+      lifecycle: finding.status
+    }))
+  });
+  const sensitiveResponseProofRoutes = proofReadModel.routes.filter((route) =>
+    route.response_shape_required
+  );
+  const secretExposureProofRoutes = proofReadModel.routes.filter((route) =>
+    route.secret_exposure_count > 0 ||
+    route.missing_proof_codes.includes("secret_exposure_not_excluded") ||
+    route.parser_gap_codes.includes("unsupported_dynamic_control_flow")
+  );
+  const phase6ProofRoutes = proofReadModel.routes.filter((route) =>
+    route.phase6.ssrf.required ||
+    route.phase6.raw_sql.required ||
+    route.phase6.cors.required ||
+    route.phase6.csrf.required ||
+    route.phase6.rate_limit.required
+  );
 
   return {
     response_schema: "drift.security.context.v1",
@@ -39,9 +113,55 @@ export function buildSecurityContextPayload(storage: DriftStorage, repoId: strin
       routes: requestValidationRoutes(requestInputFacts, validatedUseFacts),
       parser_gaps: requestValidationParserGaps(parserGaps)
     },
+    sensitive_response: {
+      routes: sensitiveResponseProofRoutes.length > 0
+        ? sensitiveResponseProofRoutes.map((route) => ({
+            route_id: route.route_id,
+            file_path: route.file_path,
+            proof_status: route.proof_status,
+            proven: route.response_shape_proven,
+            leak_reasons: route.sensitive_response_leak_reasons,
+            missing_proof_codes: route.missing_proof_codes,
+            parser_gap_codes: route.parser_gap_codes
+          }))
+        : sensitiveResponseRoutes(responseFieldFacts),
+      declared_field_sources: sensitiveFieldSources(sensitiveFieldFacts),
+      proof_status: proofStatusForRoutes(sensitiveResponseProofRoutes)
+    },
+    secret_exposure: {
+      reads: secretReadSummaries(secretReadFacts),
+      routes: secretExposureProofRoutes.map((route) => ({
+        route_id: route.route_id,
+        file_path: route.file_path,
+        proof_status: route.proof_status,
+        secret_exposure_count: route.secret_exposure_count,
+        sink_kinds: route.secret_exposure_sink_kinds,
+        missing_proof_codes: route.missing_proof_codes,
+        parser_gap_codes: route.parser_gap_codes
+      })),
+      proof_status: proofStatusForRoutes(secretExposureProofRoutes)
+    },
+    session_trust: {
+      routes: sessionTrustRoutes(sessionReadFacts)
+    },
+    authorization: {
+      routes: authorizationRoutes(authorizationGuardFacts)
+    },
+    tenant_scope: {
+      routes: tenantScopeRoutes(tenantSourceFacts, tenantGuardFacts),
+      parser_gaps: tenantParserGaps(parserGaps)
+    },
     phase6: {
       proof_source: "trusted_check_proof_required",
-      routes: [],
+      routes: phase6ProofRoutes.map((route) => ({
+        route_id: route.route_id,
+        file_path: route.file_path,
+        proof_status: route.proof_status,
+        enforcement_result: route.enforcement_result,
+        phase6: route.phase6,
+        missing_proof_codes: route.missing_proof_codes,
+        parser_gap_codes: route.parser_gap_codes
+      })),
       parser_gaps: phase6ParserGaps(parserGaps)
     },
     redactions: {
@@ -51,6 +171,19 @@ export function buildSecurityContextPayload(storage: DriftStorage, repoId: strin
       secret_values_included: false
     }
   };
+}
+
+function proofStatusForRoutes(routes: Array<{ proof_status: string }>): string {
+  if (routes.length === 0) {
+    return "not_evaluated";
+  }
+  if (routes.some((route) => route.proof_status === "parser_gap")) {
+    return "parser_gap";
+  }
+  if (routes.some((route) => route.proof_status === "missing_proof")) {
+    return "missing_proof";
+  }
+  return routes.every((route) => route.proof_status === "proven") ? "proven" : "not_evaluated";
 }
 
 function latestSecurityScan(scans: ScanManifest[]): ScanManifest | undefined {
@@ -71,7 +204,12 @@ function securityConventions(conventions: AcceptedConvention[]) {
       convention.kind === "api_route_forbids_raw_sql_without_params" ||
       convention.kind === "api_route_cors_must_match_policy" ||
       convention.kind === "api_route_requires_csrf_for_mutation" ||
-      convention.kind === "api_route_requires_rate_limit"
+      convention.kind === "api_route_requires_rate_limit" ||
+      convention.kind === "api_route_forbids_sensitive_response_fields" ||
+      convention.kind === "api_route_forbids_secret_exposure" ||
+      convention.kind === "session_object_must_come_from_trusted_helper" ||
+      convention.kind === "api_route_requires_authorization" ||
+      convention.kind === "api_route_requires_tenant_scope"
     )
     .map((convention) => ({
       id: convention.id,
@@ -79,6 +217,174 @@ function securityConventions(conventions: AcceptedConvention[]) {
       enforcement_mode: convention.enforcement_mode,
       enforcement_capability: convention.enforcement_capability,
       severity: convention.severity
+    }));
+}
+
+function sensitiveResponseRoutes(responseFieldFacts: FactRecord[]) {
+  const byRoute = new Map<string, {
+    route_id: string;
+    file_path: string;
+    emitted_field_count: number;
+  }>();
+  for (const fact of responseFieldFacts) {
+    const value = parseResponseEmitsFieldValue(fact.value);
+    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const entry = byRoute.get(routeId) ?? {
+      route_id: routeId,
+      file_path: fact.file_path,
+      emitted_field_count: 0
+    };
+    if (value.field_path) {
+      entry.emitted_field_count += 1;
+    }
+    byRoute.set(routeId, entry);
+  }
+  return [...byRoute.values()].sort((left, right) => left.route_id.localeCompare(right.route_id));
+}
+
+function sensitiveFieldSources(facts: FactRecord[]) {
+  return [...new Set(facts
+    .map((fact) => parseSensitiveFieldDeclaredValue(fact.value).source)
+    .filter((source): source is string => typeof source === "string"))].sort();
+}
+
+function secretReadSummaries(facts: FactRecord[]) {
+  return facts
+    .map((fact) => {
+      const value = parseSecretReadValue(fact.value);
+      return {
+        file_path: fact.file_path,
+        source: value.source ?? "unknown",
+        secret_class: value.secret_class ?? "unknown"
+      };
+    })
+    .sort((left, right) =>
+      `${left.file_path}:${left.source}:${left.secret_class}`
+        .localeCompare(`${right.file_path}:${right.source}:${right.secret_class}`)
+    );
+}
+
+function sessionTrustRoutes(sessionFacts: FactRecord[]) {
+  const byRoute = new Map<string, {
+    route_id: string;
+    file_path: string;
+    trusted_source_count: number;
+    untrusted_source_count: number;
+  }>();
+
+  for (const fact of sessionFacts) {
+    const value = parseSessionReadValue(fact.value);
+    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const entry = byRoute.get(routeId) ?? {
+      route_id: routeId,
+      file_path: fact.file_path,
+      trusted_source_count: 0,
+      untrusted_source_count: 0
+    };
+    if (value.trust === "trusted") {
+      entry.trusted_source_count += 1;
+    } else if (value.trust === "untrusted") {
+      entry.untrusted_source_count += 1;
+    }
+    byRoute.set(routeId, entry);
+  }
+
+  return [...byRoute.values()]
+    .sort((left, right) => left.route_id.localeCompare(right.route_id))
+    .map((entry) => ({
+      route_id: entry.route_id,
+      file_path: entry.file_path,
+      proof_status: "advisory_only",
+      advisory_trusted_source_count: entry.trusted_source_count,
+      advisory_untrusted_source_count: entry.untrusted_source_count
+    }));
+}
+
+function authorizationRoutes(authorizationFacts: FactRecord[]) {
+  const byRoute = new Map<string, {
+    route_id: string;
+    file_path: string;
+    guard_ids: Set<string>;
+    role_count: number;
+  }>();
+
+  for (const fact of authorizationFacts) {
+    const value = parseAuthorizationGuardValue(fact.value);
+    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const entry = byRoute.get(routeId) ?? {
+      route_id: routeId,
+      file_path: fact.file_path,
+      guard_ids: new Set<string>(),
+      role_count: 0
+    };
+    entry.guard_ids.add(value.policy_id ?? value.guard_id ?? fact.name);
+    entry.role_count += Array.isArray(value.roles)
+      ? value.roles.filter((role) => typeof role === "string").length
+      : 0;
+    byRoute.set(routeId, entry);
+  }
+
+  return [...byRoute.values()]
+    .sort((left, right) => left.route_id.localeCompare(right.route_id))
+    .map((entry) => ({
+      route_id: entry.route_id,
+      file_path: entry.file_path,
+      proof_status: "advisory_only",
+      advisory_guard_ids: [...entry.guard_ids].sort(),
+      advisory_role_count: entry.role_count
+    }));
+}
+
+function tenantScopeRoutes(tenantSourceFacts: FactRecord[], tenantGuardFacts: FactRecord[]) {
+  const byRoute = new Map<string, {
+    route_id: string;
+    file_path: string;
+    tenant_keys: Set<string>;
+    trusted_source_count: number;
+    predicate_count: number;
+  }>();
+
+  for (const fact of tenantSourceFacts) {
+    const value = parseTenantSourceValue(fact.value);
+    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const entry = byRoute.get(routeId) ?? {
+      route_id: routeId,
+      file_path: fact.file_path,
+      tenant_keys: new Set<string>(),
+      trusted_source_count: 0,
+      predicate_count: 0
+    };
+    entry.tenant_keys.add(value.key ?? fact.name);
+    if (value.trusted === true) {
+      entry.trusted_source_count += 1;
+    }
+    byRoute.set(routeId, entry);
+  }
+
+  for (const fact of tenantGuardFacts) {
+    const value = parseTenantGuardValue(fact.value);
+    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const entry = byRoute.get(routeId) ?? {
+      route_id: routeId,
+      file_path: fact.file_path,
+      tenant_keys: new Set<string>(),
+      trusted_source_count: 0,
+      predicate_count: 0
+    };
+    entry.tenant_keys.add(value.tenant_key ?? fact.name);
+    entry.predicate_count += 1;
+    byRoute.set(routeId, entry);
+  }
+
+  return [...byRoute.values()]
+    .sort((left, right) => left.route_id.localeCompare(right.route_id))
+    .map((entry) => ({
+      route_id: entry.route_id,
+      file_path: entry.file_path,
+      proof_status: "advisory_only",
+      advisory_tenant_keys: [...entry.tenant_keys].sort(),
+      advisory_trusted_source_count: entry.trusted_source_count,
+      advisory_predicate_count: entry.predicate_count
     }));
 }
 
@@ -156,6 +462,46 @@ function parseValidatedInputUsedValue(value: string | undefined): ValidatedInput
   }
 }
 
+function parseSessionReadValue(value: string | undefined): SessionReadValue {
+  return parseJsonObject<SessionReadValue>(value);
+}
+
+function parseAuthorizationGuardValue(value: string | undefined): AuthorizationGuardValue {
+  return parseJsonObject<AuthorizationGuardValue>(value);
+}
+
+function parseTenantSourceValue(value: string | undefined): TenantSourceValue {
+  return parseJsonObject<TenantSourceValue>(value);
+}
+
+function parseTenantGuardValue(value: string | undefined): TenantGuardValue {
+  return parseJsonObject<TenantGuardValue>(value);
+}
+
+function parseResponseEmitsFieldValue(value: string | undefined): ResponseEmitsFieldValue {
+  return parseJsonObject<ResponseEmitsFieldValue>(value);
+}
+
+function parseSensitiveFieldDeclaredValue(value: string | undefined): SensitiveFieldDeclaredValue {
+  return parseJsonObject<SensitiveFieldDeclaredValue>(value);
+}
+
+function parseSecretReadValue(value: string | undefined): SecretReadValue {
+  return parseJsonObject<SecretReadValue>(value);
+}
+
+function parseJsonObject<T>(value: string | undefined): T {
+  if (!value) {
+    return {} as T;
+  }
+  try {
+    const parsed = JSON.parse(value) as T;
+    return parsed && typeof parsed === "object" ? parsed : {} as T;
+  } catch {
+    return {} as T;
+  }
+}
+
 function middlewareCoverageRoutes(facts: FactRecord[]) {
   const byPath = new Map<string, {
     file_path: string;
@@ -226,6 +572,19 @@ function phase6ParserGaps(parserGaps: ParserGap[]) {
     .filter((gap) =>
       gap.message === "unsupported_dynamic_outbound_url" ||
       gap.message === "unsupported_dynamic_cors_origin"
+    )
+    .map((gap) => ({
+      reason: gap.message,
+      blocking: gap.confidence_impact === "blocks_enforcement"
+    }));
+}
+
+function tenantParserGaps(parserGaps: ParserGap[]) {
+  return parserGaps
+    .filter((gap) =>
+      gap.message === "unsupported_tenant_dynamic_property" ||
+      gap.message === "unsupported_tenant_query_object_alias" ||
+      gap.message === "unsupported_session_nested_destructure"
     )
     .map((gap) => ({
       reason: gap.message,

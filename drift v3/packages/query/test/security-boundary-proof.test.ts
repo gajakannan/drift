@@ -113,6 +113,20 @@ describe("security boundary proof read model", () => {
           guard_call_count: 0
         }
       },
+      response_shape_required: false,
+      response_shape_proven: false,
+      sensitive_response_leak_reasons: [],
+      secret_exposure_count: 0,
+      secret_exposure_sink_kinds: [],
+      session_trust_required: false,
+      session_trust_proven: false,
+      session_missing_trust_reasons: [],
+      authorization_required: false,
+      authorization_proven: false,
+      authorization_missing_reasons: [],
+      tenant_required: false,
+      tenant_proven: false,
+      tenant_missing_reasons: [],
       proof_status: "parser_gap",
       enforcement_result: "block",
       missing_proof_codes: ["missing_auth_guard"],
@@ -197,24 +211,30 @@ describe("security boundary proof read model", () => {
     expect(JSON.stringify(model)).not.toContain("request.json()");
   });
 
-  it("summarizes Phase 6 proof sections from trusted proof output", () => {
+  it("summarizes phase4 proof without synthesizing trust from raw facts", () => {
     const model = buildSecurityBoundaryProofReadModel({
       proofs: [{
-        proof_id: "proof_route_proxy_post",
+        proof_id: "proof_phase4",
         proof_version: "security-boundary-proof/v1",
         route: {
-          route_id: "route_proxy_post",
-          file_path: "app/api/proxy/route.ts",
+          route_id: "route_projects_delete",
+          file_path: "app/api/projects/route.ts",
           file_role: "api_route"
         },
         contracts: [{
-          contract_id: "security_api_no_untrusted_ssrf",
-          kind: "api_route_forbids_untrusted_ssrf",
+          contract_id: "security_api_authorization",
+          kind: "api_route_requires_authorization",
           enforcement_mode: "block",
           capability: "deterministic_check",
           matched: true
         }],
-        capability_status: [],
+        capability_status: [{
+          name: "authorization",
+          status: "partial",
+          can_block: true,
+          parser_gap_ids: [],
+          missing_proof_ids: ["missing_authz"]
+        }],
         auth: {
           required: false,
           proven: false,
@@ -223,27 +243,31 @@ describe("security boundary proof read model", () => {
           dominated_sinks: [],
           undominated_sinks: []
         },
-        ssrf: {
+        session_trust: {
           required: true,
           proven: false,
-          outbound_requests: [{
-            fact_id: "fact_fetch",
-            sink_id: "sink_fetch",
-            api: "fetch",
-            url_source: "request_input"
-          }],
-          allowlist_proofs: [],
-          missing_proof: [{
-            code: "request_controlled_url",
-            fact_ids: ["fact_fetch"]
-          }]
+          trusted_sessions: [],
+          missing_trust: [{ fact_id: "fact_session", variable: "session", reason: "derived_from_request" }]
+        },
+        authorization: {
+          required: true,
+          proven: false,
+          role_or_policy_guards: [],
+          missing: [{ reason: "session_not_trusted", sink_fact_id: "sink_delete" }]
+        },
+        tenant: {
+          required: true,
+          proven: false,
+          tenant_sources: [{ fact_id: "fact_tenant", source: "body", key: "tenantId", trusted: false }],
+          predicates: [],
+          missing: [{ data_operation_fact_id: "fact_delete", reason: "tenant_source_untrusted" }]
         },
         missing_proof: [{
-          id: "missing_ssrf",
-          capability: "outbound_request_facts",
-          code: "request_controlled_url",
+          id: "missing_authz",
+          capability: "authorization",
+          code: "session_not_trusted",
           blocks_enforcement: true,
-          fact_ids: ["fact_fetch"],
+          fact_ids: ["fact_session"],
           graph_edge_ids: []
         }],
         parser_gaps: [],
@@ -251,19 +275,24 @@ describe("security boundary proof read model", () => {
           proof_status: "missing_proof",
           enforcement_result: "block",
           can_block: true,
-          finding_ids: ["finding_ssrf"]
+          finding_ids: ["finding_authz"]
         }
       }],
-      findings: []
+      findings: [{ finding_id: "finding_authz", title: "missing", lifecycle: "new" }]
     });
 
-    expect(model.routes[0]?.phase6.ssrf).toEqual({
-      required: true,
-      proven: false,
-      outbound_request_count: 1,
-      allowlist_proof_count: 0
+    expect(model.routes[0]).toMatchObject({
+      session_trust_required: true,
+      session_trust_proven: false,
+      authorization_required: true,
+      authorization_proven: false,
+      authorization_missing_reasons: ["session_not_trusted"],
+      tenant_required: true,
+      tenant_proven: false,
+      tenant_missing_reasons: ["tenant_source_untrusted"]
     });
-    expect(JSON.stringify(model)).not.toContain("https://token");
+    expect(JSON.stringify(model)).not.toContain("tenant-");
+    expect(JSON.stringify(model)).not.toContain("session=");
   });
 
   it("does not report request validation proven from raw scan facts", () => {
@@ -375,5 +404,155 @@ describe("security boundary proof read model", () => {
       request_validation_unvalidated_reasons: []
     })]);
     expect(JSON.stringify(model)).not.toContain("requireUser()");
+  });
+
+  it("summarizes Phase 5 proof sections without using raw facts as proof", () => {
+    const model = buildSecurityBoundaryProofReadModel({
+      proofs: [{
+        proof_id: "proof_phase5",
+        proof_version: "security-boundary-proof/v1",
+        route: {
+          route_id: "route:app/api/users/route.ts:GET",
+          file_path: "app/api/users/route.ts",
+          file_role: "api_route"
+        },
+        contracts: [{
+          contract_id: "security_api_sensitive_response",
+          kind: "api_route_forbids_sensitive_response_fields",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }],
+        capability_status: [{
+          name: "response_shape_facts",
+          status: "partial",
+          can_block: true,
+          parser_gap_ids: [],
+          missing_proof_ids: ["missing_sensitive"]
+        }],
+        auth: {
+          required: false,
+          proven: false,
+          proof_kind: "none",
+          trusted_guard_calls: [],
+          dominated_sinks: [],
+          undominated_sinks: []
+        },
+        response_shape: {
+          required: true,
+          proven: false,
+          sensitive_leaks: [{
+            field_fact_id: "fact:app/api/users/route.ts:4",
+            field_path: "user.email",
+            reason: "sensitive_field_without_serializer"
+          }]
+        },
+        sinks: {
+          secrets: [{
+            secret_fact_id: "fact:app/api/users/route.ts:3",
+            secret_class: "api_key",
+            sink_kind: "response",
+            sink_line: 4,
+            reason: "secret_reaches_sink"
+          }]
+        },
+        missing_proof: [{
+          id: "missing_sensitive",
+          capability: "response_shape_facts",
+          code: "sensitive_response_field_unfiltered",
+          blocks_enforcement: true,
+          fact_ids: ["fact:app/api/users/route.ts:4"],
+          graph_edge_ids: []
+        }],
+        parser_gaps: [],
+        result: {
+          proof_status: "missing_proof",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: ["finding_phase5"]
+        }
+      }],
+      findings: []
+    });
+
+    expect(model.routes[0]).toMatchObject({
+      response_shape_required: true,
+      response_shape_proven: false,
+      sensitive_response_leak_reasons: ["sensitive_field_without_serializer"],
+      secret_exposure_count: 1,
+      secret_exposure_sink_kinds: ["response"],
+      missing_proof_codes: ["sensitive_response_field_unfiltered"]
+    });
+    expect(JSON.stringify(model)).not.toContain("process.env.API_KEY");
+    expect(JSON.stringify(model)).not.toContain("redacted@example.test");
+  });
+
+  it("summarizes Phase 6 proof sections from trusted proof output", () => {
+    const model = buildSecurityBoundaryProofReadModel({
+      proofs: [{
+        proof_id: "proof_route_proxy_post",
+        proof_version: "security-boundary-proof/v1",
+        route: {
+          route_id: "route_proxy_post",
+          file_path: "app/api/proxy/route.ts",
+          file_role: "api_route"
+        },
+        contracts: [{
+          contract_id: "security_api_no_untrusted_ssrf",
+          kind: "api_route_forbids_untrusted_ssrf",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }],
+        capability_status: [],
+        auth: {
+          required: false,
+          proven: false,
+          proof_kind: "none",
+          trusted_guard_calls: [],
+          dominated_sinks: [],
+          undominated_sinks: []
+        },
+        ssrf: {
+          required: true,
+          proven: false,
+          outbound_requests: [{
+            fact_id: "fact_fetch",
+            sink_id: "sink_fetch",
+            api: "fetch",
+            url_source: "request_input"
+          }],
+          allowlist_proofs: [],
+          missing_proof: [{
+            code: "request_controlled_url",
+            fact_ids: ["fact_fetch"]
+          }]
+        },
+        missing_proof: [{
+          id: "missing_ssrf",
+          capability: "outbound_request_facts",
+          code: "request_controlled_url",
+          blocks_enforcement: true,
+          fact_ids: ["fact_fetch"],
+          graph_edge_ids: []
+        }],
+        parser_gaps: [],
+        result: {
+          proof_status: "missing_proof",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: ["finding_ssrf"]
+        }
+      }],
+      findings: []
+    });
+
+    expect(model.routes[0]?.phase6.ssrf).toEqual({
+      required: true,
+      proven: false,
+      outbound_request_count: 1,
+      allowlist_proof_count: 0
+    });
+    expect(JSON.stringify(model)).not.toContain("https://token");
   });
 });

@@ -27,6 +27,9 @@ export interface SecurityCheckJson {
     request_validation_failed_count: number;
     phase6_failed_count: number;
     phase6_parser_gap_count: number;
+    session_trust_failed_count: number;
+    authorization_failed_count: number;
+    tenant_scope_failed_count: number;
   };
 }
 
@@ -67,7 +70,19 @@ export function buildSecurityCheckJson(input: BuildSecurityCheckJsonInput): Secu
         count + proof.parser_gaps.filter((gap) =>
           gap.code === "unsupported_dynamic_outbound_url" ||
           gap.code === "unsupported_dynamic_cors_origin"
-        ).length, 0)
+        ).length, 0),
+      session_trust_failed_count: input.proofs.filter((proof) => {
+        const sessionTrust = proof.session_trust;
+        return Boolean(sessionTrust && sessionTrust.required && !sessionTrust.proven);
+      }).length,
+      authorization_failed_count: input.proofs.filter((proof) => {
+        const authorization = proof.authorization;
+        return Boolean(authorization && authorization.required && !authorization.proven);
+      }).length,
+      tenant_scope_failed_count: input.proofs.filter((proof) => {
+        const tenant = proof.tenant;
+        return Boolean(tenant && tenant.required && !tenant.proven);
+      }).length
     }
   };
 }

@@ -52,6 +52,149 @@ describe("security domain schemas", () => {
     })).toThrow(/blocking security contracts require deterministic capability/);
   });
 
+  it("validates accepted Phase 5 sensitive response and secret exposure contracts", () => {
+    const sensitiveResponseContract = SecurityConventionSchema.parse({
+      contract_id: "security_api_sensitive_response",
+      kind: "api_route_forbids_sensitive_response_fields",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: {
+        file_roles: ["api_route"],
+        methods: ["GET"]
+      },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "response",
+        path_globs: ["app/api/users/**/route.ts"],
+        diff_status: ["added", "modified", "renamed"]
+      },
+      requires: {
+        sensitive_response_fields: [{
+          field_path: "user.email",
+          classification: "pii",
+          source: "contract"
+        }],
+        response_serializers: [{
+          serializer_id: "serializePublicUser",
+          import_source: "@/lib/serializers/user",
+          imported_name: "serializePublicUser",
+          local_name: "serializePublicUser",
+          policy: "denylist",
+          filtered_fields: ["user.email"]
+        }]
+      },
+      exceptions: []
+    });
+
+    const secretExposureContract = SecurityConventionSchema.parse({
+      contract_id: "security_api_secret_exposure",
+      kind: "api_route_forbids_secret_exposure",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: {
+        file_roles: ["api_route"],
+        methods: ["POST"]
+      },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "response",
+        path_globs: ["app/api/tokens/**/route.ts"],
+        diff_status: ["added", "modified", "renamed"]
+      },
+      requires: {
+        secret_sources: ["env", "config", "secret_manager"],
+        log_sinks: ["console.error", "logger.error"]
+      },
+      exceptions: []
+    });
+
+    expect(sensitiveResponseContract.requires?.response_serializers).toEqual([{
+      serializer_id: "serializePublicUser",
+      import_source: "@/lib/serializers/user",
+      imported_name: "serializePublicUser",
+      local_name: "serializePublicUser",
+      policy: "denylist",
+      filtered_fields: ["user.email"]
+    }]);
+    expect(secretExposureContract.scope.path_globs).toEqual(["app/api/tokens/**/route.ts"]);
+    expect(secretExposureContract.matcher.methods).toEqual(["POST"]);
+  });
+
+  it("accepts candidate sensitive fields only for non-blocking advisory contracts", () => {
+    const advisory = SecurityConventionSchema.parse({
+      contract_id: "security_api_sensitive_candidate",
+      kind: "api_route_forbids_sensitive_response_fields",
+      capability: "heuristic_check",
+      enforcement_mode: "warn",
+      matcher: { file_roles: ["api_route"], methods: ["GET"] },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "response",
+        path_globs: ["app/api/users/**/route.ts"]
+      },
+      requires: {
+        sensitive_response_fields: [{
+          field_path: "password",
+          classification: "credential",
+          source: "candidate"
+        }]
+      }
+    });
+
+    expect(advisory.requires?.sensitive_response_fields).toEqual([{
+      field_path: "password",
+      classification: "credential",
+      source: "candidate"
+    }]);
+
+    expect(() => SecurityConventionSchema.parse({
+      ...advisory,
+      capability: "deterministic_check",
+      enforcement_mode: "block"
+    })).toThrow(/candidate sensitive fields cannot back blocking enforcement/);
+  });
+
+  it("rejects unsafe Phase 5 contract payloads", () => {
+    expect(() => SecurityConventionSchema.parse({
+      contract_id: "security_api_unknown_serializer",
+      kind: "api_route_forbids_sensitive_response_fields",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: { file_roles: ["api_route"], methods: ["GET"] },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "response",
+        path_globs: ["app/api/users/**/route.ts"]
+      },
+      requires: {
+        sensitive_response_fields: [{ field_path: "user.email", classification: "pii", source: "contract" }],
+        response_serializers: [{
+          serializer_id: "serializePublicUser",
+          import_source: "@/lib/serializers/user",
+          policy: "unknown",
+          filtered_fields: ["user.email"]
+        }]
+      }
+    })).toThrow(/serializer policy/i);
+
+    expect(() => SecurityConventionSchema.parse({
+      contract_id: "security_api_secret_value",
+      kind: "api_route_forbids_secret_exposure",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: { file_roles: ["api_route"], methods: ["POST"] },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "response",
+        path_globs: ["app/api/tokens/**/route.ts"]
+      },
+      requires: {
+        secret_sources: ["env"],
+        source_value: "SECRET_VALUE_SHOULD_NOT_LEAK"
+      }
+    })).toThrow(/source values are not allowed/i);
+  });
+
   it("validates SecurityBoundaryProof.auth without snippets", () => {
     const proof = SecurityBoundaryProofSchema.parse({
       proof_id: "proof_route_projects_get",
@@ -289,7 +432,100 @@ describe("security domain schemas", () => {
 
     expect(contract.kind).toBe("api_route_requires_request_validation");
     expect(proof.request_validation.required).toBe(true);
-    expect(JSON.stringify(proof)).not.toContain("secret");
+    expect(JSON.stringify(proof)).not.toContain("SECRET_VALUE_SHOULD_NOT_LEAK");
+  });
+
+  it("validates phase4 tenant authorization and session trust contracts", () => {
+    expect(SecurityMissingProofCodeSchema.parse("session_not_trusted")).toBe("session_not_trusted");
+    expect(SecurityMissingProofCodeSchema.parse("authorization_guard_missing")).toBe("authorization_guard_missing");
+    expect(SecurityMissingProofCodeSchema.parse("tenant_predicate_missing")).toBe("tenant_predicate_missing");
+
+    const authorization = SecurityConventionSchema.parse({
+      contract_id: "security_api_authorization",
+      kind: "api_route_requires_authorization",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: { file_roles: ["api_route"], methods: ["DELETE"] },
+      scope: { check_scope: "changed-files", applies_to: "route" },
+      requires: {
+        auth_helpers: ["requireUser"],
+        authorization_helpers: ["requireRole", "canAccessProject"],
+        data_operations: ["delete"]
+      }
+    });
+    const tenant = SecurityConventionSchema.parse({
+      contract_id: "security_api_tenant_scope",
+      kind: "api_route_requires_tenant_scope",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: { file_roles: ["api_route"] },
+      scope: { check_scope: "changed-files", applies_to: "route" },
+      requires: {
+        auth_helpers: ["requireUser"],
+        tenant_helpers: ["scopeProjectToTenant"],
+        tenant_keys: ["tenantId"],
+        tenant_sources: ["session"],
+        data_operations: ["findMany", "delete"]
+      }
+    });
+    const session = SecurityConventionSchema.parse({
+      contract_id: "security_session_trust",
+      kind: "session_object_must_come_from_trusted_helper",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: { file_roles: ["api_route"] },
+      scope: { check_scope: "changed-files", applies_to: "route" },
+      requires: { auth_helpers: ["requireUser"] }
+    });
+
+    expect(authorization.kind).toBe("api_route_requires_authorization");
+    expect(tenant.kind).toBe("api_route_requires_tenant_scope");
+    expect(session.kind).toBe("session_object_must_come_from_trusted_helper");
+  });
+
+  it("rejects impossible phase4 proof states", () => {
+    const proof = {
+      proof_id: "proof_phase4",
+      proof_version: "security-boundary-proof/v1",
+      route: {
+        route_id: "route_projects_delete",
+        file_path: "app/api/projects/route.ts",
+        file_role: "api_route"
+      },
+      contracts: [],
+      capability_status: [],
+      auth: { required: false, proven: false, proof_kind: "none", trusted_guard_calls: [], dominated_sinks: [], undominated_sinks: [] },
+      session_trust: {
+        required: true,
+        proven: true,
+        trusted_sessions: [],
+        missing_trust: [{ fact_id: "fact_session", variable: "session", reason: "derived_from_request" }]
+      },
+      authorization: {
+        required: true,
+        proven: true,
+        role_or_policy_guards: [{ fact_id: "fact_role", policy_id: "authorization_require_role", roles: ["admin"], permissions: [], subject_var: "session.user" }],
+        missing: [{ reason: "session_not_trusted", sink_fact_id: "sink_delete" }]
+      },
+      tenant: {
+        required: true,
+        proven: true,
+        tenant_sources: [{ fact_id: "fact_tenant", source: "body", key: "tenantId", trusted: false }],
+        predicates: [{ fact_id: "fact_predicate", data_operation_fact_id: "fact_delete", tenant_key: "tenantId", predicate_kind: "equality" }],
+        missing: [{ data_operation_fact_id: "fact_delete", reason: "tenant_source_untrusted" }]
+      },
+      missing_proof: [],
+      parser_gaps: [],
+      result: { proof_status: "proven", enforcement_result: "pass", can_block: false, finding_ids: [] }
+    };
+
+    expect(() => SecurityBoundaryProofSchema.parse(proof)).toThrow(/phase4 proven proof cannot include missing/i);
+  });
+
+  it("validates phase4 parser gaps from engine output", () => {
+    expect(SecurityParserGapCodeSchema.parse("unsupported_tenant_dynamic_property")).toBe("unsupported_tenant_dynamic_property");
+    expect(SecurityParserGapCodeSchema.parse("unsupported_tenant_query_object_alias")).toBe("unsupported_tenant_query_object_alias");
+    expect(SecurityParserGapCodeSchema.parse("unsupported_session_nested_destructure")).toBe("unsupported_session_nested_destructure");
   });
 
   it("validates Phase 6 contract kinds and proof codes", () => {

@@ -20,6 +20,10 @@ pub enum FactKind {
     MiddlewareMatcherDeclared,
     MiddlewareProtectsRoute,
     RequestInputRead,
+    SessionRead,
+    TenantSource,
+    TenantGuardCalled,
+    AuthorizationGuardCalled,
     RequestValidationCalled,
     ValidatedInputUsed,
     OutboundRequestCalled,
@@ -28,6 +32,10 @@ pub enum FactKind {
     CsrfGuardCalled,
     RateLimitGuardCalled,
     CorsPolicyDeclared,
+    SensitiveFieldDeclared,
+    ResponseEmitsField,
+    SerializerCalled,
+    SecretRead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

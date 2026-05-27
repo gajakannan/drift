@@ -146,6 +146,97 @@ describe("security check bridge", () => {
     expect(JSON.stringify(payload)).not.toContain("https://token");
   });
 
+  it("returns phase4 proof in drift check json output", () => {
+    const payload = buildSecurityCheckJson({
+      repo_id: "repo_abc",
+      scope: "changed-files",
+      changed_files: ["app/api/projects/route.ts"],
+      proofs: [
+        securityProof("proof_phase4", "app/api/projects/route.ts", "finding_phase4", {
+          session_trust: {
+            required: true,
+            proven: false,
+            trusted_sessions: [],
+            missing_trust: [{ fact_id: "fact_session", variable: "session", reason: "derived_from_request" }]
+          },
+          authorization: {
+            required: true,
+            proven: false,
+            role_or_policy_guards: [],
+            missing: [{ reason: "session_not_trusted", sink_fact_id: "sink_delete" }]
+          },
+          tenant: {
+            required: true,
+            proven: false,
+            tenant_sources: [{ fact_id: "fact_tenant", source: "body", key: "tenantId", trusted: false }],
+            predicates: [],
+            missing: [{ data_operation_fact_id: "fact_delete", reason: "tenant_source_untrusted" }]
+          }
+        })
+      ],
+      findings: [{
+        finding_id: "finding_phase4",
+        title: "API route missing required authorization proof",
+        file_path: "app/api/projects/route.ts",
+        enforcement_result: "block"
+      }]
+    });
+
+    expect(payload.security_boundary_proofs[0]).toMatchObject({
+      session_trust: { required: true, proven: false },
+      authorization: { required: true, proven: false },
+      tenant: { required: true, proven: false }
+    });
+    expect(payload.summary.session_trust_failed_count).toBe(1);
+    expect(payload.summary.authorization_failed_count).toBe(1);
+    expect(payload.summary.tenant_scope_failed_count).toBe(1);
+    expect(JSON.stringify(payload)).not.toContain("tenant-");
+  });
+
+  it("phase4 findings respect changed hunk scope", () => {
+    const payload = buildSecurityCheckJson({
+      repo_id: "repo_abc",
+      scope: "changed-hunks",
+      changed_files: ["app/api/projects/route.ts"],
+      proofs: [
+        securityProof("proof_phase4_changed", "app/api/projects/route.ts", "finding_phase4_changed", {
+          session_trust: {
+            required: true,
+            proven: false,
+            trusted_sessions: [],
+            missing_trust: [{ fact_id: "fact_session", variable: "session", reason: "derived_from_request" }]
+          }
+        }),
+        securityProof("proof_phase4_old", "app/api/archive/route.ts", "finding_phase4_old", {
+          session_trust: {
+            required: true,
+            proven: false,
+            trusted_sessions: [],
+            missing_trust: [{ fact_id: "fact_session_old", variable: "session", reason: "derived_from_request" }]
+          }
+        })
+      ],
+      findings: [{
+        finding_id: "finding_phase4_changed",
+        title: "API route session object is not trusted",
+        file_path: "app/api/projects/route.ts",
+        enforcement_result: "block"
+      }, {
+        finding_id: "finding_phase4_old",
+        title: "API route session object is not trusted",
+        file_path: "app/api/archive/route.ts",
+        enforcement_result: "block"
+      }]
+    });
+
+    expect(payload.security_findings).toEqual([expect.objectContaining({
+      finding_id: "finding_phase4_changed",
+      enforcement_result: "block"
+    })]);
+    expect(payload.summary.security_blocking_count).toBe(1);
+    expect(JSON.stringify(payload)).not.toContain("session=");
+  });
+
   it("receives SecurityBoundaryProof.auth from engine-owned auth checks", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-security-auth-bridge-"));
     tempDirs.push(dir);
@@ -324,6 +415,59 @@ describe("security check bridge", () => {
     expect(request.contract.conventions[0]?.requires).toBeUndefined();
   });
 
+  it("passes accepted phase4 requires fields to rust engine", () => {
+    const request = engineCheckRequest({
+      repoId: "repo_abc",
+      repoRoot: "/tmp/repo",
+      scanId: "scan_abc",
+      snapshots: [],
+      facts: [],
+      conventions: [{
+        id: "security_api_tenant_scope",
+        repo_id: "repo_abc",
+        contract_id: "contract_abc",
+        kind: "api_route_requires_tenant_scope",
+        statement: "API routes require tenant scope.",
+        scope: { path_globs: ["app/api/**/route.ts"], file_roles: ["api_route"] },
+        matcher: {
+          kind: "api_route_requires_tenant_scope",
+          applies_to_file_roles: ["api_route"],
+          required_calls: ["scopeProjectToTenant"]
+        },
+        requires: {
+          auth_helpers: [{ guard_id: "auth_require_user", symbol: "requireUser", behavior: "returns_session" }],
+          authorization_helpers: ["requireRole", "canAccessProject"],
+          tenant_helpers: ["scopeProjectToTenant"],
+          tenant_keys: ["tenantId"],
+          tenant_sources: ["session"],
+          data_operations: ["findMany", "delete"]
+        },
+        severity: "error",
+        enforcement_mode: "block",
+        enforcement_capability: "deterministic_check",
+        exceptions: [],
+        evidence_refs: [],
+        counterexample_refs: [],
+        accepted_by: "test",
+        accepted_at: "2026-05-26T00:00:00.000Z",
+        updated_at: "2026-05-26T00:00:00.000Z"
+      }],
+      baseline: [],
+      diff: { files: [], deletedFiles: [] },
+      scope: "full"
+    });
+
+    expect(request.contract.conventions[0]?.requires).toMatchObject({
+      auth_helpers: [{ guard_id: "auth_require_user", symbol: "requireUser", behavior: "returns_session" }],
+      authorization_helpers: ["requireRole", "canAccessProject"],
+      tenant_helpers: ["scopeProjectToTenant"],
+      tenant_keys: ["tenantId"],
+      tenant_sources: ["session"],
+      data_operations: ["findMany", "delete"]
+    });
+    expect(request.contract.conventions[0]?.matcher.required_calls).toEqual(["scopeProjectToTenant"]);
+  });
+
   it("returns SecurityBoundaryProof.auth in drift check JSON output", async () => {
     const { databasePath, repoRoot, diffPath } = await seedAuthCheckDatabase();
     const storage = openDriftStorage({ databasePath });
@@ -394,6 +538,62 @@ describe("security check bridge", () => {
       expected_layer: "request_validation",
       actual_layer: "unsupported_request_input_spread"
     });
+  });
+
+  it("applies approved waivers to engine-owned Phase 4 findings before persistence", async () => {
+    const unwaived = await seedPhase4TenantWaiverCheckDatabase(false);
+    const unwaivedStorage = openDriftStorage({ databasePath: unwaived.databasePath });
+    unwaivedStorage.migrate();
+    const blocked = await runCheck(unwaivedStorage, {
+      positional: ["check"],
+      flags: new Map<string, string | true>([
+        ["repo", "repo_abc"],
+        ["scope", "changed-hunks"],
+        ["diff-file", unwaived.diffPath],
+        ["now", "2026-05-26T00:00:00.000Z"],
+        ["json", true]
+      ])
+    });
+    unwaivedStorage.close();
+    expect(blocked.exitCode).toBe(1);
+
+    const waived = await seedPhase4TenantWaiverCheckDatabase(true);
+    const waivedStorage = openDriftStorage({ databasePath: waived.databasePath });
+    waivedStorage.migrate();
+    const result = await runCheck(waivedStorage, {
+      positional: ["check"],
+      flags: new Map<string, string | true>([
+        ["repo", "repo_abc"],
+        ["scope", "changed-hunks"],
+        ["diff-file", waived.diffPath],
+        ["now", "2026-05-26T00:00:00.000Z"],
+        ["json", true]
+      ])
+    });
+    const storedFindings = waivedStorage.listFindings("repo_abc");
+    waivedStorage.close();
+
+    expect(result.exitCode).toBe(0);
+    const payload = result.payload as {
+      summary?: { waived_findings_count?: number; blocking_count?: number };
+      findings?: Array<{ convention_id: string; enforcement_result: string }>;
+      waived_findings?: Array<{ waiver_id: string; convention_id: string; file_path: string }>;
+    };
+    expect(payload.summary?.waived_findings_count).toBe(1);
+    expect(payload.summary?.blocking_count).toBe(0);
+    expect(payload.waived_findings).toContainEqual(expect.objectContaining({
+      waiver_id: "waiver_phase4_tenant",
+      convention_id: "security_api_tenant_scope",
+      file_path: "app/api/projects/route.ts"
+    }));
+    expect(payload.findings ?? []).not.toContainEqual(expect.objectContaining({
+      convention_id: "security_api_tenant_scope",
+      enforcement_result: "block"
+    }));
+    expect(storedFindings).not.toContainEqual(expect.objectContaining({
+      convention_id: "security_api_tenant_scope",
+      status: "new"
+    }));
   });
 
   it("returns middleware coverage proof in drift check JSON output", () => {
@@ -617,6 +817,130 @@ async function seedAuthCheckDatabase(): Promise<{
     layer_architecture: {
       schema_version: "drift.layer_architecture.v1",
       architecture_id: "architecture_security_auth",
+      repo_id: "repo_abc",
+      version: 1,
+      layers: [
+        { id: "route", role: "route", position: "entrypoint" },
+        { id: "auth", role: "auth", position: "middle" },
+        { id: "data_access", role: "data_access", position: "terminal" }
+      ],
+      allowed_edges: [],
+      forbidden_edges: [],
+      soft_edges: []
+    },
+    safe_commands: [],
+    required_checks: [],
+    context_egress: {
+      default_mode: "local_only",
+      denied_globs: [".env*", "**/*.pem"],
+      max_snippet_chars: 1200,
+      allow_full_file_content: false
+    },
+    agent_permissions: []
+  });
+  storage.close();
+  return { databasePath, repoRoot, diffPath };
+}
+
+async function seedPhase4TenantWaiverCheckDatabase(withWaiver: boolean): Promise<{
+  databasePath: string;
+  repoRoot: string;
+  diffPath: string;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), "drift-security-phase4-waiver-"));
+  tempDirs.push(dir);
+  const repoRoot = join(dir, "repo");
+  const routePath = "app/api/projects/route.ts";
+  await mkdir(join(repoRoot, "app/api/projects"), { recursive: true });
+  await writeFile(join(repoRoot, routePath), [
+    "import { requireUser } from '@/server/auth';",
+    "const db = { project: { findMany: async () => [] } };",
+    "",
+    "export async function GET(request: Request) {",
+    "  const session = await requireUser(request);",
+    "  const projects = await db.project.findMany();",
+    "  return Response.json({ projects, ok: Boolean(session) });",
+    "}",
+    ""
+  ].join("\n"));
+  const diffPath = join(dir, "diff.patch");
+  await writeFile(diffPath, [
+    "diff --git a/app/api/projects/route.ts b/app/api/projects/route.ts",
+    "--- a/app/api/projects/route.ts",
+    "+++ b/app/api/projects/route.ts",
+    "@@ -0,0 +1,8 @@",
+    "+import { requireUser } from '@/server/auth';",
+    "+const db = { project: { findMany: async () => [] } };",
+    "+",
+    "+export async function GET(request: Request) {",
+    "+  const session = await requireUser(request);",
+    "+  const projects = await db.project.findMany();",
+    "+  return Response.json({ projects, ok: Boolean(session) });",
+    "+}",
+    ""
+  ].join("\n"));
+  const databasePath = join(dir, "drift.sqlite");
+  const storage = openDriftStorage({ databasePath });
+  storage.migrate();
+  storage.upsertRepo({
+    id: "repo_abc",
+    root_path: repoRoot,
+    fingerprint: "repo-fp",
+    created_at: "2026-05-26T00:00:00.000Z",
+    updated_at: "2026-05-26T00:00:00.000Z"
+  });
+  const phase4Convention = {
+    id: "security_api_tenant_scope",
+    contract_id: "contract_abc",
+    kind: "api_route_requires_tenant_scope",
+    statement: "API routes require accepted tenant scope proof.",
+    scope: { path_globs: ["app/api/**/route.ts"], file_roles: ["api_route"] },
+    matcher: {
+      kind: "api_route_requires_tenant_scope",
+      applies_to_file_roles: ["api_route"],
+      methods: ["GET"]
+    },
+    requires: {
+      auth_helpers: [{
+        guard_id: "auth_require_user",
+        symbol: "requireUser",
+        behavior: "returns_session"
+      }],
+      tenant_keys: ["tenantId"],
+      tenant_sources: ["session"],
+      data_operations: ["read"]
+    },
+    severity: "error",
+    enforcement_mode: "block",
+    enforcement_capability: "deterministic_check",
+    exceptions: [],
+    evidence_refs: [],
+    counterexample_refs: [],
+    accepted_by: "test",
+    accepted_at: "2026-05-26T00:00:00.000Z",
+    updated_at: "2026-05-26T00:00:00.000Z"
+  } as const;
+  storage.upsertAcceptedConvention("repo_abc", phase4Convention);
+  storage.upsertRepoContract({
+    id: "contract_abc",
+    repo_id: "repo_abc",
+    contract_schema_version: 1,
+    repo_fingerprint: "repo-fp",
+    created_at: "2026-05-26T00:00:00.000Z",
+    updated_at: "2026-05-26T00:00:00.000Z",
+    conventions: [phase4Convention],
+    rejected_inferences: [],
+    waivers: withWaiver ? [{
+      id: "waiver_phase4_tenant",
+      reason: "Temporary accepted Phase 4 tenant-scope remediation window.",
+      path_globs: [routePath],
+      created_by: "test",
+      created_at: "2026-05-26T00:00:00.000Z"
+    }] : [],
+    risky_areas: [],
+    layer_architecture: {
+      schema_version: "drift.layer_architecture.v1",
+      architecture_id: "architecture_security_phase4",
       repo_id: "repo_abc",
       version: 1,
       layers: [

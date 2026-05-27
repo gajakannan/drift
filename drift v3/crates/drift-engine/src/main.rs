@@ -738,6 +738,10 @@ fn fact_kind(kind: FactKind) -> &'static str {
         FactKind::MiddlewareMatcherDeclared => "middleware_matcher_declared",
         FactKind::MiddlewareProtectsRoute => "middleware_protects_route",
         FactKind::RequestInputRead => "request_input_read",
+        FactKind::SessionRead => "session_read",
+        FactKind::TenantSource => "tenant_source",
+        FactKind::TenantGuardCalled => "tenant_guard_called",
+        FactKind::AuthorizationGuardCalled => "authorization_guard_called",
         FactKind::RequestValidationCalled => "request_validation_called",
         FactKind::ValidatedInputUsed => "validated_input_used",
         FactKind::OutboundRequestCalled => "outbound_request_called",
@@ -746,6 +750,10 @@ fn fact_kind(kind: FactKind) -> &'static str {
         FactKind::CsrfGuardCalled => "csrf_guard_called",
         FactKind::RateLimitGuardCalled => "rate_limit_guard_called",
         FactKind::CorsPolicyDeclared => "cors_policy_declared",
+        FactKind::SensitiveFieldDeclared => "sensitive_field_declared",
+        FactKind::ResponseEmitsField => "response_emits_field",
+        FactKind::SerializerCalled => "serializer_called",
+        FactKind::SecretRead => "secret_read",
     }
 }
 

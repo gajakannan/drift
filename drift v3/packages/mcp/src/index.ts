@@ -1244,6 +1244,9 @@ function securityCapabilitySummary(capabilityReport: ScanCapabilityReport | null
     .map((entry) => [entry.rule_id, entry]));
   const middlewareCompleteness = completenessByRule.get("middleware_must_cover_routes");
   const requestValidationCompleteness = completenessByRule.get("api_route_requires_request_validation");
+  const sessionTrustCompleteness = completenessByRule.get("session_object_must_come_from_trusted_helper");
+  const authorizationCompleteness = completenessByRule.get("api_route_requires_authorization");
+  const tenantScopeCompleteness = completenessByRule.get("api_route_requires_tenant_scope");
   return {
     middleware_coverage: {
       certified: certified.has("middleware_coverage"),
@@ -1258,6 +1261,27 @@ function securityCapabilitySummary(capabilityReport: ScanCapabilityReport | null
       missing: missing.has("request_validation_facts"),
       can_block: Boolean(requestValidationCompleteness?.can_block),
       complete: Boolean(requestValidationCompleteness?.complete)
+    },
+    session_trust: {
+      certified: certified.has("session_trust"),
+      required: required.has("session_trust"),
+      missing: missing.has("session_trust"),
+      can_block: Boolean(sessionTrustCompleteness?.can_block),
+      complete: Boolean(sessionTrustCompleteness?.complete)
+    },
+    authorization: {
+      certified: certified.has("authorization"),
+      required: required.has("authorization"),
+      missing: missing.has("authorization"),
+      can_block: Boolean(authorizationCompleteness?.can_block),
+      complete: Boolean(authorizationCompleteness?.complete)
+    },
+    tenant_scope: {
+      certified: certified.has("tenant_scope"),
+      required: required.has("tenant_scope"),
+      missing: missing.has("tenant_scope"),
+      can_block: Boolean(tenantScopeCompleteness?.can_block),
+      complete: Boolean(tenantScopeCompleteness?.complete)
     }
   };
 }
@@ -2506,12 +2530,17 @@ function validateConventionKind(kind: ConventionKind | undefined): ConventionKin
     kind === "api_route_no_direct_data_access" ||
     kind === "api_route_requires_service_delegation" ||
     kind === "api_route_requires_auth_helper" ||
+    kind === "middleware_must_cover_routes" ||
+    kind === "api_route_requires_request_validation" ||
+    kind === "session_object_must_come_from_trusted_helper" ||
+    kind === "api_route_requires_authorization" ||
+    kind === "api_route_requires_tenant_scope" ||
     kind === "test_expected_for_changed_module" ||
     kind === "custom_briefing"
   ) {
     return kind;
   }
-  throw new Error("kind must be api_route_no_direct_data_access, api_route_requires_service_delegation, api_route_requires_auth_helper, test_expected_for_changed_module, or custom_briefing.");
+  throw new Error("kind must be a supported accepted convention kind.");
 }
 
 function validateEnforcementCapability(capability: EnforcementCapability | undefined): EnforcementCapability | undefined {

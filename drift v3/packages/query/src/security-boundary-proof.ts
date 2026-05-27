@@ -52,6 +52,20 @@ export interface SecurityBoundaryProofRouteSummary {
       guard_call_count: number;
     };
   };
+  response_shape_required: boolean;
+  response_shape_proven: boolean;
+  sensitive_response_leak_reasons: string[];
+  secret_exposure_count: number;
+  secret_exposure_sink_kinds: string[];
+  session_trust_required: boolean;
+  session_trust_proven: boolean;
+  session_missing_trust_reasons: string[];
+  authorization_required: boolean;
+  authorization_proven: boolean;
+  authorization_missing_reasons: string[];
+  tenant_required: boolean;
+  tenant_proven: boolean;
+  tenant_missing_reasons: string[];
   proof_status: string;
   enforcement_result: string;
   missing_proof_codes: string[];
@@ -120,6 +134,31 @@ export function buildSecurityBoundaryProofReadModel(
         guard_calls: [],
         missing_proof: []
       };
+      const responseShape = proof.response_shape ?? {
+        required: false,
+        proven: false,
+        sensitive_leaks: []
+      };
+      const secretSinks = proof.sinks?.secrets ?? [];
+      const sessionTrust = proof.session_trust ?? {
+        required: false,
+        proven: false,
+        trusted_sessions: [],
+        missing_trust: []
+      };
+      const authorization = proof.authorization ?? {
+        required: false,
+        proven: false,
+        role_or_policy_guards: [],
+        missing: []
+      };
+      const tenant = proof.tenant ?? {
+        required: false,
+        proven: false,
+        tenant_sources: [],
+        predicates: [],
+        missing: []
+      };
       return {
       route_id: proof.route.route_id,
       file_path: proof.route.file_path,
@@ -164,6 +203,24 @@ export function buildSecurityBoundaryProofReadModel(
           guard_call_count: rateLimit.guard_calls.length
         }
       },
+      response_shape_required: responseShape.required,
+      response_shape_proven: responseShape.proven,
+      sensitive_response_leak_reasons: [...new Set(responseShape.sensitive_leaks
+        .map((leak) => leak.reason))].sort(),
+      secret_exposure_count: secretSinks.length,
+      secret_exposure_sink_kinds: [...new Set(secretSinks.map((secret) => secret.sink_kind))].sort(),
+      session_trust_required: sessionTrust.required,
+      session_trust_proven: sessionTrust.proven,
+      session_missing_trust_reasons: [...new Set(sessionTrust.missing_trust
+        .map((missing) => missing.reason))].sort(),
+      authorization_required: authorization.required,
+      authorization_proven: authorization.proven,
+      authorization_missing_reasons: [...new Set(authorization.missing
+        .map((missing) => missing.reason))].sort(),
+      tenant_required: tenant.required,
+      tenant_proven: tenant.proven,
+      tenant_missing_reasons: [...new Set(tenant.missing
+        .map((missing) => missing.reason))].sort(),
       proof_status: proof.result.proof_status,
       enforcement_result: proof.result.enforcement_result,
       missing_proof_codes: proof.missing_proof.map((missing) => missing.code),

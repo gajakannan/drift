@@ -179,12 +179,17 @@ export function optionalConventionKindFlag(parsed: ParsedArgs, name: string): Co
     value === "api_route_no_direct_data_access" ||
     value === "api_route_requires_service_delegation" ||
     value === "api_route_requires_auth_helper" ||
+    value === "middleware_must_cover_routes" ||
+    value === "api_route_requires_request_validation" ||
+    value === "session_object_must_come_from_trusted_helper" ||
+    value === "api_route_requires_authorization" ||
+    value === "api_route_requires_tenant_scope" ||
     value === "test_expected_for_changed_module" ||
     value === "custom_briefing"
   ) {
     return value;
   }
-  throw new Error("--kind must be api_route_no_direct_data_access, api_route_requires_service_delegation, api_route_requires_auth_helper, test_expected_for_changed_module, or custom_briefing.");
+  throw new Error("--kind must be a supported accepted convention kind.");
 }
 
 export function optionalEnforcementCapabilityFlag(parsed: ParsedArgs, name: string): EnforcementCapability | undefined {
