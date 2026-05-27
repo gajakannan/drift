@@ -63,7 +63,8 @@ import {
   repoMapRiskyAreaIds,
   selectRelevantTests,
   type ChangeImpactRouteFlow,
-  type DriftReadinessSurface
+  type DriftReadinessSurface,
+  type RepoMapFile
 } from "@drift/query";
 import { MIGRATIONS, openDriftStorage } from "@drift/storage";
 import { execFileSync } from "node:child_process";
@@ -439,8 +440,16 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         freshness_requirement: freshnessRequirement(Boolean(require_fresh), scanStatus),
         summary: readModel.summary,
         pagination: readModel.pagination,
-        review_items: readModel.review_items,
-        findings: readModel.findings
+        review_items: readModel.review_items.map((item) => ({
+          ...item,
+          first_evidence: item.first_evidence
+            ? {
+                file_path: item.first_evidence.file_path,
+                start_line: item.first_evidence.start_line ?? null
+              }
+            : null
+        })),
+        findings: readModel.findings.map(sanitizedMcpFinding)
       };
     }),
 
@@ -1518,25 +1527,29 @@ function repoMapPayload(
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
   const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "repo_map");
   const proofRuns = latestScan
-    ? storage.listSecurityBoundaryProofRuns({
+    ? storage.listLatestSecurityBoundaryProofRunsForRepo({
         repo_id: repoId,
-        scan_id: latestScan.id,
-        file_path: options.path,
-        latest_only: true
+        file_path: options.path
       })
     : [];
+  const fallbackProofs = proofRuns.length === 0 && latestScan
+    ? storage.listSecurityBoundaryProofs(repoId, latestScan.id)
+        .filter((proof) => !options.path || proof.route.file_path === options.path)
+    : [];
+  const proofs = proofRuns.length > 0 ? proofRuns.map((run) => run.proof) : fallbackProofs;
   const phase8Security = buildSecurityPhase8ReadModel({
     repo_id: repoId,
-    scan_id: latestScan?.id ?? null,
+    scan_id: proofRuns[0]?.scan_id ?? latestScan?.id ?? null,
     check_id: proofRuns[0]?.check_id ?? null,
-    proofs: proofRuns.map((run) => run.proof),
+    proofs,
     findings: findings.map((finding) => ({
       finding_id: finding.id,
       title: finding.title,
       lifecycle: finding.status
     })),
     accepted_conventions: contract.conventions,
-    changed_files: options.path ? [options.path] : undefined
+    changed_files: options.path ? [options.path] : undefined,
+    known_routes: knownPhase8Routes(readModel.all_files)
   });
   return {
     response_schema: "drift.repo.map.v1",
@@ -1578,6 +1591,40 @@ function repoMapPayload(
       `drift scan status --repo ${repoId} --json`
     ]
   };
+}
+
+function knownPhase8Routes(files: RepoMapFile[]) {
+  return files
+    .filter((file) => file.roles.includes("api_route"))
+    .flatMap((file) => {
+      const methods = file.exported_symbols.filter((symbol) =>
+        ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(symbol)
+      );
+      const routePath = routePathForFile(file.path);
+      return (methods.length > 0 ? methods : ["unknown"]).map((method) => ({
+        route_id: `route:${file.path}:${method}`,
+        file_path: file.path,
+        path: routePath,
+        method,
+        file_role: "api_route"
+      }));
+    });
+}
+
+function routePathForFile(filePath: string): string | undefined {
+  const normalized = filePath.replaceAll("\\", "/");
+  const prefix = "app/api/";
+  const prefixIndex = normalized.indexOf(prefix);
+  const suffix = ["/route.ts", "/route.tsx", "/route.js", "/route.jsx"]
+    .find((candidate) => normalized.endsWith(candidate));
+  if (prefixIndex === -1 || !suffix) {
+    return undefined;
+  }
+  const route = normalized.slice(prefixIndex + prefix.length, -suffix.length);
+  const segments = route.split("/").filter((segment) => !(segment.startsWith("(") && segment.endsWith(")")));
+  return segments.length === 0
+    ? "/api"
+    : `/api/${segments.join("/").replaceAll("[", ":").replaceAll("]", "")}`;
 }
 
 function orderAcceptedConventionsForReview(conventions: AcceptedConvention[]): AcceptedConvention[] {
@@ -2577,6 +2624,24 @@ function validatePolicySurface(surface: PolicyDecision["surface"]): PolicyDecisi
     return surface;
   }
   throw new Error("surface must be cli-preflight, cli-check, mcp, contract-export, artifact, log, or ui.");
+}
+
+function sanitizedMcpFinding(finding: Finding) {
+  return {
+    finding_id: finding.id,
+    convention_id: finding.convention_id,
+    title: finding.title,
+    severity: finding.severity,
+    lifecycle: finding.status,
+    diff_status: finding.diff_status,
+    enforcement_result: finding.enforcement_result,
+    file_refs: finding.evidence_refs.map((ref) => ({
+      file_path: ref.file_path,
+      ...(ref.start_line ? { start_line: ref.start_line } : {}),
+      ...(ref.end_line ? { end_line: ref.end_line } : {}),
+      redaction_state: ref.start_line || ref.end_line ? "line_only" : "metadata_only"
+    }))
+  };
 }
 
 function countBy<T, K extends string>(

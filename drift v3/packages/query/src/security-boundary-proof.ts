@@ -86,6 +86,13 @@ export interface BuildSecurityPhase8ReadModelInput {
   findings: SecurityFindingSummaryInput[];
   accepted_conventions: AcceptedConvention[];
   changed_files?: string[];
+  known_routes?: Array<{
+    route_id: string;
+    file_path: string;
+    path?: string;
+    method?: string;
+    file_role?: string;
+  }>;
 }
 
 export interface SecurityCapabilitySummary {
@@ -154,8 +161,15 @@ const CAPABILITY_ALIASES: Record<string, string> = {
 };
 
 export function buildSecurityPhase8ReadModel(input: BuildSecurityPhase8ReadModelInput) {
-  const changedFiles = new Set(input.changed_files ?? input.proofs.map((proof) => proof.route.file_path));
-  const routes = input.proofs.map((proof) => phase8Route(input.repo_id, proof));
+  const proofRoutes = input.proofs.map((proof) => phase8Route(input.repo_id, proof));
+  const proofRouteIds = new Set(proofRoutes.map((route) => route.route_id));
+  const unknownRoutes = (input.known_routes ?? [])
+    .filter((route) => !proofRouteIds.has(route.route_id))
+    .map((route) => unknownPhase8Route(input.repo_id, route));
+  const routes = [...proofRoutes, ...unknownRoutes].sort((left, right) =>
+    left.file_path.localeCompare(right.file_path) || left.route_id.localeCompare(right.route_id)
+  );
+  const changedFiles = new Set(input.changed_files ?? routes.map((route) => route.file_path));
   return {
     response_schema: "drift.security.phase8.read-model.v1",
     repo_id: input.repo_id,
@@ -196,12 +210,39 @@ export function buildSecurityPhase8ReadModel(input: BuildSecurityPhase8ReadModel
           next_command: route.security.next_command
         };
       }),
+    required_proofs: routes.flatMap((route) => {
+      const proof = input.proofs.find((candidate) => candidate.route.route_id === route.route_id);
+      return proof ? requiredProofSummaries(proof) : [];
+    }),
+    current_proof_status: routes.map((route) => ({
+      route_id: route.route_id,
+      file_path: route.file_path,
+      proof_status: route.security.proof_status,
+      enforcement_result: route.security.enforcement_result
+    })),
+    missing_proof_summaries: input.proofs.flatMap((proof) => proof.missing_proof.map((missing) => ({
+      route_id: proof.route.route_id,
+      file_path: proof.route.file_path,
+      id: missing.id,
+      capability: normalizedCapability(missing.capability),
+      code: missing.code,
+      blocks_enforcement: missing.blocks_enforcement
+    }))),
+    parser_gap_summaries: input.proofs.flatMap((proof) => proof.parser_gaps.map((gap) => ({
+      route_id: proof.route.route_id,
+      parser_gap_id: gap.parser_gap_id,
+      capability: normalizedCapability(gap.capability),
+      code: gap.code,
+      file_path: gap.file_path,
+      ...(gap.start_line ? { start_line: gap.start_line } : {}),
+      ...(gap.end_line ? { end_line: gap.end_line } : {}),
+      blocks_enforcement: gap.blocks_enforcement
+    }))),
     do_not_include: [
       "source snippets",
       "secret values",
       "raw request payload examples",
       "headers",
-      "cookies",
       "raw SQL",
       "raw URLs",
       "env values",
@@ -209,6 +250,39 @@ export function buildSecurityPhase8ReadModel(input: BuildSecurityPhase8ReadModel
       "user IDs",
       "tenant IDs"
     ] as const
+  };
+}
+
+function unknownPhase8Route(
+  repoId: string,
+  route: { route_id: string; file_path: string; path?: string; method?: string }
+): SecurityPhase8Route {
+  return {
+    route_id: route.route_id,
+    path: route.path ?? null,
+    method: route.method ?? null,
+    file_path: route.file_path,
+    security: {
+      public_or_protected: "unknown",
+      auth_proven: "unknown",
+      middleware_proven: "unknown",
+      tenant_scope: "unknown",
+      request_validation: "unknown",
+      sensitive_response: "unknown",
+      phase6: {
+        ssrf: "unknown",
+        raw_sql: "unknown",
+        cors: "unknown",
+        csrf: "unknown",
+        rate_limit: "unknown"
+      },
+      proof_status: "unknown",
+      enforcement_result: "unknown",
+      missing_proof_codes: ["no_security_proof"],
+      parser_gap_codes: [],
+      finding_ids: [],
+      next_command: `drift check --repo ${repoId} --json`
+    }
   };
 }
 
@@ -501,6 +575,12 @@ function securityCapabilities(
   acceptedConventions: AcceptedConvention[]
 ): SecurityCapabilitySummary[] {
   return SECURITY_CAPABILITIES.map((name) => {
+    const matchingConventions = acceptedConventions.filter((convention) =>
+      securityConventionCapability(convention.kind) === name
+    );
+    const matchingContracts = proofs.flatMap((proof) =>
+      proof.contracts.filter((contract) => contract.matched && normalizedCapability(securityConventionCapability(contract.kind) ?? "") === name)
+    );
     const matchingProofs = proofs.filter((proof) =>
       proof.capability_status.some((status) => normalizedCapability(status.name) === name) ||
       proof.missing_proof.some((missing) => normalizedCapability(missing.capability) === name) ||
@@ -516,30 +596,62 @@ function securityCapabilities(
         .filter((gap) => normalizedCapability(gap.capability) === name)
         .map((gap) => gap.file_path)
     ]))].sort();
-    const requiredByContract = acceptedConventions.some((convention) =>
-      securityConventionCapability(convention.kind) === name &&
-      ["warn", "block"].includes(convention.enforcement_mode)
+    const explicitStatuses = matchingProofs.flatMap((proof) =>
+      proof.capability_status.filter((status) => normalizedCapability(status.name) === name)
     );
-    const complete = matchingProofs.length > 0 &&
-      matchingProofs.every((proof) => proof.result.proof_status === "proven") &&
+    const requiredByContract = matchingConventions.some((convention) =>
+      ["warn", "block"].includes(convention.enforcement_mode)
+    ) || matchingContracts.some((contract) => ["warn", "block"].includes(contract.enforcement_mode));
+    const capability = strongestCapability(matchingConventions, matchingContracts);
+    const complete = explicitStatuses.length > 0 &&
+      explicitStatuses.every((status) => status.status === "complete") &&
       parserGapCount === 0 &&
       missingProofCount === 0;
+    const partial = explicitStatuses.some((status) => status.status === "partial") ||
+      parserGapCount > 0 ||
+      missingProofCount > 0 ||
+      matchingProofs.length > 0;
     return {
       name,
-      capability: "deterministic_check",
+      capability,
       status: complete
         ? "complete"
-        : matchingProofs.length > 0
+        : partial
           ? "partial"
           : requiredByContract
             ? "missing"
             : "unsupported",
-      can_block: true,
+      can_block: matchingConventions.some((convention) =>
+        convention.enforcement_capability === "deterministic_check" &&
+        convention.enforcement_mode === "block"
+      ) || matchingContracts.some((contract) =>
+        contract.capability === "deterministic_check" &&
+        contract.enforcement_mode === "block"
+      ),
       parser_gap_count: parserGapCount,
       missing_proof_count: missingProofCount,
       affected_files: affectedFiles
     };
   });
+}
+
+function strongestCapability(
+  conventions: AcceptedConvention[],
+  contracts: SecurityBoundaryProof["contracts"] = []
+): "deterministic_check" | "heuristic_check" | "briefing_only" {
+  if (
+    conventions.some((convention) => convention.enforcement_capability === "deterministic_check") ||
+    contracts.some((contract) => contract.capability === "deterministic_check")
+  ) {
+    return "deterministic_check";
+  }
+  if (
+    conventions.some((convention) => convention.enforcement_capability === "heuristic_check") ||
+    contracts.some((contract) => contract.capability === "heuristic_check")
+  ) {
+    return "heuristic_check";
+  }
+  return "briefing_only";
 }
 
 function normalizedCapability(capability: string): string {
@@ -598,7 +710,6 @@ function acceptedSecurityConventionSummary(convention: AcceptedConvention) {
     },
     trusted_helpers: trustedHelpers(convention.requires),
     requires_summary: requiredProofSummariesForKind(convention.kind),
-    accepted_by: convention.accepted_by,
     accepted_at: convention.accepted_at,
     updated_at: convention.updated_at,
     expires_at: convention.expires_at

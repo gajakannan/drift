@@ -1190,11 +1190,8 @@ fn phase6_finding_text(kind: &str) -> (&'static str, &'static str, &'static str)
 }
 
 fn route_path_from_file(file_path: &str) -> Option<String> {
-    if let Some(rest) = file_path
-        .strip_prefix("app/")
-        .and_then(|path| path.strip_suffix("/route.ts"))
-    {
-        return Some(format!("/{}", rest.trim_end_matches('/')));
+    if let Some(path) = next_route_path(file_path) {
+        return Some(path);
     }
     if let Some(rest) = file_path
         .strip_prefix("pages")
@@ -2122,6 +2119,65 @@ fn input_line_from_fact_id(fact_id: &str) -> usize {
         .unwrap_or(0)
 }
 
+fn security_line_evidence_refs(
+    route_id: &str,
+    file_path: &str,
+    capability: &str,
+    role: &str,
+    kind: &str,
+    fact_ids: Vec<String>,
+) -> Vec<serde_json::Value> {
+    let mut refs = Vec::new();
+    let mut seen = BTreeSet::new();
+    for fact_id in fact_ids {
+        if fact_id.is_empty() || !seen.insert(fact_id.clone()) {
+            continue;
+        }
+        let line = input_line_from_fact_id(&fact_id);
+        let mut evidence = serde_json::Map::new();
+        evidence.insert(
+            "evidence_id".to_string(),
+            json!(format!("evidence:{route_id}:{fact_id}:{kind}")),
+        );
+        evidence.insert("fact_id".to_string(), json!(fact_id));
+        evidence.insert("capability".to_string(), json!(capability));
+        evidence.insert("kind".to_string(), json!(kind));
+        evidence.insert("file_path".to_string(), json!(file_path));
+        if line > 0 {
+            evidence.insert("start_line".to_string(), json!(line));
+            evidence.insert("end_line".to_string(), json!(line));
+        }
+        evidence.insert("role".to_string(), json!(role));
+        refs.push(serde_json::Value::Object(evidence));
+    }
+    refs
+}
+
+fn phase4_missing_fact_ids(proof: &SecurityBoundaryProof) -> Vec<String> {
+    proof
+        .tenant
+        .missing
+        .iter()
+        .map(|missing| missing.data_operation_fact_id.clone())
+        .chain(
+            proof
+                .authorization
+                .missing
+                .iter()
+                .filter_map(|missing| missing.sink_fact_id.clone()),
+        )
+        .chain(
+            proof
+                .session_trust
+                .missing_trust
+                .iter()
+                .map(|missing| missing.fact_id.clone()),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn phase5_proof_json(
     proof: &SecurityBoundaryProof,
     route_id: &str,
@@ -2178,6 +2234,18 @@ fn phase5_proof_json(
             })
         })
         .collect::<Vec<_>>();
+    let evidence_refs = security_line_evidence_refs(
+        route_id,
+        file_path,
+        if convention.kind == "api_route_forbids_sensitive_response_fields" {
+            "response_shape_facts"
+        } else {
+            "secret_exposure"
+        },
+        "missing_proof",
+        missing_code,
+        missing_fact_ids.clone(),
+    );
     let parser_gaps = proof
         .parser_gaps
         .iter()
@@ -2256,6 +2324,7 @@ fn phase5_proof_json(
         },
         "missing_proof": missing_proof,
         "parser_gaps": parser_gaps,
+        "evidence_refs": evidence_refs,
         "result": {
             "proof_status": security_proof_status(&proof.result.proof_status),
             "enforcement_result": if proof.result.proof_status == SecurityProofStatus::Proven {
@@ -2331,6 +2400,23 @@ fn route_security_proof_json(
             })
         })
         .collect::<Vec<_>>();
+    let evidence_refs = security_line_evidence_refs(
+        &proof.route_id,
+        &proof.file_path,
+        "control_flow_guard_dominance",
+        if proof.auth.proven {
+            "guard"
+        } else {
+            "missing_proof"
+        },
+        "auth_boundary",
+        proof
+            .trusted_guard_calls
+            .iter()
+            .map(|guard| guard.fact_id.clone())
+            .chain(undominated_fact_ids.clone())
+            .collect(),
+    );
 
     json!({
         "proof_id": format!("proof:{}:auth", proof.route_id),
@@ -2381,6 +2467,7 @@ fn route_security_proof_json(
         },
         "missing_proof": missing_proof,
         "parser_gaps": parser_gaps,
+        "evidence_refs": evidence_refs,
         "result": {
             "proof_status": security_proof_status(&proof.result.proof_status),
             "enforcement_result": if proof.result.proof_status == SecurityProofStatus::Proven {
@@ -2494,6 +2581,38 @@ fn request_validation_proof_json(
             serde_json::Value::Object(object)
         })
         .collect::<Vec<_>>();
+    let evidence_refs = security_line_evidence_refs(
+        route_id,
+        file_path,
+        "request_validation_facts",
+        if proof.request_validation.proven {
+            "validator"
+        } else {
+            "missing_proof"
+        },
+        "request_validation_boundary",
+        proof
+            .request_validation
+            .input_reads
+            .iter()
+            .map(|input| input.fact_id.clone())
+            .chain(
+                proof
+                    .request_validation
+                    .validations
+                    .iter()
+                    .map(|validation| validation.fact_id.clone()),
+            )
+            .chain(
+                proof
+                    .request_validation
+                    .validated_uses
+                    .iter()
+                    .map(|use_proof| use_proof.fact_id.clone()),
+            )
+            .chain(missing_fact_ids.clone())
+            .collect(),
+    );
 
     json!({
         "proof_id": format!("proof:{route_id}:request_validation"),
@@ -2557,6 +2676,7 @@ fn request_validation_proof_json(
         },
         "missing_proof": missing_proof,
         "parser_gaps": parser_gaps,
+        "evidence_refs": evidence_refs,
         "result": {
             "proof_status": security_proof_status(&proof.result.proof_status),
             "enforcement_result": if proof.result.proof_status == SecurityProofStatus::Proven {
@@ -2684,6 +2804,7 @@ fn phase4_proof_json(
             })
         })
         .collect::<Vec<_>>();
+    let missing_fact_ids = phase4_missing_fact_ids(proof);
     let missing_proof = missing_proof_ids
         .iter()
         .map(|id| {
@@ -2692,11 +2813,50 @@ fn phase4_proof_json(
                 "capability": phase4_expected_layer(&convention.kind),
                 "code": missing_code,
                 "blocks_enforcement": true,
-                "fact_ids": [],
+                "fact_ids": missing_fact_ids.clone(),
                 "graph_edge_ids": []
             })
         })
         .collect::<Vec<_>>();
+    let evidence_refs = security_line_evidence_refs(
+        route_id,
+        file_path,
+        phase4_expected_layer(&convention.kind),
+        if proof.result.proof_status == SecurityProofStatus::Proven {
+            "guard"
+        } else {
+            "missing_proof"
+        },
+        &missing_code,
+        proof
+            .session_trust
+            .trusted_sessions
+            .iter()
+            .map(|session| session.fact_id.clone())
+            .chain(
+                proof
+                    .authorization
+                    .role_or_policy_guards
+                    .iter()
+                    .map(|guard| guard.fact_id.clone()),
+            )
+            .chain(
+                proof
+                    .tenant
+                    .tenant_sources
+                    .iter()
+                    .map(|source| source.fact_id.clone()),
+            )
+            .chain(
+                proof
+                    .tenant
+                    .predicates
+                    .iter()
+                    .map(|predicate| predicate.fact_id.clone()),
+            )
+            .chain(missing_fact_ids.clone())
+            .collect(),
+    );
 
     json!({
         "proof_id": format!("proof:{route_id}:phase4"),
@@ -2791,6 +2951,7 @@ fn phase4_proof_json(
         },
         "missing_proof": missing_proof,
         "parser_gaps": parser_gaps,
+        "evidence_refs": evidence_refs,
         "result": {
             "proof_status": security_proof_status(&proof.result.proof_status),
             "enforcement_result": if proof.result.proof_status == SecurityProofStatus::Proven {
@@ -2829,13 +2990,35 @@ fn route_endpoint(file_path: &str, handler_symbol: &str) -> serde_json::Value {
 
 fn next_route_path(file_path: &str) -> Option<String> {
     let normalized = file_path.replace('\\', "/");
-    let prefix = "app/api/";
-    let suffix = "/route.ts";
-    let route = normalized.strip_prefix(prefix)?.strip_suffix(suffix)?;
-    if route.is_empty() {
+    let route = normalized
+        .strip_prefix("app/api/")?
+        .strip_suffix("/route.ts")
+        .or_else(|| {
+            normalized
+                .strip_prefix("app/api/")?
+                .strip_suffix("/route.tsx")
+        })
+        .or_else(|| {
+            normalized
+                .strip_prefix("app/api/")?
+                .strip_suffix("/route.js")
+        })
+        .or_else(|| {
+            normalized
+                .strip_prefix("app/api/")?
+                .strip_suffix("/route.jsx")
+        })?;
+    let segments = route
+        .split('/')
+        .filter(|segment| !(segment.starts_with('(') && segment.ends_with(')')))
+        .collect::<Vec<_>>();
+    if segments.is_empty() {
         return Some("/api".to_string());
     }
-    Some(format!("/api/{}", route.replace("[", ":").replace("]", "")))
+    Some(format!(
+        "/api/{}",
+        segments.join("/").replace("[", ":").replace("]", "")
+    ))
 }
 
 fn security_auth_files(

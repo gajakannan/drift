@@ -608,6 +608,13 @@ fn build_guard_proof(
     } else {
         config.not_dominating_code
     };
+    let missing_fact_ids = sink_line
+        .map(|line| vec![fact_id(file_path, protection_kind, line)])
+        .unwrap_or_else(|| vec![fact_id(file_path, protection_kind, route.start_line)]);
+    let guard_fact_ids = guard_calls
+        .iter()
+        .map(|guard| guard.fact_id.clone())
+        .collect::<Vec<_>>();
     Phase6GuardProof {
         required: true,
         proven,
@@ -615,7 +622,11 @@ fn build_guard_proof(
         missing_proof: (!proven)
             .then(|| Phase6MissingProof {
                 code: code.to_string(),
-                fact_ids: Vec::new(),
+                fact_ids: if guard_fact_ids.is_empty() {
+                    missing_fact_ids
+                } else {
+                    guard_fact_ids.into_iter().chain(missing_fact_ids).collect()
+                },
             })
             .into_iter()
             .collect(),
@@ -1326,11 +1337,33 @@ fn next_route_path(file_path: &str) -> Option<String> {
     let normalized = file_path.replace('\\', "/");
     let route = normalized
         .strip_prefix("app/api/")?
-        .strip_suffix("/route.ts")?;
-    Some(if route.is_empty() {
+        .strip_suffix("/route.ts")
+        .or_else(|| {
+            normalized
+                .strip_prefix("app/api/")?
+                .strip_suffix("/route.tsx")
+        })
+        .or_else(|| {
+            normalized
+                .strip_prefix("app/api/")?
+                .strip_suffix("/route.js")
+        })
+        .or_else(|| {
+            normalized
+                .strip_prefix("app/api/")?
+                .strip_suffix("/route.jsx")
+        })?;
+    let segments = route
+        .split('/')
+        .filter(|segment| !(segment.starts_with('(') && segment.ends_with(')')))
+        .collect::<Vec<_>>();
+    Some(if segments.is_empty() {
         "/api".to_string()
     } else {
-        format!("/api/{}", route.replace("[", ":").replace("]", ""))
+        format!(
+            "/api/{}",
+            segments.join("/").replace("[", ":").replace("]", "")
+        )
     })
 }
 

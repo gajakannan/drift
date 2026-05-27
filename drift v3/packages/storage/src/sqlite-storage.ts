@@ -733,6 +733,33 @@ export class SqliteDriftStorage {
     return latestCheckId ? filtered.filter((row) => row.check_id === latestCheckId) : [];
   }
 
+  listLatestSecurityBoundaryProofRunsForRepo(input: {
+    repo_id: string;
+    file_path?: string;
+    check_id?: string;
+  }): StoredSecurityBoundaryProofRun[] {
+    const clauses = ["repo_id = ?"];
+    const params: unknown[] = [input.repo_id];
+    if (input.check_id) {
+      clauses.push("check_id = ?");
+      params.push(input.check_id);
+    }
+    if (input.file_path) {
+      clauses.push("file_path = ?");
+      params.push(input.file_path);
+    }
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM security_boundary_proof_runs
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY created_at DESC, check_id DESC, proof_id ASC
+      `)
+      .all(...params)
+      .map(securityBoundaryProofRunFromRow);
+    const latestCheckId = rows[0]?.check_id;
+    return latestCheckId ? rows.filter((row) => row.check_id === latestCheckId) : [];
+  }
+
   upsertSymbolIdentities(identities: SymbolIdentity[]): void {
     const parsedIdentities = identities.map((identity) => SymbolIdentitySchema.parse(identity));
     const insert = this.db.prepare(`

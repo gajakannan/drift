@@ -753,6 +753,75 @@ describe("SQLite Drift storage", () => {
     storage.close();
   });
 
+  it("lists latest security boundary proof runs by repo across check scan ids", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+    storage.upsertRepo({
+      id: "repo_security",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-27T00:00:00.000Z",
+      updated_at: "2026-05-27T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_indexed",
+      repo_id: "repo_security",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-27T00:00:00.000Z",
+      completed_at: "2026-05-27T00:00:01.000Z"
+    });
+    storage.upsertCheckRun({
+      id: "check_security",
+      repo_id: "repo_security",
+      repo_contract_id: "contract_security",
+      contract_fingerprint: "contract-fp",
+      scan_id: "scan_indexed",
+      status: "pass",
+      scope: "full",
+      engine_source: "rust",
+      fallback_used: false,
+      stale_scan: false,
+      capability_complete: true,
+      findings_count: 0,
+      blocking_count: 0,
+      started_at: "2026-05-27T00:00:01.000Z",
+      completed_at: "2026-05-27T00:00:02.000Z"
+    });
+    storage.upsertSecurityBoundaryProofRuns({
+      repo_id: "repo_security",
+      scan_id: "scan_check_security",
+      check_id: "check_security",
+      created_at: "2026-05-27T00:00:02.000Z",
+      proofs: [validSecurityBoundaryProof({
+        route: {
+          route_id: "route_users_get",
+          file_path: "app/api/users/route.ts",
+          file_role: "api_route",
+          endpoint: { path: "/api/users", method: "GET", framework: "next" }
+        }
+      })]
+    });
+
+    const latestRows = storage.listLatestSecurityBoundaryProofRunsForRepo({
+      repo_id: "repo_security",
+      file_path: "app/api/users/route.ts"
+    });
+
+    expect(latestRows).toHaveLength(1);
+    expect(latestRows[0]?.check_id).toBe("check_security");
+    expect(latestRows[0]?.scan_id).toBe("scan_check_security");
+    storage.close();
+  });
+
   it("lists file snapshots for a scan", async () => {
     const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
     storage.migrate();

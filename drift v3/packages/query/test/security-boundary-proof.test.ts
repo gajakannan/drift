@@ -636,6 +636,152 @@ describe("security boundary proof read model", () => {
 
     expect(model.changed_route_security.map((route) => route.file_path)).toEqual(["app/api/users/route.ts"]);
   });
+
+  it("redacts accepted_by from security read model", () => {
+    const model = buildSecurityPhase8ReadModel({
+      repo_id: "repo_security",
+      scan_id: "scan_security",
+      check_id: "check_security",
+      proofs: [],
+      findings: [],
+      accepted_conventions: [acceptedConventionFixture({
+        accepted_by: "geoffrey@example.com",
+        accepted_at: "2026-05-27T00:00:00.000Z"
+      })]
+    });
+
+    expect(JSON.stringify(model)).not.toContain("geoffrey@example.com");
+    expect(model.repo_security_contracts[0]).not.toHaveProperty("accepted_by");
+    expect(model.repo_security_contracts[0]?.accepted_at).toBe("2026-05-27T00:00:00.000Z");
+  });
+
+  it("known routes without proof are emitted as unknown", () => {
+    const model = buildSecurityPhase8ReadModel({
+      repo_id: "repo_security",
+      scan_id: "scan_security",
+      check_id: null,
+      proofs: [],
+      findings: [],
+      accepted_conventions: [],
+      known_routes: [{
+        route_id: "route:GET:apps/web/app/api/users/route.ts",
+        file_path: "apps/web/app/api/users/route.ts",
+        method: "GET",
+        path: "/api/users",
+        file_role: "api_route"
+      }]
+    });
+
+    expect(model.routes).toEqual([expect.objectContaining({
+      route_id: "route:GET:apps/web/app/api/users/route.ts",
+      path: "/api/users",
+      method: "GET",
+      security: expect.objectContaining({
+        proof_status: "unknown",
+        missing_proof_codes: ["no_security_proof"]
+      })
+    })]);
+  });
+
+  it("derives mixed capability route status by capability", () => {
+    const model = buildSecurityPhase8ReadModel({
+      repo_id: "repo_security",
+      scan_id: "scan_security",
+      check_id: "check_security",
+      proofs: [securityBoundaryProofFixture({
+        contracts: [{
+          contract_id: "security_api_auth",
+          kind: "api_route_requires_auth_helper",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }, {
+          contract_id: "security_api_request_validation",
+          kind: "api_route_requires_request_validation",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }, {
+          contract_id: "security_custom",
+          kind: "custom_briefing",
+          enforcement_mode: "warn",
+          capability: "heuristic_check",
+          matched: true
+        }],
+        capability_status: [{
+          name: "control_flow_guard_dominance",
+          status: "complete",
+          can_block: true,
+          parser_gap_ids: [],
+          missing_proof_ids: []
+        }, {
+          name: "request_validation_facts",
+          status: "partial",
+          can_block: true,
+          parser_gap_ids: [],
+          missing_proof_ids: ["missing_validation"]
+        }],
+        request_validation: {
+          required: true,
+          proven: false,
+          input_reads: [],
+          validations: [],
+          validated_uses: [],
+          unvalidated_uses: []
+        },
+        missing_proof: [{
+          id: "missing_validation",
+          capability: "request_validation_facts",
+          code: "request_input_not_validated",
+          blocks_enforcement: true,
+          fact_ids: ["fact_body"],
+          graph_edge_ids: []
+        }],
+        result: {
+          proof_status: "missing_proof",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: []
+        }
+      })],
+      findings: [],
+      accepted_conventions: [
+        acceptedConventionFixture(),
+        acceptedConventionFixture({
+          id: "security_api_request_validation",
+          kind: "api_route_requires_request_validation",
+          enforcement_capability: "deterministic_check",
+          enforcement_mode: "block"
+        }),
+        acceptedConventionFixture({
+          id: "candidate_only_signal",
+          kind: "api_route_forbids_secret_exposure",
+          enforcement_capability: "heuristic_check",
+          enforcement_mode: "warn"
+        })
+      ]
+    });
+
+    expect(model.security_capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "control_flow_guard_dominance",
+        status: "complete",
+        capability: "deterministic_check",
+        can_block: true
+      }),
+      expect.objectContaining({
+        name: "request_validation_facts",
+        status: "partial",
+        capability: "deterministic_check",
+        can_block: true
+      }),
+      expect.objectContaining({
+        name: "secret_exposure",
+        capability: "heuristic_check",
+        can_block: false
+      })
+    ]));
+  });
 });
 
 function securityBoundaryProofFixture(overrides: Record<string, unknown> = {}) {
@@ -679,4 +825,31 @@ function securityBoundaryProofFixture(overrides: Record<string, unknown> = {}) {
     },
     ...overrides
   };
+}
+
+function acceptedConventionFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "security_api_auth",
+    contract_id: "contract_security",
+    kind: "api_route_requires_auth_helper",
+    statement: "API routes require accepted auth helper proof.",
+    scope: { path_globs: ["app/api/**/route.ts"], file_roles: ["api_route"] },
+    matcher: {
+      kind: "api_route_requires_auth_helper",
+      applies_to_file_roles: ["api_route"]
+    },
+    requires: {
+      auth_helpers: ["requireUser"]
+    },
+    severity: "error",
+    enforcement_mode: "block",
+    enforcement_capability: "deterministic_check",
+    exceptions: [],
+    evidence_refs: [],
+    counterexample_refs: [],
+    accepted_by: "local-user",
+    accepted_at: "2026-05-25T00:00:00.000Z",
+    updated_at: "2026-05-25T00:00:00.000Z",
+    ...overrides
+  } as const;
 }

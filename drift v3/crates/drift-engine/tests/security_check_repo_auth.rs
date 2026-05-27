@@ -230,6 +230,74 @@ fn security_phase8_proof_includes_route_path_and_method() {
 }
 
 #[test]
+fn route_group_endpoint_is_normalized_for_security_proofs() {
+    let repo_root = temp_repo("route_group_endpoint");
+    let route_path = repo_root.join("app/api/(admin)/users/route.ts");
+    fs::create_dir_all(route_path.parent().expect("route parent")).expect("create route parent");
+    fs::write(
+        &route_path,
+        [
+            r#"import { requireUser } from "@/server/auth";"#,
+            r#"import { db } from "@/server/db";"#,
+            "export async function GET() {",
+            "  await requireUser();",
+            "  const users = await db.user.findMany();",
+            "  return Response.json({ users });",
+            "}",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("write route");
+
+    let payload = run_check_repo(json!({
+        "repo": {
+            "repo_id": "repo_auth",
+            "repo_root": repo_root.to_string_lossy()
+        },
+        "scan": {
+            "scan_id": "scan_auth",
+            "facts": [
+                { "kind": "file_role_detected", "file_path": "app/api/(admin)/users/route.ts", "name": "api_route", "start_line": 1, "end_line": 7 },
+                { "kind": "import_used", "file_path": "app/api/(admin)/users/route.ts", "name": "requireUser", "value": "@/server/auth", "imported_name": "requireUser", "start_line": 1, "end_line": 1 },
+                { "kind": "route_declared", "file_path": "app/api/(admin)/users/route.ts", "name": "GET", "start_line": 3, "end_line": 7 },
+                { "kind": "symbol_called", "file_path": "app/api/(admin)/users/route.ts", "name": "requireUser", "start_line": 4, "end_line": 4 },
+                { "kind": "symbol_called", "file_path": "app/api/(admin)/users/route.ts", "name": "findMany", "value": "db.user", "start_line": 5, "end_line": 5 },
+                { "kind": "data_operation_detected", "file_path": "app/api/(admin)/users/route.ts", "name": "findMany", "value": "db.user", "imported_name": "read:user", "start_line": 5, "end_line": 5 },
+                { "kind": "route_returns_response", "file_path": "app/api/(admin)/users/route.ts", "name": "json", "value": "Response", "start_line": 6, "end_line": 6 }
+            ]
+        },
+        "contract": {
+            "contract_id": "contract_auth",
+            "contract_schema_version": 1,
+            "conventions": [{
+                "id": "security_api_auth_require_user",
+                "kind": "api_route_requires_auth_helper",
+                "matcher": {
+                    "required_calls": ["requireUser"],
+                    "applies_to_file_roles": ["api_route"]
+                },
+                "severity": "error",
+                "enforcement_mode": "block",
+                "enforcement_capability": "deterministic_check"
+            }]
+        },
+        "baseline": [],
+        "diff": { "mode": "full", "files": [] }
+    }));
+
+    let proof = &payload["security_boundary_proofs"][0];
+    assert_eq!(proof["route"]["endpoint"]["path"], "/api/users");
+    assert_eq!(proof["route"]["endpoint"]["method"], "GET");
+    assert!(
+        !proof["evidence_refs"]
+            .as_array()
+            .expect("evidence refs")
+            .is_empty()
+    );
+}
+
+#[test]
 fn accepted_auth_helper_import_alias_is_trusted() {
     let source = [
         r#"import { requireUser as requireAuth } from "@/server/auth";"#,

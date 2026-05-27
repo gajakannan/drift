@@ -10405,7 +10405,7 @@ describe("drift CLI convention review", () => {
     });
     storage.upsertSecurityBoundaryProofRuns({
       repo_id: repoId,
-      scan_id: scanId,
+      scan_id: "scan_check_phase8",
       check_id: "check_phase8",
       created_at: "2026-05-27T00:00:02.000Z",
       proofs: [phase8SecurityProof()]
@@ -10431,6 +10431,23 @@ describe("drift CLI convention review", () => {
         parser_gap_count: 0,
         missing_proof_count: 0,
         affected_files: ["apps/web/app/api/users/route.ts"]
+      })
+    ]));
+
+    const repoMap = await runCli([
+      "--db", databasePath,
+      "repo", "map",
+      "--repo", repoId,
+      "--json"
+    ]);
+    expect(repoMap.exitCode).toBe(0);
+    const repoMapPayload = JSON.parse(repoMap.stdout);
+    expect(repoMapPayload.routes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        file_path: "apps/web/app/api/users/route.ts",
+        security: expect.objectContaining({
+          proof_status: "proven"
+        })
       })
     ]));
   });

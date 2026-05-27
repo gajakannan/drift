@@ -605,16 +605,25 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
   const parserGaps = storage.listParserGaps(repoId, latestScan.id);
   const readiness = readinessForStoredScan(storage, repoId, latestScan.id, "scan_status", parserGaps);
   const capabilityReport = storage.getScanCapabilityReport(repoId, latestScan.id) ?? null;
-  const proofRuns = storage.listSecurityBoundaryProofRuns({
+  const proofRuns = storage.listLatestSecurityBoundaryProofRunsForRepo({
+    repo_id: repoId
+  });
+  const fallbackProofs = proofRuns.length === 0
+    ? storage.listSecurityBoundaryProofs(repoId, latestScan.id)
+    : [];
+  const proofs = proofRuns.length > 0 ? proofRuns.map((run) => run.proof) : fallbackProofs;
+  const proofSourceCheckId = proofRuns[0]?.check_id ?? null;
+  const proofSourceScanId = proofRuns[0]?.scan_id ?? latestScan.id;
+  const legacyScanProofRuns = storage.listSecurityBoundaryProofRuns({
     repo_id: repoId,
     scan_id: latestScan.id,
     latest_only: true
   });
   const securityReadModel = buildSecurityPhase8ReadModel({
     repo_id: repoId,
-    scan_id: latestScan.id,
-    check_id: proofRuns[0]?.check_id ?? null,
-    proofs: proofRuns.map((run) => run.proof),
+    scan_id: proofSourceScanId,
+    check_id: proofSourceCheckId,
+    proofs,
     findings: storage.listFindings(repoId).map((finding) => ({
       finding_id: finding.id,
       title: finding.title,
@@ -650,7 +659,7 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     parser_gaps: parserGapSummary(parserGaps),
     readiness,
     capability_report: capabilityReport,
-    security_capabilities: proofRuns.length > 0 ? securityReadModel.security_capabilities : [],
+    security_capabilities: proofs.length > 0 || legacyScanProofRuns.length > 0 ? securityReadModel.security_capabilities : [],
     machine_contract_versions: currentMachineContractVersions(latestScan.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands
