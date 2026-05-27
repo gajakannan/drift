@@ -73,5 +73,40 @@ pub fn security_capabilities() -> Vec<SecurityScanCapability> {
             can_block: true,
             block_requires_accepted_convention: true,
         },
+        SecurityScanCapability {
+            name: "ssrf".to_string(),
+            capability: "deterministic_check".to_string(),
+            status: SecurityCapabilityStatus::Partial,
+            can_block: true,
+            block_requires_accepted_convention: true,
+        },
+        SecurityScanCapability {
+            name: "raw_sql".to_string(),
+            capability: "deterministic_check".to_string(),
+            status: SecurityCapabilityStatus::Partial,
+            can_block: true,
+            block_requires_accepted_convention: true,
+        },
+        SecurityScanCapability {
+            name: "cors_policy".to_string(),
+            capability: "deterministic_check".to_string(),
+            status: SecurityCapabilityStatus::Partial,
+            can_block: true,
+            block_requires_accepted_convention: true,
+        },
+        SecurityScanCapability {
+            name: "csrf".to_string(),
+            capability: "deterministic_check".to_string(),
+            status: SecurityCapabilityStatus::Partial,
+            can_block: true,
+            block_requires_accepted_convention: true,
+        },
+        SecurityScanCapability {
+            name: "rate_limit".to_string(),
+            capability: "deterministic_check".to_string(),
+            status: SecurityCapabilityStatus::Partial,
+            can_block: true,
+            block_requires_accepted_convention: true,
+        },
     ]
 }

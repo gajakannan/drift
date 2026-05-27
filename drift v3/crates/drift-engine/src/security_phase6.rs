@@ -1037,15 +1037,16 @@ pub fn phase6_proof_to_json(
         })
         .collect::<Vec<_>>();
     let missing_codes = phase6_missing_codes(proof);
-    let missing_proof = missing_codes
+    let missing_entries = phase6_missing_entries(proof);
+    let missing_proof = missing_entries
         .iter()
-        .map(|code| {
+        .map(|missing| {
             json!({
-                "id": format!("missing_proof:{}:{code}", proof.route_id),
+                "id": format!("missing_proof:{}:{}", proof.route_id, missing.code),
                 "capability": phase6_capability(contract_kind),
-                "code": code,
+                "code": missing.code,
                 "blocks_enforcement": true,
-                "fact_ids": [],
+                "fact_ids": missing.fact_ids,
                 "graph_edge_ids": []
             })
         })
@@ -1057,6 +1058,7 @@ pub fn phase6_proof_to_json(
             "route_id": proof.route_id,
             "file_path": proof.file_path,
             "file_role": "api_route",
+            "endpoint": route_endpoint(&proof.file_path, &proof.handler_symbol),
             "handler_symbol": proof.handler_symbol
         },
         "contracts": [{
@@ -1086,6 +1088,7 @@ pub fn phase6_proof_to_json(
         "cors": cors_json(&proof.cors),
         "csrf": guard_json(&proof.csrf),
         "rate_limit": guard_json(&proof.rate_limit),
+        "evidence_refs": phase6_evidence_refs(proof, contract_kind),
         "missing_proof": missing_proof,
         "parser_gaps": parser_gaps,
         "result": {
@@ -1187,6 +1190,116 @@ fn phase6_missing_codes(proof: &Phase6SecurityProof) -> Vec<String> {
     .collect()
 }
 
+fn phase6_missing_entries(proof: &Phase6SecurityProof) -> Vec<Phase6MissingProof> {
+    let mut by_code = BTreeMap::<String, BTreeSet<String>>::new();
+    for missing in [
+        &proof.ssrf.missing_proof,
+        &proof.raw_sql.missing_proof,
+        &proof.cors.missing_proof,
+        &proof.csrf.missing_proof,
+        &proof.rate_limit.missing_proof,
+    ]
+    .into_iter()
+    .flat_map(|missing| missing.iter())
+    {
+        by_code
+            .entry(missing.code.clone())
+            .or_default()
+            .extend(missing.fact_ids.iter().cloned());
+    }
+    by_code
+        .into_iter()
+        .map(|(code, fact_ids)| Phase6MissingProof {
+            code,
+            fact_ids: fact_ids.into_iter().collect(),
+        })
+        .collect()
+}
+
+fn phase6_evidence_refs(
+    proof: &Phase6SecurityProof,
+    contract_kind: &str,
+) -> Vec<serde_json::Value> {
+    let capability = phase6_capability(contract_kind);
+    let mut refs = Vec::new();
+    for request in &proof.ssrf.outbound_requests {
+        refs.push(json!({
+            "evidence_id": format!("evidence:{}:{}", proof.route_id, request.fact_id),
+            "fact_id": request.fact_id,
+            "capability": capability,
+            "kind": "outbound_request_detected",
+            "file_path": proof.file_path,
+            "start_line": request.start_line,
+            "end_line": request.start_line,
+            "role": "sink"
+        }));
+    }
+    for call in &proof.raw_sql.raw_sql_calls {
+        refs.push(json!({
+            "evidence_id": format!("evidence:{}:{}", proof.route_id, call.fact_id),
+            "fact_id": call.fact_id,
+            "capability": capability,
+            "kind": "raw_sql_called",
+            "file_path": proof.file_path,
+            "start_line": call.start_line,
+            "end_line": call.start_line,
+            "role": "sink"
+        }));
+    }
+    for policy in &proof.cors.policies {
+        refs.push(json!({
+            "evidence_id": format!("evidence:{}:{}", proof.route_id, policy.fact_id),
+            "fact_id": policy.fact_id,
+            "capability": capability,
+            "kind": "cors_policy_detected",
+            "file_path": proof.file_path,
+            "start_line": policy.start_line,
+            "end_line": policy.start_line,
+            "role": "policy"
+        }));
+    }
+    for guard in proof
+        .csrf
+        .guard_calls
+        .iter()
+        .chain(proof.rate_limit.guard_calls.iter())
+    {
+        refs.push(json!({
+            "evidence_id": format!("evidence:{}:{}", proof.route_id, guard.fact_id),
+            "fact_id": guard.fact_id,
+            "graph_edge_id": guard.edge_id,
+            "capability": capability,
+            "kind": "security_guard_called",
+            "file_path": proof.file_path,
+            "start_line": guard.start_line,
+            "end_line": guard.end_line,
+            "role": "guard"
+        }));
+    }
+    for gap in &proof.parser_gaps {
+        refs.push(json!({
+            "evidence_id": format!("evidence:{}:{}", proof.route_id, gap.parser_gap_id),
+            "capability": capability,
+            "kind": gap.code,
+            "file_path": gap.file_path,
+            "role": "parser_gap"
+        }));
+    }
+    for missing in phase6_missing_entries(proof) {
+        for fact_id in missing.fact_ids {
+            refs.push(json!({
+                "evidence_id": format!("evidence:{}:{fact_id}:{}", proof.route_id, missing.code),
+                "fact_id": fact_id,
+                "capability": capability,
+                "kind": missing.code,
+                "file_path": proof.file_path,
+                "role": "missing_proof"
+            }));
+        }
+    }
+    refs
+}
+
 fn phase6_capability(kind: &str) -> &'static str {
     match kind {
         "api_route_forbids_untrusted_ssrf" => "outbound_request_facts",
@@ -1196,6 +1309,29 @@ fn phase6_capability(kind: &str) -> &'static str {
         "api_route_requires_rate_limit" => "rate_limit_facts",
         _ => "security_facts",
     }
+}
+
+fn route_endpoint(file_path: &str, handler_symbol: &str) -> serde_json::Value {
+    let Some(path) = next_route_path(file_path) else {
+        return json!({ "method": handler_symbol });
+    };
+    json!({
+        "path": path,
+        "method": handler_symbol,
+        "framework": "next"
+    })
+}
+
+fn next_route_path(file_path: &str) -> Option<String> {
+    let normalized = file_path.replace('\\', "/");
+    let route = normalized
+        .strip_prefix("app/api/")?
+        .strip_suffix("/route.ts")?;
+    Some(if route.is_empty() {
+        "/api".to_string()
+    } else {
+        format!("/api/{}", route.replace("[", ":").replace("]", ""))
+    })
 }
 
 fn security_proof_status(status: SecurityProofStatus) -> &'static str {

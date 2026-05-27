@@ -207,6 +207,29 @@ fn canonical_requires_auth_helpers_normalizes_trusted_guard_calls() {
 }
 
 #[test]
+fn security_phase8_proof_includes_route_path_and_method() {
+    let source = [
+        r#"import { requireUser } from "@/server/auth";"#,
+        r#"import { db } from "@/server/db";"#,
+        "",
+        "export async function GET() {",
+        "  await requireUser();",
+        "  const projects = await db.project.findMany();",
+        "  return Response.json({ projects });",
+        "}",
+        "",
+    ]
+    .join("\n");
+    let payload = run_auth_fixture("phase8_route_metadata", &source, "required_calls");
+    let proof = &payload["security_boundary_proofs"][0];
+
+    assert_eq!(proof["route"]["file_role"], "api_route");
+    assert_eq!(proof["route"]["endpoint"]["path"], "/api/projects");
+    assert_eq!(proof["route"]["endpoint"]["method"], "GET");
+    assert_eq!(proof["route"]["endpoint"]["framework"], "next");
+}
+
+#[test]
 fn accepted_auth_helper_import_alias_is_trusted() {
     let source = [
         r#"import { requireUser as requireAuth } from "@/server/auth";"#,

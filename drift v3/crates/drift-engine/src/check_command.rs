@@ -2207,6 +2207,7 @@ fn phase5_proof_json(
             "route_id": route_id,
             "file_path": file_path,
             "file_role": "api_route",
+            "endpoint": route_endpoint(file_path, handler_symbol),
             "handler_symbol": handler_symbol
         },
         "contracts": [{
@@ -2338,6 +2339,7 @@ fn route_security_proof_json(
             "route_id": proof.route_id,
             "file_path": proof.file_path,
             "file_role": "api_route",
+            "endpoint": route_endpoint(&proof.file_path, &proof.handler_symbol),
             "handler_symbol": proof.handler_symbol
         },
         "contracts": [{
@@ -2500,6 +2502,7 @@ fn request_validation_proof_json(
             "route_id": route_id,
             "file_path": file_path,
             "file_role": "api_route",
+            "endpoint": route_endpoint(file_path, handler_symbol),
             "handler_symbol": handler_symbol
         },
         "contracts": [{
@@ -2702,6 +2705,7 @@ fn phase4_proof_json(
             "route_id": route_id,
             "file_path": file_path,
             "file_role": "api_route",
+            "endpoint": route_endpoint(file_path, handler_symbol),
             "handler_symbol": handler_symbol
         },
         "contracts": [{
@@ -2810,6 +2814,28 @@ fn security_proof_status(status: &SecurityProofStatus) -> &'static str {
         SecurityProofStatus::MissingProof => "missing_proof",
         SecurityProofStatus::ParserGap => "parser_gap",
     }
+}
+
+fn route_endpoint(file_path: &str, handler_symbol: &str) -> serde_json::Value {
+    let Some(path) = next_route_path(file_path) else {
+        return json!({ "method": handler_symbol });
+    };
+    json!({
+        "path": path,
+        "method": handler_symbol,
+        "framework": "next"
+    })
+}
+
+fn next_route_path(file_path: &str) -> Option<String> {
+    let normalized = file_path.replace('\\', "/");
+    let prefix = "app/api/";
+    let suffix = "/route.ts";
+    let route = normalized.strip_prefix(prefix)?.strip_suffix(suffix)?;
+    if route.is_empty() {
+        return Some("/api".to_string());
+    }
+    Some(format!("/api/{}", route.replace("[", ":").replace("]", "")))
 }
 
 fn security_auth_files(

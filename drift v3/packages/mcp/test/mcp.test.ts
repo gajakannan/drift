@@ -1720,8 +1720,9 @@ describe("read-only MCP handlers", () => {
     expect(securityContext.request_validation.parser_gaps).toEqual([
       { reason: "unsupported_request_input_spread", blocking: true }
     ]);
+    expect(securityContext.do_not_include).toContain("cookies");
     expect(JSON.stringify(securityContext)).not.toContain("request.json()");
-    expect(JSON.stringify(securityContext)).not.toContain("cookie");
+    expect(JSON.stringify(securityContext)).not.toContain("session=secret");
   });
 
   it("exposes phase4 security proof summaries without snippets", async () => {
@@ -1925,8 +1926,9 @@ describe("read-only MCP handlers", () => {
     expect(securityContext.tenant_scope.parser_gaps).toEqual([
       { reason: "unsupported_tenant_dynamic_property", blocking: true }
     ]);
+    expect(securityContext.do_not_include).toContain("cookies");
     expect(JSON.stringify(securityContext)).not.toContain("session.user.tenantId");
-    expect(JSON.stringify(securityContext)).not.toContain("cookie");
+    expect(JSON.stringify(securityContext)).not.toContain("session=secret");
     expect(JSON.stringify(securityContext)).not.toContain("request.json()");
   });
 
@@ -3006,7 +3008,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 24,
+        supported_sqlite_schema_version: 25,
         storage_driver: "sqlite"
       },
       v1_scope: {

@@ -15,7 +15,6 @@ import type {
   RepoContract,
   RepoRecord,
   RequiredCheckExecution,
-  ScanCapabilityReport,
   ScanFileChange,
   ScanManifest,
   Severity
@@ -54,6 +53,7 @@ import {
   buildFindingsReadModel,
   buildRepoContractReadModel,
   buildReadiness,
+  buildSecurityPhase8ReadModel,
   classifyAgentTask,
   buildRepoMapReadModel,
   createGraphQueryService,
@@ -160,10 +160,18 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       });
     }),
 
-    get_security_context: ({ repo_id }) => withStorage(options, (storage) => {
+    get_security_context: ({ repo_id, path, changed_files, check_id }) => withStorage(options, (storage) => {
       const requestedRepoId = requiredMcpString(repo_id, "repo_id");
+      const requestedPath = path ? requiredRepoRelativeMcpPath(path) : undefined;
+      const requestedChangedFiles = Array.isArray(changed_files)
+        ? changed_files.map((filePath) => requiredRepoRelativeMcpPath(filePath))
+        : undefined;
       const { contract } = requiredAuthorizedMcpContract(storage, requestedRepoId, "mcp");
-      return buildSecurityContextPayload(storage, requestedRepoId, contract);
+      return buildSecurityContextPayload(storage, requestedRepoId, contract, {
+        path: requestedPath,
+        changed_files: requestedChangedFiles,
+        check_id: check_id ? requiredMcpString(check_id, "check_id") : undefined
+      });
     }),
 
     get_task_preflight: ({ repo_id, task, path, require_fresh, now }) => withStorage(options, (storage) => {
@@ -1105,6 +1113,27 @@ function scanStatusPayload(
   const capabilityReport = latestScan
     ? storage.getScanCapabilityReport(repoId, latestScan.id) ?? null
     : null;
+  const proofRuns = latestScan
+    ? storage.listSecurityBoundaryProofRuns({
+        repo_id: repoId,
+        scan_id: latestScan.id,
+        latest_only: true
+      })
+    : [];
+  const securityReadModel = latestScan
+    ? buildSecurityPhase8ReadModel({
+        repo_id: repoId,
+        scan_id: latestScan.id,
+        check_id: proofRuns[0]?.check_id ?? null,
+        proofs: proofRuns.map((run) => run.proof),
+        findings: storage.listFindings(repoId).map((finding) => ({
+          finding_id: finding.id,
+          title: finding.title,
+          lifecycle: finding.status
+        })),
+        accepted_conventions: storage.getRepoContract(repoId)?.conventions ?? []
+      })
+    : null;
   const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "scan_status", parserGaps);
   const repoRootMissing = !existsSync(repo.root_path);
   const currentBranch = repoRootMissing
@@ -1165,7 +1194,7 @@ function scanStatusPayload(
     parser_gaps: parserGapSummary(parserGaps),
     readiness,
     capability_report: capabilityReport,
-    security_capabilities: securityCapabilitySummary(capabilityReport),
+    security_capabilities: proofRuns.length > 0 ? securityReadModel?.security_capabilities ?? [] : [],
     machine_contract_versions: currentMachineContractVersions(latestScan?.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands
@@ -1233,56 +1262,6 @@ function parserGapSummary(gaps: ParserGap[]): {
     total_count: gaps.length,
     by_kind: countBy(gaps, (gap) => gap.kind) as Record<ParserGapKind, number>,
     confidence_impact: countBy(gaps, (gap) => gap.confidence_impact) as Record<ParserGapConfidenceImpact, number>
-  };
-}
-
-function securityCapabilitySummary(capabilityReport: ScanCapabilityReport | null | undefined) {
-  const certified = new Set(capabilityReport?.certified_capabilities ?? []);
-  const required = new Set(capabilityReport?.required_capabilities ?? []);
-  const missing = new Set(capabilityReport?.missing_capabilities ?? []);
-  const completenessByRule = new Map((capabilityReport?.completeness ?? [])
-    .map((entry) => [entry.rule_id, entry]));
-  const middlewareCompleteness = completenessByRule.get("middleware_must_cover_routes");
-  const requestValidationCompleteness = completenessByRule.get("api_route_requires_request_validation");
-  const sessionTrustCompleteness = completenessByRule.get("session_object_must_come_from_trusted_helper");
-  const authorizationCompleteness = completenessByRule.get("api_route_requires_authorization");
-  const tenantScopeCompleteness = completenessByRule.get("api_route_requires_tenant_scope");
-  return {
-    middleware_coverage: {
-      certified: certified.has("middleware_coverage"),
-      required: required.has("middleware_coverage"),
-      missing: missing.has("middleware_coverage"),
-      can_block: Boolean(middlewareCompleteness?.can_block),
-      complete: Boolean(middlewareCompleteness?.complete)
-    },
-    request_validation: {
-      certified: certified.has("request_validation_facts"),
-      required: required.has("request_validation_facts"),
-      missing: missing.has("request_validation_facts"),
-      can_block: Boolean(requestValidationCompleteness?.can_block),
-      complete: Boolean(requestValidationCompleteness?.complete)
-    },
-    session_trust: {
-      certified: certified.has("session_trust"),
-      required: required.has("session_trust"),
-      missing: missing.has("session_trust"),
-      can_block: Boolean(sessionTrustCompleteness?.can_block),
-      complete: Boolean(sessionTrustCompleteness?.complete)
-    },
-    authorization: {
-      certified: certified.has("authorization"),
-      required: required.has("authorization"),
-      missing: missing.has("authorization"),
-      can_block: Boolean(authorizationCompleteness?.can_block),
-      complete: Boolean(authorizationCompleteness?.complete)
-    },
-    tenant_scope: {
-      certified: certified.has("tenant_scope"),
-      required: required.has("tenant_scope"),
-      missing: missing.has("tenant_scope"),
-      can_block: Boolean(tenantScopeCompleteness?.can_block),
-      complete: Boolean(tenantScopeCompleteness?.complete)
-    }
   };
 }
 
@@ -1538,6 +1517,27 @@ function repoMapPayload(
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
   const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "repo_map");
+  const proofRuns = latestScan
+    ? storage.listSecurityBoundaryProofRuns({
+        repo_id: repoId,
+        scan_id: latestScan.id,
+        file_path: options.path,
+        latest_only: true
+      })
+    : [];
+  const phase8Security = buildSecurityPhase8ReadModel({
+    repo_id: repoId,
+    scan_id: latestScan?.id ?? null,
+    check_id: proofRuns[0]?.check_id ?? null,
+    proofs: proofRuns.map((run) => run.proof),
+    findings: findings.map((finding) => ({
+      finding_id: finding.id,
+      title: finding.title,
+      lifecycle: finding.status
+    })),
+    accepted_conventions: contract.conventions,
+    changed_files: options.path ? [options.path] : undefined
+  });
   return {
     response_schema: "drift.repo.map.v1",
     repo_id: repoId,
@@ -1563,6 +1563,7 @@ function repoMapPayload(
     impact_summary: readModel.impact_summary,
     topology: readModel.topology,
     pagination: readModel.pagination,
+    routes: phase8Security.routes,
     freshness_requirement: freshnessRequirement(Boolean(options.requireFresh), scanStatus),
     files: readModel.listed_files,
     redactions: {

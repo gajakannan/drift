@@ -1,6 +1,7 @@
 import { authorizeContextExport,type FileRole,type PolicyDecision,type RepoContract } from "@drift/core";
 import {
   buildRepoMapReadModel,
+  buildSecurityPhase8ReadModel,
   createGraphQueryService,
   fallbackFactRepoMapFiles,
   repoMapConventionIds,
@@ -106,6 +107,27 @@ export function repoMapPayload(
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
   const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "repo_map");
+  const proofRuns = latestScan
+    ? storage.listSecurityBoundaryProofRuns({
+        repo_id: repoId,
+        scan_id: latestScan.id,
+        file_path: options.path,
+        latest_only: true
+      })
+    : [];
+  const phase8Security = buildSecurityPhase8ReadModel({
+    repo_id: repoId,
+    scan_id: latestScan?.id ?? null,
+    check_id: proofRuns[0]?.check_id ?? null,
+    proofs: proofRuns.map((run) => run.proof),
+    findings: findings.map((finding) => ({
+      finding_id: finding.id,
+      title: finding.title,
+      lifecycle: finding.status
+    })),
+    accepted_conventions: contract.conventions,
+    changed_files: options.path ? [options.path] : undefined
+  });
   return {
     response_schema: "drift.repo.map.v1",
     repo_id: repoId,
@@ -131,6 +153,7 @@ export function repoMapPayload(
     impact_summary: readModel.impact_summary,
     topology: readModel.topology,
     pagination: readModel.pagination,
+    routes: phase8Security.routes,
     freshness_requirement: freshnessRequirement(Boolean(options.requireFresh), scanStatus),
     files: readModel.listed_files,
     redactions: {

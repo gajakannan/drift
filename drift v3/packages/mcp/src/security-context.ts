@@ -1,6 +1,6 @@
 import type { AcceptedConvention, FactRecord, ParserGap, RepoContract, ScanManifest } from "@drift/core";
 import type { openDriftStorage } from "@drift/storage";
-import { buildSecurityBoundaryProofReadModel } from "@drift/query";
+import { buildSecurityBoundaryProofReadModel, buildSecurityPhase8ReadModel } from "@drift/query";
 
 type DriftStorage = ReturnType<typeof openDriftStorage>;
 
@@ -57,7 +57,53 @@ interface SecretReadValue {
   source?: string;
 }
 
-export function buildSecurityContextPayload(storage: DriftStorage, repoId: string, contract: RepoContract) {
+export function buildSecurityContextPayload(
+  storage: DriftStorage,
+  repoId: string,
+  contract: RepoContract,
+  options: { path?: string; changed_files?: string[]; check_id?: string } = {}
+) {
+  const latestScan = latestSecurityScan(storage.listScanManifests(repoId));
+  const proofRuns = typeof storage.listSecurityBoundaryProofRuns === "function"
+    ? storage.listSecurityBoundaryProofRuns({
+        repo_id: repoId,
+        scan_id: latestScan?.id,
+        check_id: options.check_id,
+        file_path: options.path,
+        latest_only: !options.check_id
+      })
+    : [];
+  const fallbackProofs = proofRuns.length === 0 && latestScan
+    ? storage.listSecurityBoundaryProofs(repoId, latestScan.id)
+    : [];
+  const changedFiles = options.changed_files ?? (options.path ? [options.path] : undefined);
+  const phase8 = buildSecurityPhase8ReadModel({
+    repo_id: repoId,
+    scan_id: latestScan?.id ?? null,
+    check_id: options.check_id ?? proofRuns[0]?.check_id ?? null,
+    proofs: proofRuns.length > 0 ? proofRuns.map((run) => run.proof) : fallbackProofs,
+    findings: storage.listFindings(repoId).map((finding) => ({
+      finding_id: finding.id,
+      title: finding.title,
+      lifecycle: finding.status
+    })),
+    accepted_conventions: contract.conventions,
+    changed_files: changedFiles
+  });
+  const legacy = buildLegacySecurityContextPayload(storage, repoId, contract);
+  return {
+    ...legacy,
+    response_schema: "drift.security.context.v2",
+    repo_id: repoId,
+    scan_id: phase8.scan_id,
+    check_id: phase8.check_id,
+    repo_security_contracts: phase8.repo_security_contracts,
+    changed_route_security: phase8.changed_route_security,
+    do_not_include: phase8.do_not_include
+  };
+}
+
+export function buildLegacySecurityContextPayload(storage: DriftStorage, repoId: string, contract: RepoContract) {
   const latestScan = latestSecurityScan(storage.listScanManifests(repoId));
   const facts = latestScan ? storage.listFacts(latestScan.id, { kind: "middleware_protects_route" }) : [];
   const requestInputFacts = latestScan ? storage.listFacts(latestScan.id, { kind: "request_input_read" }) : [];

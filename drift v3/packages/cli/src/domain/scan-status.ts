@@ -1,6 +1,6 @@
 import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type ParserGap,type ParserGapConfidenceImpact,type ParserGapKind,type RepoRecord,type ScanCapabilityReport,type ScanFileChange,type ScanManifest } from "@drift/core";
 import { buildFactGraphArtifactFromParts,type FactGraphArtifact } from "@drift/factgraph";
-import { buildReadiness,type DriftReadinessSurface } from "@drift/query";
+import { buildReadiness,buildSecurityPhase8ReadModel,type DriftReadinessSurface } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,mkdtempSync,readdirSync,rmSync,statSync,writeFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
@@ -559,6 +559,7 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
       invalidation_reasons: ["scan_missing"],
       changes: { added: [], modified: [], deleted: [] },
       parser_gaps: parserGapSummary([]),
+      security_capabilities: [],
       readiness: buildReadiness({
         repo_id: repoId,
         scan_id: null,
@@ -604,6 +605,23 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
   const parserGaps = storage.listParserGaps(repoId, latestScan.id);
   const readiness = readinessForStoredScan(storage, repoId, latestScan.id, "scan_status", parserGaps);
   const capabilityReport = storage.getScanCapabilityReport(repoId, latestScan.id) ?? null;
+  const proofRuns = storage.listSecurityBoundaryProofRuns({
+    repo_id: repoId,
+    scan_id: latestScan.id,
+    latest_only: true
+  });
+  const securityReadModel = buildSecurityPhase8ReadModel({
+    repo_id: repoId,
+    scan_id: latestScan.id,
+    check_id: proofRuns[0]?.check_id ?? null,
+    proofs: proofRuns.map((run) => run.proof),
+    findings: storage.listFindings(repoId).map((finding) => ({
+      finding_id: finding.id,
+      title: finding.title,
+      lifecycle: finding.status
+    })),
+    accepted_conventions: storage.getRepoContract(repoId)?.conventions ?? []
+  });
   const payload = {
     response_schema: "drift.scan.status.v1",
     repo_id: repoId,
@@ -632,7 +650,7 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     parser_gaps: parserGapSummary(parserGaps),
     readiness,
     capability_report: capabilityReport,
-    security_capabilities: securityCapabilitySummary(capabilityReport),
+    security_capabilities: proofRuns.length > 0 ? securityReadModel.security_capabilities : [],
     machine_contract_versions: currentMachineContractVersions(latestScan.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands

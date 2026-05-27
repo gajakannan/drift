@@ -38,6 +38,9 @@ export function unknownCommandError(parsed: ParsedArgs): string | null {
     }
     return command === "exception" && maybeId === "add" ? null : message;
   }
+  if (group === "candidates") {
+    return [undefined, "show", "accept", "reject"].includes(command) ? null : message;
+  }
   if (group === "contract") {
     if (command === "waivers" && maybeId === "list") {
       return null;
@@ -122,6 +125,10 @@ export function validateCommandShape(parsed: ParsedArgs): void {
       return;
     }
     exact(`conventions ${command}`, command === "list" || command === "accepted" ? 2 : 3);
+    return;
+  }
+  if (group === "candidates") {
+    exact("candidates", command === undefined ? 1 : 3);
     return;
   }
   if (group === "contract") {

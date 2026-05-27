@@ -491,6 +491,15 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     started_at: now,
     completed_at: now
   });
+  if (securityBoundaryProofs.length > 0 && typeof storage.upsertSecurityBoundaryProofRuns === "function") {
+    storage.upsertSecurityBoundaryProofRuns({
+      repo_id: repoId,
+      scan_id: checkScanId,
+      check_id: checkId,
+      proofs: securityBoundaryProofs,
+      created_at: now
+    });
+  }
   const openNewCount = findings.filter((finding) => finding.status === "new").length;
   const outcome = checkOutcomeSummary(findings, {
     waivedFindingsCount,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSecurityBoundaryProofReadModel, fallbackFactRepoMapFiles } from "../src/index.js";
+import { buildSecurityBoundaryProofReadModel, buildSecurityPhase8ReadModel, fallbackFactRepoMapFiles } from "../src/index.js";
 
 describe("security boundary proof read model", () => {
   it("renders proof, findings, and parser gaps without snippets", () => {
@@ -555,4 +555,128 @@ describe("security boundary proof read model", () => {
     });
     expect(JSON.stringify(model)).not.toContain("https://token");
   });
+
+  it("builds Phase 8 route security from proofs only", () => {
+    const model = buildSecurityPhase8ReadModel({
+      repo_id: "repo_security",
+      scan_id: "scan_security",
+      check_id: "check_security",
+      proofs: [securityBoundaryProofFixture({
+        route: {
+          route_id: "route_users_get",
+          file_path: "app/api/users/route.ts",
+          file_role: "api_route",
+          endpoint: { path: "/api/users", method: "GET", framework: "next" }
+        },
+        auth: { required: true, proven: true, proof_kind: "handler_guard", trusted_guard_calls: [], dominated_sinks: [], undominated_sinks: [] },
+        tenant: {
+          required: true,
+          proven: false,
+          tenant_sources: [],
+          predicates: [],
+          missing: [{ data_operation_fact_id: "fact_find_many", reason: "tenant_predicate_not_bound_to_query" }]
+        },
+        missing_proof: [{
+          id: "missing_tenant",
+          capability: "tenant_scope",
+          code: "tenant_predicate_missing",
+          blocks_enforcement: true,
+          fact_ids: ["fact_tenant"],
+          graph_edge_ids: []
+        }],
+        parser_gaps: [],
+        result: {
+          proof_status: "missing_proof",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: ["finding_tenant"]
+        }
+      })],
+      findings: [{ finding_id: "finding_tenant", title: "Tenant missing", lifecycle: "new" }],
+      accepted_conventions: []
+    });
+
+    expect(model.routes[0]).toMatchObject({
+      route_id: "route_users_get",
+      path: "/api/users",
+      method: "GET",
+      security: {
+        auth_proven: true,
+        tenant_scope: "missing_proof",
+        proof_status: "missing_proof",
+        enforcement_result: "block"
+      }
+    });
+    expect(model.security_capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "tenant_scope",
+        missing_proof_count: 1,
+        affected_files: ["app/api/users/route.ts"]
+      })
+    ]));
+  });
+
+  it("filters Phase 8 route security to changed files", () => {
+    const model = buildSecurityPhase8ReadModel({
+      repo_id: "repo_security",
+      scan_id: "scan_security",
+      check_id: "check_security",
+      proofs: [
+        securityBoundaryProofFixture({
+          route: { route_id: "route_users", file_path: "app/api/users/route.ts", file_role: "api_route" }
+        }),
+        securityBoundaryProofFixture({
+          route: { route_id: "route_admin", file_path: "app/api/admin/route.ts", file_role: "api_route" }
+        })
+      ],
+      findings: [],
+      accepted_conventions: [],
+      changed_files: ["app/api/users/route.ts"]
+    });
+
+    expect(model.changed_route_security.map((route) => route.file_path)).toEqual(["app/api/users/route.ts"]);
+  });
 });
+
+function securityBoundaryProofFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    proof_id: "proof_route_users_get",
+    proof_version: "security-boundary-proof/v1",
+    route: {
+      route_id: "route_users_get",
+      file_path: "app/api/users/route.ts",
+      file_role: "api_route"
+    },
+    contracts: [{
+      contract_id: "security_api_auth",
+      kind: "api_route_requires_auth_helper",
+      enforcement_mode: "block",
+      capability: "deterministic_check",
+      matched: true
+    }],
+    capability_status: [{
+      name: "control_flow_guard_dominance",
+      status: "complete",
+      can_block: true,
+      parser_gap_ids: [],
+      missing_proof_ids: []
+    }],
+    auth: {
+      required: true,
+      proven: true,
+      proof_kind: "handler_guard",
+      trusted_guard_calls: [],
+      dominated_sinks: [],
+      undominated_sinks: []
+    },
+    missing_proof: [],
+    parser_gaps: [],
+    result: {
+      proof_status: "proven",
+      enforcement_result: "pass",
+      can_block: false,
+      finding_ids: []
+    },
+    ...overrides
+  };
+}

@@ -6,6 +6,11 @@ export const SecurityCapabilityNameSchema = z.enum([
   "control_flow_guard_dominance",
   "middleware_coverage",
   "request_validation_facts",
+  "ssrf",
+  "raw_sql",
+  "cors_policy",
+  "csrf",
+  "rate_limit",
   "outbound_request_facts",
   "raw_sql_facts",
   "cors_policy_facts",
@@ -473,6 +478,27 @@ const SecurityParserGapSchema = z.object({
   blocks_enforcement: z.boolean()
 });
 
+const SecurityProofEvidenceRefSchema = z.object({
+  evidence_id: z.string().min(1),
+  fact_id: z.string().min(1).optional(),
+  graph_edge_id: z.string().min(1).optional(),
+  capability: z.string().min(1),
+  kind: z.string().min(1),
+  file_path: z.string().min(1),
+  start_line: z.number().int().positive().optional(),
+  end_line: z.number().int().positive().optional(),
+  role: z.enum([
+    "guard",
+    "sink",
+    "validator",
+    "serializer",
+    "middleware",
+    "policy",
+    "parser_gap",
+    "missing_proof"
+  ])
+}).strict();
+
 export const SecurityBoundaryProofSchema = z.object({
   proof_id: z.string().min(1),
   proof_version: z.literal("security-boundary-proof/v1"),
@@ -570,6 +596,7 @@ export const SecurityBoundaryProofSchema = z.object({
   }),
   missing_proof: z.array(SecurityMissingProofSchema),
   parser_gaps: z.array(SecurityParserGapSchema),
+  evidence_refs: z.array(SecurityProofEvidenceRefSchema).optional().default([]),
   result: z.object({
     proof_status: z.enum(["proven", "violated", "missing_proof", "parser_gap", "advisory_only"]),
     enforcement_result: z.enum(["pass", "brief", "warn", "block"]),

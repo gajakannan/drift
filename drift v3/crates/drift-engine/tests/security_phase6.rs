@@ -6,7 +6,7 @@ use drift_engine::{
     SecurityRawSqlContract, SecuritySsrfContract, build_phase6_security_proof,
     evaluate_api_route_cors_must_match_policy, evaluate_api_route_forbids_raw_sql_without_params,
     evaluate_api_route_forbids_untrusted_ssrf, evaluate_api_route_requires_csrf_for_mutation,
-    evaluate_api_route_requires_rate_limit,
+    evaluate_api_route_requires_rate_limit, phase6_proof_to_json,
 };
 
 #[test]
@@ -409,6 +409,73 @@ export async function GET() {
     let proof = phase6_proof("app/api/public/route.ts", source, phase6_cors_contract());
 
     assert_eq!(proof.cors.missing_proof[0].code, "disallowed_origin");
+}
+
+#[test]
+fn security_phase8_proof_evidence_refs_are_line_only_and_sanitized() {
+    let proof = phase6_proof_to_json(
+        &phase6_proof(
+            "app/api/proxy/route.ts",
+            r#"
+export async function POST(request: Request) {
+  const body = await request.json();
+  await fetch(body.callbackUrl + "?token=secret");
+  await db.query("select * from users where token = 'secret'");
+  return Response.json({ ok: true });
+}
+"#,
+            phase6_ssrf_contract(),
+        ),
+        "api_route_forbids_untrusted_ssrf",
+        "security_api_no_ssrf",
+        "block",
+        Some("finding_ssrf"),
+    );
+    let serialized = serde_json::to_string(&proof).expect("proof json");
+
+    assert!(serialized.contains("\"evidence_refs\""));
+    assert!(serialized.contains("\"start_line\""));
+    assert!(!serialized.contains("callbackUrl +"));
+    assert!(!serialized.contains("select * from users"));
+    assert!(!serialized.contains("token=secret"));
+    assert!(!serialized.contains("\"source\""));
+    assert!(!serialized.contains("\"snippet\""));
+    assert!(!serialized.contains("\"payload\""));
+    assert!(!serialized.contains("\"cookie\""));
+    assert!(!serialized.contains("\"header\""));
+}
+
+#[test]
+fn security_phase8_phase6_missing_proof_preserves_fact_ids() {
+    let proof_json = phase6_proof_to_json(
+        &phase6_proof(
+            "app/api/proxy/route.ts",
+            r#"
+export async function POST(request: Request) {
+  const body = await request.json();
+  await fetch(body.callbackUrl);
+  return Response.json({ ok: true });
+}
+"#,
+            phase6_ssrf_contract(),
+        ),
+        "api_route_forbids_untrusted_ssrf",
+        "security_api_no_ssrf",
+        "block",
+        Some("finding_ssrf"),
+    );
+    let missing = proof_json["missing_proof"]
+        .as_array()
+        .expect("missing proof")
+        .iter()
+        .find(|entry| entry["code"] == "request_controlled_url")
+        .expect("ssrf missing proof");
+
+    assert!(
+        !missing["fact_ids"].as_array().expect("fact ids").is_empty(),
+        "{proof_json:#?}"
+    );
+    assert_eq!(missing["blocks_enforcement"], true);
 }
 
 fn phase6_proof(
