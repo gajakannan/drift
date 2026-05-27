@@ -336,6 +336,17 @@ fn security_candidates(
         }));
     }
 
+    push_request_validation_candidates(RequestValidationCandidateInput {
+        candidates: &mut candidates,
+        request,
+        api_route_files,
+        scope_file_count,
+        file_hashes,
+        graph_fingerprint,
+        route_scope: &route_scope,
+        fact_kind: "symbol_called",
+        symbol_filter: is_validation_candidate_symbol,
+    });
     let middleware_facts = route_facts(request, api_route_files, "middleware_protects_route");
     if !middleware_facts.is_empty() {
         let route_paths = unique_json_strings(&middleware_facts, "route_path");
@@ -423,6 +434,24 @@ fn security_candidates(
         requires_key: "authorization_helpers",
         capability: "authorization",
         heuristic_id: "security-authorization-helper-v1",
+        symbol_filter: always_candidate_symbol,
+        requires_module_key: false,
+    });
+    push_guard_candidate(GuardCandidateInput {
+        candidates: &mut candidates,
+        request,
+        api_route_files,
+        scope_file_count,
+        file_hashes,
+        graph_fingerprint,
+        route_scope: &route_scope,
+        fact_kind: "symbol_called",
+        candidate_kind: "api_route_requires_authorization",
+        requires_key: "authorization_helpers",
+        capability: "authorization",
+        heuristic_id: "security-authorization-helper-v1",
+        symbol_filter: is_authorization_candidate_symbol,
+        requires_module_key: false,
     });
     push_guard_candidate(GuardCandidateInput {
         candidates: &mut candidates,
@@ -437,6 +466,8 @@ fn security_candidates(
         requires_key: "tenant_helpers",
         capability: "tenant_scope",
         heuristic_id: "security-tenant-helper-v1",
+        symbol_filter: always_candidate_symbol,
+        requires_module_key: false,
     });
     push_guard_candidate(GuardCandidateInput {
         candidates: &mut candidates,
@@ -446,11 +477,35 @@ fn security_candidates(
         file_hashes,
         graph_fingerprint,
         route_scope: &route_scope,
+        fact_kind: "symbol_called",
+        candidate_kind: "api_route_requires_tenant_scope",
+        requires_key: "tenant_helpers",
+        capability: "tenant_scope",
+        heuristic_id: "security-tenant-helper-v1",
+        symbol_filter: is_tenant_candidate_symbol,
+        requires_module_key: false,
+    });
+    push_serializer_candidate(SerializerCandidateInput {
+        candidates: &mut candidates,
+        request,
+        api_route_files,
+        scope_file_count,
+        file_hashes,
+        graph_fingerprint,
+        route_scope: &route_scope,
         fact_kind: "serializer_called",
-        candidate_kind: "api_route_forbids_sensitive_response_fields",
-        requires_key: "response_serializers",
-        capability: "sensitive_response",
-        heuristic_id: "security-response-serializer-v1",
+        symbol_filter: always_candidate_symbol,
+    });
+    push_serializer_candidate(SerializerCandidateInput {
+        candidates: &mut candidates,
+        request,
+        api_route_files,
+        scope_file_count,
+        file_hashes,
+        graph_fingerprint,
+        route_scope: &route_scope,
+        fact_kind: "symbol_called",
+        symbol_filter: is_serializer_candidate_symbol,
     });
 
     let sensitive_facts = route_facts(request, api_route_files, "sensitive_field_declared");
@@ -504,6 +559,8 @@ fn security_candidates(
         requires_key: "raw_sql_safe_wrappers",
         capability: "raw_sql",
         heuristic_id: "security-raw-sql-safe-wrapper-v1",
+        symbol_filter: always_candidate_symbol,
+        requires_module_key: false,
     });
     for (symbol, facts) in grouped_route_facts(request, api_route_files, "symbol_called")
         .into_iter()
@@ -518,7 +575,7 @@ fn security_candidates(
             "outbound_url_allowlist_helpers": [{
                 "helper_id": format!("ssrf:{symbol}"),
                 "symbol": symbol,
-                "import": import_source_for_symbol(request, &facts[0].file_path, &symbol)
+                "module": import_source_for_symbol(request, &facts[0].file_path, &symbol)
             }]
         });
         candidates.push(security_candidate_from_facts(SecurityCandidateInput {
@@ -555,6 +612,24 @@ fn security_candidates(
         requires_key: "csrf_helpers",
         capability: "csrf",
         heuristic_id: "security-csrf-helper-v1",
+        symbol_filter: always_candidate_symbol,
+        requires_module_key: true,
+    });
+    push_guard_candidate(GuardCandidateInput {
+        candidates: &mut candidates,
+        request,
+        api_route_files,
+        scope_file_count,
+        file_hashes,
+        graph_fingerprint,
+        route_scope: &route_scope,
+        fact_kind: "symbol_called",
+        candidate_kind: "api_route_requires_csrf_for_mutation",
+        requires_key: "csrf_helpers",
+        capability: "csrf",
+        heuristic_id: "security-csrf-helper-v1",
+        symbol_filter: is_csrf_candidate_symbol,
+        requires_module_key: true,
     });
     push_guard_candidate(GuardCandidateInput {
         candidates: &mut candidates,
@@ -569,20 +644,38 @@ fn security_candidates(
         requires_key: "rate_limit_helpers",
         capability: "rate_limit",
         heuristic_id: "security-rate-limit-helper-v1",
+        symbol_filter: always_candidate_symbol,
+        requires_module_key: true,
+    });
+    push_guard_candidate(GuardCandidateInput {
+        candidates: &mut candidates,
+        request,
+        api_route_files,
+        scope_file_count,
+        file_hashes,
+        graph_fingerprint,
+        route_scope: &route_scope,
+        fact_kind: "symbol_called",
+        candidate_kind: "api_route_requires_rate_limit",
+        requires_key: "rate_limit_helpers",
+        capability: "rate_limit",
+        heuristic_id: "security-rate-limit-helper-v1",
+        symbol_filter: is_rate_limit_candidate_symbol,
+        requires_module_key: true,
     });
 
     let cors_facts = route_facts(request, api_route_files, "cors_policy_declared");
     if !cors_facts.is_empty() {
         let allowed_origins = cors_facts
             .iter()
-            .filter_map(|fact| json_string_field(fact, "origin"))
+            .filter_map(|fact| cors_origin_field(fact))
             .filter(|origin| origin != "*")
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
         let allow_credentials = cors_facts
             .iter()
-            .any(|fact| json_bool_field(fact, "allow_credentials").unwrap_or(false));
+            .any(|fact| cors_credentials_field(fact).unwrap_or(false));
         let matcher = json!({
             "kind": "api_route_cors_must_match_policy",
             "applies_to_file_roles": ["api_route"]
@@ -645,6 +738,32 @@ struct GuardCandidateInput<'a> {
     requires_key: &'a str,
     capability: &'a str,
     heuristic_id: &'a str,
+    symbol_filter: fn(&str) -> bool,
+    requires_module_key: bool,
+}
+
+struct SerializerCandidateInput<'a> {
+    candidates: &'a mut Vec<EngineCandidate>,
+    request: &'a CandidateRequest,
+    api_route_files: &'a BTreeSet<&'a str>,
+    scope_file_count: usize,
+    file_hashes: &'a BTreeMap<&'a str, &'a str>,
+    graph_fingerprint: &'a str,
+    route_scope: &'a Value,
+    fact_kind: &'a str,
+    symbol_filter: fn(&str) -> bool,
+}
+
+struct RequestValidationCandidateInput<'a> {
+    candidates: &'a mut Vec<EngineCandidate>,
+    request: &'a CandidateRequest,
+    api_route_files: &'a BTreeSet<&'a str>,
+    scope_file_count: usize,
+    file_hashes: &'a BTreeMap<&'a str, &'a str>,
+    graph_fingerprint: &'a str,
+    route_scope: &'a Value,
+    fact_kind: &'a str,
+    symbol_filter: fn(&str) -> bool,
 }
 
 fn security_candidate_from_facts(input: SecurityCandidateInput<'_>) -> EngineCandidate {
@@ -698,19 +817,29 @@ fn push_guard_candidate(input: GuardCandidateInput<'_>) {
     for (symbol, facts) in
         grouped_route_facts(input.request, input.api_route_files, input.fact_kind)
             .into_iter()
-            .filter(|(_, facts)| facts.len() >= 2)
+            .filter(|(symbol, facts)| facts.len() >= 2 && (input.symbol_filter)(symbol))
     {
         let matcher = json!({
             "kind": input.candidate_kind,
             "required_calls": [symbol],
             "applies_to_file_roles": ["api_route"]
         });
-        let requires = json!({
-            input.requires_key: [{
+        let import_source = import_source_for_symbol(input.request, &facts[0].file_path, &symbol);
+        let helper = if input.requires_module_key {
+            json!({
                 "helper_id": format!("{}:{symbol}", input.capability),
                 "symbol": symbol,
-                "import": import_source_for_symbol(input.request, &facts[0].file_path, &symbol)
-            }]
+                "module": import_source
+            })
+        } else {
+            json!({
+                "helper_id": format!("{}:{symbol}", input.capability),
+                "symbol": symbol,
+                "import": import_source
+            })
+        };
+        let requires = json!({
+            input.requires_key: [helper]
         });
         input
             .candidates
@@ -734,6 +863,100 @@ fn push_guard_candidate(input: GuardCandidateInput<'_>) {
                 graph_fingerprint: input.graph_fingerprint,
                 heuristic_id: input.heuristic_id,
                 required_capabilities: &["syntax_facts"],
+            }));
+    }
+}
+
+fn push_request_validation_candidates(input: RequestValidationCandidateInput<'_>) {
+    for (symbol, facts) in
+        grouped_route_facts(input.request, input.api_route_files, input.fact_kind)
+            .into_iter()
+            .filter(|(symbol, facts)| facts.len() >= 2 && (input.symbol_filter)(symbol))
+    {
+        let matcher = json!({
+            "kind": "api_route_requires_request_validation",
+            "applies_to_file_roles": ["api_route"],
+            "methods": ["POST", "PUT", "PATCH", "DELETE"]
+        });
+        let requires = json!({
+            "input_sources": ["body", "query", "params"],
+            "sinks": ["data_operation", "response"],
+            "validators": [{
+                "validator_id": format!("validator:{symbol}"),
+                "symbol": symbol,
+                "import": import_source_for_symbol(input.request, &facts[0].file_path, &symbol)
+            }],
+            "schemas": [],
+            "allow_throwing_parse": true,
+            "allow_safe_parse_success_guard": true
+        });
+        input
+            .candidates
+            .push(security_candidate_from_facts(SecurityCandidateInput {
+                request: input.request,
+                kind: "api_route_requires_request_validation",
+                statement: format!(
+                    "Mutation API routes appear to validate request input with `{symbol}`."
+                ),
+                rationale: "Detected repeated request validation helper calls.",
+                scope: input.route_scope.clone(),
+                matcher,
+                requires: Some(requires),
+                suggested_severity: "warning",
+                enforcement_capability: "deterministic_check",
+                confidence_label: "medium",
+                facts,
+                scope_file_count: input.scope_file_count,
+                file_hashes: input.file_hashes,
+                graph_fingerprint: input.graph_fingerprint,
+                heuristic_id: "security-request-validation-v1",
+                required_capabilities: &["syntax_facts", "request_validation"],
+            }));
+    }
+}
+
+fn push_serializer_candidate(input: SerializerCandidateInput<'_>) {
+    for (symbol, facts) in
+        grouped_route_facts(input.request, input.api_route_files, input.fact_kind)
+            .into_iter()
+            .filter(|(symbol, facts)| facts.len() >= 2 && (input.symbol_filter)(symbol))
+    {
+        let matcher = json!({
+            "kind": "api_route_forbids_sensitive_response_fields",
+            "required_calls": [symbol],
+            "applies_to_file_roles": ["api_route"]
+        });
+        let import_source = import_source_for_symbol(input.request, &facts[0].file_path, &symbol)
+            .unwrap_or_else(|| "unknown".to_string());
+        let requires = json!({
+            "response_serializers": [{
+                "serializer_id": format!("serializer:{symbol}"),
+                "import_source": import_source,
+                "imported_name": symbol,
+                "local_name": symbol,
+                "policy": "denylist",
+                "filtered_fields": ["password", "token", "apiToken", "accessToken", "refreshToken"]
+            }]
+        });
+        input
+            .candidates
+            .push(security_candidate_from_facts(SecurityCandidateInput {
+                request: input.request,
+                kind: "api_route_forbids_sensitive_response_fields",
+                statement: format!("API routes appear to serialize responses with `{symbol}`."),
+                rationale: "Detected repeated response serializer-like helper calls.",
+                scope: input.route_scope.clone(),
+                matcher,
+                requires: Some(requires),
+                suggested_severity: "warning",
+                enforcement_capability: "deterministic_check",
+                confidence_label: "medium",
+                facts,
+                scope_file_count: input.scope_file_count,
+                file_hashes: input.file_hashes,
+                graph_fingerprint: input.graph_fingerprint,
+                heuristic_id: "security-response-serializer-v1",
+                required_capabilities: &["syntax_facts", "sensitive_response"],
             }));
     }
 }
@@ -765,10 +988,57 @@ fn grouped_route_facts<'a>(
 
 fn is_auth_candidate_symbol(symbol: &str) -> bool {
     let lower = symbol.to_ascii_lowercase();
-    lower.contains("auth")
-        || lower.contains("session")
-        || lower.contains("user")
-        || lower.contains("login")
+    !is_serializer_candidate_symbol(symbol)
+        && (lower.contains("auth")
+            || lower.contains("session")
+            || lower.contains("login")
+            || matches!(
+                lower.as_str(),
+                "requireuser" | "getuser" | "getcurrentuser" | "currentuser"
+            ))
+}
+
+fn is_validation_candidate_symbol(symbol: &str) -> bool {
+    let lower = symbol.to_ascii_lowercase();
+    lower.contains("validate")
+        || lower.contains("validator")
+        || lower == "parsebody"
+        || lower == "parseinput"
+        || lower == "safeparse"
+}
+
+fn is_authorization_candidate_symbol(symbol: &str) -> bool {
+    let lower = symbol.to_ascii_lowercase();
+    lower.contains("authorize")
+        || lower.contains("permission")
+        || lower.contains("requirepermission")
+        || lower.contains("requirerole")
+        || lower.starts_with("can")
+}
+
+fn is_tenant_candidate_symbol(symbol: &str) -> bool {
+    let lower = symbol.to_ascii_lowercase();
+    lower.contains("tenant") || lower.contains("scopeproject") || lower.contains("scopeorg")
+}
+
+fn is_serializer_candidate_symbol(symbol: &str) -> bool {
+    let lower = symbol.to_ascii_lowercase();
+    lower.starts_with("serialize")
+        || lower.contains("serializer")
+        || lower.contains("redact")
+        || lower.contains("sanitize")
+}
+
+fn is_csrf_candidate_symbol(symbol: &str) -> bool {
+    symbol.to_ascii_lowercase().contains("csrf")
+}
+
+fn is_rate_limit_candidate_symbol(symbol: &str) -> bool {
+    let lower = symbol.to_ascii_lowercase();
+    lower.contains("ratelimit")
+        || lower.contains("rate_limit")
+        || lower.contains("throttle")
+        || lower.contains("limiter")
 }
 
 fn is_ssrf_candidate_symbol(symbol: &str) -> bool {
@@ -777,6 +1047,10 @@ fn is_ssrf_candidate_symbol(symbol: &str) -> bool {
         || lower.contains("allowlist")
         || lower.contains("sanitizeurl")
         || lower.contains("safeurl")
+}
+
+fn always_candidate_symbol(_: &str) -> bool {
+    true
 }
 
 fn import_source_for_symbol(
@@ -804,8 +1078,21 @@ fn json_string_field(fact: &CheckFact, field: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn json_bool_field(fact: &CheckFact, field: &str) -> Option<bool> {
-    json_value(fact)?.get(field)?.as_bool()
+fn cors_origin_field(fact: &CheckFact) -> Option<String> {
+    let value = json_value(fact)?;
+    value
+        .get("origin")
+        .or_else(|| value.get("origins"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn cors_credentials_field(fact: &CheckFact) -> Option<bool> {
+    let value = json_value(fact)?;
+    value
+        .get("allow_credentials")
+        .or_else(|| value.get("credentials"))
+        .and_then(Value::as_bool)
 }
 
 fn unique_json_strings(facts: &[&CheckFact], field: &str) -> Vec<String> {
