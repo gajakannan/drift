@@ -22,6 +22,11 @@ export const ConventionKindSchema = z.enum([
   "api_route_requires_auth_helper",
   "middleware_must_cover_routes",
   "api_route_requires_request_validation",
+  "api_route_forbids_untrusted_ssrf",
+  "api_route_forbids_raw_sql_without_params",
+  "api_route_cors_must_match_policy",
+  "api_route_requires_csrf_for_mutation",
+  "api_route_requires_rate_limit",
   "test_expected_for_changed_module",
   "custom_briefing",
   "file_role",
@@ -287,7 +292,13 @@ export const FactKindSchema = z.enum([
   "middleware_protects_route",
   "request_input_read",
   "request_validation_called",
-  "validated_input_used"
+  "validated_input_used",
+  "outbound_request_called",
+  "raw_sql_called",
+  "parameterized_sql_used",
+  "cors_policy_declared",
+  "csrf_guard_called",
+  "rate_limit_guard_called"
 ]);
 
 export const FactEvidenceLevelSchema = z.enum(["path", "text", "ast", "graph", "heuristic"]);

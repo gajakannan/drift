@@ -120,8 +120,40 @@ pub fn extract_security_facts_with_validation(
                 end_line: fact.end_line,
             });
         }
+        if is_outbound_request_call(fact) {
+            let route_id = format!("route:{}:{route}", fact.file_path);
+            let line = source_lines
+                .get(fact.start_line.saturating_sub(1))
+                .copied()
+                .unwrap_or_default();
+            let url_var = call_first_argument(line, &fact.name);
+            let url_source = outbound_url_source(line, url_var.as_deref(), &security_facts);
+            security_facts.push(Fact {
+                kind: FactKind::OutboundRequestCalled,
+                file_path: fact.file_path.clone(),
+                name: fact.name.clone(),
+                value: Some(
+                    json!({
+                        "route_id": route_id,
+                        "api": outbound_request_api(fact),
+                        "url_var": url_var,
+                        "url_source": url_source,
+                    })
+                    .to_string(),
+                ),
+                imported_name: None,
+                start_line: fact.start_line,
+                end_line: fact.end_line,
+            });
+        }
     }
     security_facts.extend(request_input_read_facts(
+        &normalized_file_path,
+        &facts,
+        &source_lines,
+    ));
+    security_facts.extend(raw_sql_facts(&normalized_file_path, &facts, &source_lines));
+    security_facts.extend(cors_policy_facts(
         &normalized_file_path,
         &facts,
         &source_lines,
@@ -420,7 +452,10 @@ fn protected_sink_after_line(facts: &[Fact], line: usize) -> bool {
     facts.iter().any(|fact| {
         matches!(
             fact.kind,
-            FactKind::DataOperationDetected | FactKind::RouteReturnsResponse
+            FactKind::DataOperationDetected
+                | FactKind::RouteReturnsResponse
+                | FactKind::OutboundRequestCalled
+                | FactKind::RawSqlCalled
         ) && fact.start_line > line
     })
 }
@@ -459,4 +494,153 @@ fn is_json_response_call(fact: &Fact) -> bool {
             fact.value.as_deref(),
             Some("Response") | Some("NextResponse") | Some("res")
         )
+}
+
+fn is_outbound_request_call(fact: &Fact) -> bool {
+    fact.name == "fetch"
+        || matches!(
+            (fact.value.as_deref(), fact.name.as_str()),
+            (
+                Some("axios"),
+                "get" | "post" | "put" | "patch" | "delete" | "request"
+            ) | (Some("http"), "get" | "request")
+                | (Some("https"), "get" | "request")
+        )
+}
+
+fn outbound_request_api(fact: &Fact) -> &'static str {
+    if fact.name == "fetch" {
+        "fetch"
+    } else if matches!(fact.value.as_deref(), Some("axios")) {
+        "axios"
+    } else if matches!(fact.value.as_deref(), Some("http")) {
+        "http"
+    } else if matches!(fact.value.as_deref(), Some("https")) {
+        "https"
+    } else {
+        "request"
+    }
+}
+
+fn outbound_url_source(line: &str, url_var: Option<&str>, security_facts: &[Fact]) -> &'static str {
+    if first_call_argument_text(line).is_some_and(|argument| {
+        argument.starts_with('"') || argument.starts_with('\'') || argument.starts_with('`')
+    }) {
+        return "constant";
+    }
+    if let Some(url_var) = url_var
+        && security_facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::RequestInputRead && fact.name == url_var)
+    {
+        return "request_input";
+    }
+    "unknown"
+}
+
+fn first_call_argument_text(line: &str) -> Option<&str> {
+    let after_open = line.split_once('(')?.1;
+    let argument = after_open.split_once(')')?.0.split(',').next()?.trim();
+    (!argument.is_empty()).then_some(argument)
+}
+
+fn raw_sql_facts(file_path: &str, facts: &[Fact], lines: &[&str]) -> Vec<Fact> {
+    let mut raw_sql_facts = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let line_number = index + 1;
+        let route = route_for_line(facts, line_number).unwrap_or("unknown");
+        let route_id = format!("route:{file_path}:{route}");
+        if line.contains("$queryRawUnsafe") || line.contains("$executeRawUnsafe") {
+            raw_sql_facts.push(Fact {
+                kind: FactKind::RawSqlCalled,
+                file_path: file_path.to_string(),
+                name: "raw_sql".to_string(),
+                value: Some(
+                    json!({
+                        "route_id": route_id,
+                        "sink_id": format!("raw_sql:{}:{}", file_path, line_number),
+                        "query_shape": raw_sql_query_shape(line),
+                        "uses_untrusted_input": true,
+                    })
+                    .to_string(),
+                ),
+                imported_name: None,
+                start_line: line_number,
+                end_line: line_number,
+            });
+        } else if line.contains("$queryRaw`")
+            || line.contains("$executeRaw`")
+            || (line.contains(".query(") && line.contains('['))
+        {
+            raw_sql_facts.push(Fact {
+                kind: FactKind::ParameterizedSqlUsed,
+                file_path: file_path.to_string(),
+                name: "parameterized_sql".to_string(),
+                value: Some(
+                    json!({
+                        "route_id": route_id,
+                        "sink_id": format!("raw_sql:{}:{}", file_path, line_number),
+                        "parameterization": if line.contains(".query(") { "placeholder_array" } else { "tagged_template_safe" },
+                    })
+                    .to_string(),
+                ),
+                imported_name: None,
+                start_line: line_number,
+                end_line: line_number,
+            });
+        }
+    }
+    raw_sql_facts
+}
+
+fn raw_sql_query_shape(line: &str) -> &'static str {
+    if line.contains('`') && line.contains("${") {
+        "template"
+    } else if line.contains(" + ") {
+        "concat"
+    } else {
+        "raw_string"
+    }
+}
+
+fn cors_policy_facts(file_path: &str, facts: &[Fact], lines: &[&str]) -> Vec<Fact> {
+    let Some((origin_line, origin)) = header_literal(lines, "Access-Control-Allow-Origin") else {
+        return Vec::new();
+    };
+    let credentials = header_literal(lines, "Access-Control-Allow-Credentials")
+        .is_some_and(|(_, value)| value.eq_ignore_ascii_case("true"));
+    let route = route_for_line(facts, origin_line).unwrap_or("unknown");
+    vec![Fact {
+        kind: FactKind::CorsPolicyDeclared,
+        file_path: file_path.to_string(),
+        name: "cors_policy".to_string(),
+        value: Some(
+            json!({
+                "route_id": format!("route:{file_path}:{route}"),
+                "origins": origin,
+                "credentials": credentials,
+                "source": "route",
+            })
+            .to_string(),
+        ),
+        imported_name: None,
+        start_line: origin_line,
+        end_line: origin_line,
+    }]
+}
+
+fn header_literal(lines: &[&str], header: &str) -> Option<(usize, String)> {
+    let header_marker = format!("\"{header}\"");
+    lines.iter().enumerate().find_map(|(index, line)| {
+        if !line.contains(&header_marker) {
+            return None;
+        }
+        let after_colon = line.split_once(':')?.1.trim();
+        let quote = after_colon
+            .chars()
+            .find(|value| *value == '"' || *value == '\'')?;
+        let after_quote = after_colon.split_once(quote)?.1;
+        let value = after_quote.split_once(quote)?.0.trim();
+        (!value.is_empty()).then(|| (index + 1, value.to_string()))
+    })
 }

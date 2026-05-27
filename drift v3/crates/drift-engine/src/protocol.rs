@@ -345,6 +345,9 @@ pub struct CheckMatcher {
     pub allowed_delegate_imports: Option<Vec<String>>,
     pub required_calls: Option<Vec<String>>,
     pub applies_to_file_roles: Option<Vec<String>>,
+    pub file_roles: Option<Vec<String>>,
+    pub path_globs: Option<Vec<String>>,
+    pub route_paths: Option<Vec<String>>,
     pub methods: Option<Vec<String>>,
 }
 

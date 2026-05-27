@@ -40,6 +40,16 @@ import {
 import { enforcementResultFor,isActiveConvention,isForbiddenImport } from "./rule-evaluation.js";
 import { findContractWaiverForImport,isExceptedImport,isExceptedPath,waiverRequiresReapproval } from "./waivers.js";
 
+const ENGINE_OWNED_SECURITY_CONTRACTS = new Set([
+  "api_route_requires_auth_helper",
+  "api_route_requires_request_validation",
+  "api_route_forbids_untrusted_ssrf",
+  "api_route_forbids_raw_sql_without_params",
+  "api_route_cors_must_match_policy",
+  "api_route_requires_csrf_for_mutation",
+  "api_route_requires_rate_limit"
+]);
+
 export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs): Promise<CommandPayload> {
   const repoId = resolveRepoId(parsed);
   const repo = storage.getRepo(repoId);
@@ -1919,10 +1929,7 @@ async function runEngineOwnedAuthCheck(input: {
 
   for (const convention of input.contract.conventions) {
     if (
-      (
-        convention.kind !== "api_route_requires_auth_helper" &&
-        convention.kind !== "api_route_requires_request_validation"
-      ) ||
+      !ENGINE_OWNED_SECURITY_CONTRACTS.has(convention.kind) ||
       convention.enforcement_mode === "off" ||
       convention.enforcement_capability !== "deterministic_check" ||
       !isActiveConvention(convention, input.now)
@@ -1972,6 +1979,7 @@ async function runEngineOwnedAuthCheck(input: {
         .map((fact) => fact.id);
       const preserved = preservedGovernanceStatus(input.existingFindings.get(engineFinding.fingerprint));
       const isRequestValidationFinding = engineFinding.rule_id === "api_route_requires_request_validation";
+      const isAuthFinding = engineFinding.rule_id === "api_route_requires_auth_helper";
       const proofForFinding = result.security_boundary_proofs.find((proof) =>
         proof.result.finding_ids.includes(engineFinding.id)
       );
@@ -1999,14 +2007,18 @@ async function runEngineOwnedAuthCheck(input: {
           file_hash: snapshot?.content_hash ?? "",
           redaction_state: "none"
         }],
-        expected_layer: isRequestValidationFinding ? "request_validation" : "auth_guard",
+        expected_layer: securityExpectedLayer(engineFinding.rule_id),
         actual_layer: isRequestValidationFinding
           ? requestValidationActualLayer(proofForFinding)
-          : "missing_auth_guard",
+          : isAuthFinding
+            ? "missing_auth_guard"
+            : phase6ActualLayer(proofForFinding),
         graph_path: [evidence.file_path],
         suggested_fix: isRequestValidationFinding
           ? "Validate request input with an accepted validator before using it at protected route sinks."
-          : "Call an accepted auth helper before route data operations or response sinks.",
+          : isAuthFinding
+            ? "Call an accepted auth helper before route data operations or response sinks."
+            : "Satisfy the accepted Phase 6 security proof before the protected route sink.",
         related_node_ids: engineFinding.related_node_ids,
         created_at: input.now
       });
@@ -2043,6 +2055,47 @@ function requestValidationActualLayer(proof: unknown): string {
     typeof use.reason === "string"
   )?.reason;
   return typeof unvalidatedReason === "string" ? unvalidatedReason : "request_input_not_validated";
+}
+
+function securityExpectedLayer(ruleId: string): string {
+  switch (ruleId) {
+    case "api_route_requires_request_validation":
+      return "request_validation";
+    case "api_route_requires_auth_helper":
+      return "auth_guard";
+    case "api_route_forbids_untrusted_ssrf":
+      return "outbound_request";
+    case "api_route_forbids_raw_sql_without_params":
+      return "raw_sql";
+    case "api_route_cors_must_match_policy":
+      return "cors_policy";
+    case "api_route_requires_csrf_for_mutation":
+      return "csrf_guard";
+    case "api_route_requires_rate_limit":
+      return "rate_limit_guard";
+    default:
+      return "security";
+  }
+}
+
+function phase6ActualLayer(proof: unknown): string {
+  if (!proof || typeof proof !== "object") {
+    return "missing_phase6_proof";
+  }
+  const candidate = proof as {
+    parser_gaps?: Array<{ code?: unknown }>;
+    missing_proof?: Array<{ code?: unknown }>;
+  };
+  const parserGapCode = candidate.parser_gaps?.find((gap) =>
+    typeof gap.code === "string"
+  )?.code;
+  if (typeof parserGapCode === "string") {
+    return parserGapCode;
+  }
+  const missingProofCode = candidate.missing_proof?.find((missing) =>
+    typeof missing.code === "string"
+  )?.code;
+  return typeof missingProofCode === "string" ? missingProofCode : "missing_phase6_proof";
 }
 
 function graphForEngineCheck(

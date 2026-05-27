@@ -87,6 +87,65 @@ describe("security check bridge", () => {
     expect(JSON.stringify(payload)).not.toContain("request.json()");
   });
 
+  it("summarizes Phase 6 failed proofs and parser gaps in drift check JSON output", () => {
+    const payload = buildSecurityCheckJson({
+      repo_id: "repo_abc",
+      scope: "changed-files",
+      changed_files: ["app/api/proxy/route.ts"],
+      proofs: [
+        securityProof("proof_ssrf", "app/api/proxy/route.ts", "finding_ssrf", {
+          contracts: [{
+            contract_id: "security_api_no_untrusted_ssrf",
+            kind: "api_route_forbids_untrusted_ssrf",
+            enforcement_mode: "block",
+            capability: "deterministic_check",
+            matched: true
+          }],
+          ssrf: {
+            required: true,
+            proven: false,
+            outbound_requests: [{
+              fact_id: "fact_fetch",
+              sink_id: "sink_fetch",
+              api: "fetch",
+              url_source: "unknown"
+            }],
+            allowlist_proofs: [],
+            missing_proof: [{
+              code: "unsupported_dynamic_outbound_url",
+              fact_ids: ["fact_fetch"]
+            }]
+          },
+          parser_gaps: [{
+            parser_gap_id: "gap_dynamic_url",
+            capability: "outbound_request_facts",
+            code: "unsupported_dynamic_outbound_url",
+            file_path: "app/api/proxy/route.ts",
+            reason: "Dynamic outbound URL prevents deterministic SSRF proof",
+            affected_contract_kinds: ["api_route_forbids_untrusted_ssrf"],
+            affected_route_ids: ["route_ssrf"],
+            missing_proof_ids: ["missing_ssrf"],
+            blocks_enforcement: true
+          }]
+        })
+      ],
+      findings: [{
+        finding_id: "finding_ssrf",
+        title: "API route has missing SSRF proof",
+        file_path: "app/api/proxy/route.ts",
+        enforcement_result: "block"
+      }]
+    });
+
+    expect(payload.security_boundary_proofs[0]?.ssrf).toMatchObject({
+      required: true,
+      proven: false
+    });
+    expect(payload.summary.phase6_failed_count).toBe(1);
+    expect(payload.summary.phase6_parser_gap_count).toBe(1);
+    expect(JSON.stringify(payload)).not.toContain("https://token");
+  });
+
   it("receives SecurityBoundaryProof.auth from engine-owned auth checks", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-security-auth-bridge-"));
     tempDirs.push(dir);

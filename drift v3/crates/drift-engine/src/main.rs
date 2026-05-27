@@ -740,6 +740,12 @@ fn fact_kind(kind: FactKind) -> &'static str {
         FactKind::RequestInputRead => "request_input_read",
         FactKind::RequestValidationCalled => "request_validation_called",
         FactKind::ValidatedInputUsed => "validated_input_used",
+        FactKind::OutboundRequestCalled => "outbound_request_called",
+        FactKind::RawSqlCalled => "raw_sql_called",
+        FactKind::ParameterizedSqlUsed => "parameterized_sql_used",
+        FactKind::CsrfGuardCalled => "csrf_guard_called",
+        FactKind::RateLimitGuardCalled => "rate_limit_guard_called",
+        FactKind::CorsPolicyDeclared => "cors_policy_declared",
     }
 }
 

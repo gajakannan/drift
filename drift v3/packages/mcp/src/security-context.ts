@@ -39,6 +39,11 @@ export function buildSecurityContextPayload(storage: DriftStorage, repoId: strin
       routes: requestValidationRoutes(requestInputFacts, validatedUseFacts),
       parser_gaps: requestValidationParserGaps(parserGaps)
     },
+    phase6: {
+      proof_source: "trusted_check_proof_required",
+      routes: [],
+      parser_gaps: phase6ParserGaps(parserGaps)
+    },
     redactions: {
       snippets_included: false,
       source_content_included: false,
@@ -61,7 +66,12 @@ function securityConventions(conventions: AcceptedConvention[]) {
     .filter((convention) =>
       convention.kind === "middleware_must_cover_routes" ||
       convention.kind === "api_route_requires_auth_helper" ||
-      convention.kind === "api_route_requires_request_validation"
+      convention.kind === "api_route_requires_request_validation" ||
+      convention.kind === "api_route_forbids_untrusted_ssrf" ||
+      convention.kind === "api_route_forbids_raw_sql_without_params" ||
+      convention.kind === "api_route_cors_must_match_policy" ||
+      convention.kind === "api_route_requires_csrf_for_mutation" ||
+      convention.kind === "api_route_requires_rate_limit"
     )
     .map((convention) => ({
       id: convention.id,
@@ -205,6 +215,18 @@ function middlewareParserGaps(parserGaps: ParserGap[]) {
 function requestValidationParserGaps(parserGaps: ParserGap[]) {
   return parserGaps
     .filter((gap) => gap.message === "unsupported_request_input_spread")
+    .map((gap) => ({
+      reason: gap.message,
+      blocking: gap.confidence_impact === "blocks_enforcement"
+    }));
+}
+
+function phase6ParserGaps(parserGaps: ParserGap[]) {
+  return parserGaps
+    .filter((gap) =>
+      gap.message === "unsupported_dynamic_outbound_url" ||
+      gap.message === "unsupported_dynamic_cors_origin"
+    )
     .map((gap) => ({
       reason: gap.message,
       blocking: gap.confidence_impact === "blocks_enforcement"

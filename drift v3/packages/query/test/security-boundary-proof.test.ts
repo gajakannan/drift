@@ -84,6 +84,35 @@ describe("security boundary proof read model", () => {
       request_validation_required: false,
       request_validation_proven: false,
       request_validation_unvalidated_reasons: [],
+      phase6: {
+        ssrf: {
+          required: false,
+          proven: false,
+          outbound_request_count: 0,
+          allowlist_proof_count: 0
+        },
+        raw_sql: {
+          required: false,
+          proven: false,
+          raw_sql_call_count: 0,
+          parameterized_sql_count: 0
+        },
+        cors: {
+          required: false,
+          proven: false,
+          policy_count: 0
+        },
+        csrf: {
+          required: false,
+          proven: false,
+          guard_call_count: 0
+        },
+        rate_limit: {
+          required: false,
+          proven: false,
+          guard_call_count: 0
+        }
+      },
       proof_status: "parser_gap",
       enforcement_result: "block",
       missing_proof_codes: ["missing_auth_guard"],
@@ -166,6 +195,75 @@ describe("security boundary proof read model", () => {
       request_validation_unvalidated_reasons: ["request_input_not_validated"]
     });
     expect(JSON.stringify(model)).not.toContain("request.json()");
+  });
+
+  it("summarizes Phase 6 proof sections from trusted proof output", () => {
+    const model = buildSecurityBoundaryProofReadModel({
+      proofs: [{
+        proof_id: "proof_route_proxy_post",
+        proof_version: "security-boundary-proof/v1",
+        route: {
+          route_id: "route_proxy_post",
+          file_path: "app/api/proxy/route.ts",
+          file_role: "api_route"
+        },
+        contracts: [{
+          contract_id: "security_api_no_untrusted_ssrf",
+          kind: "api_route_forbids_untrusted_ssrf",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }],
+        capability_status: [],
+        auth: {
+          required: false,
+          proven: false,
+          proof_kind: "none",
+          trusted_guard_calls: [],
+          dominated_sinks: [],
+          undominated_sinks: []
+        },
+        ssrf: {
+          required: true,
+          proven: false,
+          outbound_requests: [{
+            fact_id: "fact_fetch",
+            sink_id: "sink_fetch",
+            api: "fetch",
+            url_source: "request_input"
+          }],
+          allowlist_proofs: [],
+          missing_proof: [{
+            code: "request_controlled_url",
+            fact_ids: ["fact_fetch"]
+          }]
+        },
+        missing_proof: [{
+          id: "missing_ssrf",
+          capability: "outbound_request_facts",
+          code: "request_controlled_url",
+          blocks_enforcement: true,
+          fact_ids: ["fact_fetch"],
+          graph_edge_ids: []
+        }],
+        parser_gaps: [],
+        result: {
+          proof_status: "missing_proof",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: ["finding_ssrf"]
+        }
+      }],
+      findings: []
+    });
+
+    expect(model.routes[0]?.phase6.ssrf).toEqual({
+      required: true,
+      proven: false,
+      outbound_request_count: 1,
+      allowlist_proof_count: 0
+    });
+    expect(JSON.stringify(model)).not.toContain("https://token");
   });
 
   it("does not report request validation proven from raw scan facts", () => {
