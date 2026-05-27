@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -2147,6 +2147,53 @@ describe("drift CLI convention review", () => {
     expect(result.stdout).toContain("Drift is ready for this repo.");
     expect(result.stdout).toContain("drift conventions list");
     expect(result.stdout).toContain("drift check --diff main...HEAD");
+  });
+
+  it.skipIf(process.platform === "win32")("starts when an upstream repo contains a broken symlink", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-start-broken-symlink-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      [
+        "export async function GET() {",
+        "  return Response.json({ ok: true });",
+        "}",
+        ""
+      ].join("\n")
+    );
+    const eeDir = join(repoRoot, "apps/web/app/app.dub.co/(dashboard)/[slug]/(ee)");
+    await mkdir(eeDir, { recursive: true });
+    await symlink("../../../../(ee)/LICENSE.md", join(eeDir, "LICENSE.md"));
+
+    const result = await runCli([
+      "start",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:25.000Z",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.summary).toMatchObject({
+      files_indexed: 1,
+      files_skipped: 1,
+      diagnostics_count: 1,
+      engine_source: "rust"
+    });
+    const storage = openDriftStorage({ databasePath: payload.state.database_path });
+    storage.migrate();
+    expect(storage.listParserGaps(payload.repo.id, payload.scan.id)).toMatchObject([
+      {
+        kind: "partial_parse",
+        file_path: "apps/web/app/app.dub.co/(dashboard)/[slug]/(ee)/LICENSE.md",
+        confidence_impact: "blocks_enforcement"
+      }
+    ]);
+    storage.close();
   });
 
   it("starts onboarding with accept-defaults, materializes contract, and baselines existing violations", async () => {
