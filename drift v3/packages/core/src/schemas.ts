@@ -367,6 +367,50 @@ export const ParserGapSchema = z.object({
   created_at: z.string().min(1)
 });
 
+export const ParserGapKindV2Schema = z.enum([
+  "unresolved_import",
+  "unresolved_import_symbol",
+  "unsupported_namespace_import_symbol",
+  "unresolved_symbol",
+  "unknown_file_role",
+  "mixed_file_role",
+  "unsupported_framework_pattern",
+  "dynamic_import_unresolved",
+  "computed_call_unresolved",
+  "chained_call_partial",
+  "decorator_route_unresolved",
+  "di_container_unresolved",
+  "wrapper_alias_unresolved",
+  "type_only_boundary_ignored",
+  "framework_magic_detected"
+]);
+
+export const ParserGapSuggestedActionSchema = z.enum([
+  "add_fixture",
+  "accept_advisory",
+  "rewrite_static",
+  "configure_adapter",
+  "defer"
+]);
+
+export const ParserGapV2Schema = z.object({
+  schema_version: z.literal("drift.parser_gap.v2"),
+  parser_gap_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  file_path: z.string().min(1),
+  start_line: z.number().int().positive(),
+  end_line: z.number().int().positive(),
+  kind: ParserGapKindV2Schema,
+  message: z.string().min(1),
+  source_text_hash: z.string().min(1).optional(),
+  affected_capabilities: z.array(z.string().min(1)).min(1),
+  affected_contract_kinds: z.array(ConventionKindSchema).min(1),
+  confidence_impact: ParserGapConfidenceImpactSchema,
+  suggested_action: ParserGapSuggestedActionSchema,
+  evidence_refs: z.array(z.string().min(1)).min(1)
+});
+
 export const ScanCapabilityReportScopeSchema = z.enum([
   "repo",
   "changed-files",
@@ -399,6 +443,215 @@ export const ScanCapabilityReportSchema = z.object({
   parser_gap_kinds: z.record(z.number().int().nonnegative()),
   fallback_used: z.boolean(),
   enforcement_degraded: z.boolean(),
+  created_at: z.string().datetime()
+});
+
+export const SemanticCapabilityCertificationSchema = z.enum([
+  "certified_deterministic",
+  "certified_heuristic",
+  "experimental",
+  "unsupported"
+]);
+
+export const SemanticCapabilitySupportSchema = z.enum([
+  "supported",
+  "partial",
+  "unsupported",
+  "deferred"
+]);
+
+export const SemanticCapabilityEvidenceClassSchema = z.enum([
+  "path",
+  "text",
+  "ast",
+  "graph",
+  "type_checker",
+  "heuristic",
+  "unsupported_pattern"
+]);
+
+export const SemanticCapabilityOwnerSchema = z.enum([
+  "rust_engine",
+  "core_schema",
+  "query",
+  "cli",
+  "mcp",
+  "proof"
+]);
+
+export const SemanticCapabilityContractSchema = z.object({
+  schema_version: z.literal("drift.semantic_capability.v1"),
+  capability_id: z.string().min(1),
+  display_name: z.string().min(1),
+  language: z.enum(["typescript", "javascript", "tsx", "jsx"]),
+  support: SemanticCapabilitySupportSchema,
+  certification: SemanticCapabilityCertificationSchema,
+  can_block: z.boolean(),
+  evidence_classes: z.array(SemanticCapabilityEvidenceClassSchema).min(1),
+  emitted_fact_kinds: z.array(z.string().min(1)),
+  emitted_node_kinds: z.array(z.string().min(1)),
+  emitted_edge_kinds: z.array(z.string().min(1)),
+  parser_gap_kinds: z.array(z.string().min(1)),
+  fixture_suites: z.array(z.string().min(1)),
+  required_for_beta_claims: z.array(z.string().min(1)),
+  owner: SemanticCapabilityOwnerSchema
+}).superRefine((value, ctx) => {
+  if (value.can_block && value.certification !== "certified_deterministic") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "blocking semantic capabilities require certified deterministic evidence",
+      path: ["can_block"]
+    });
+  }
+});
+
+export const SemanticCoverageScopeSchema = z.enum([
+  "scan",
+  "file",
+  "route_flow",
+  "check",
+  "preflight",
+  "repo_map",
+  "mcp"
+]);
+
+export const SemanticCoverageDecisionSchema = z.enum([
+  "blocking_allowed",
+  "advisory_only",
+  "refuse"
+]);
+
+export const SemanticCoverageContractSchema = z.object({
+  schema_version: z.literal("drift.semantic_coverage.v1"),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  scope: SemanticCoverageScopeSchema,
+  scope_id: z.string().min(1),
+  required_capabilities: z.array(z.string().min(1)),
+  complete_capabilities: z.array(z.string().min(1)),
+  partial_capabilities: z.array(z.string().min(1)),
+  missing_capabilities: z.array(z.string().min(1)),
+  unsupported_capabilities: z.array(z.string().min(1)),
+  parser_gap_ids: z.array(z.string().min(1)),
+  unsupported_pattern_ids: z.array(z.string().min(1)),
+  confidence: z.number().min(0).max(1),
+  decision: SemanticCoverageDecisionSchema,
+  reasons: z.array(z.string().min(1)),
+  generated_at: z.string().datetime()
+});
+
+export const ArchitectureEdgePolicySchema = z.enum([
+  "allowed",
+  "forbidden",
+  "expected",
+  "allowed_with_risk",
+  "ignored",
+  "advisory_only"
+]);
+
+export const ArchitectureEdgeKindSchema = z.enum([
+  "imports",
+  "calls",
+  "contains",
+  "returns",
+  "uses_data"
+]);
+
+export const ArchitectureContractV1Schema = z.object({
+  schema_version: z.literal("drift.architecture.v1"),
+  architecture_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  version: z.string().min(1),
+  source: z.enum(["default", "imported", "elected"]),
+  roles: z.array(z.object({
+    role: CanonicalRoleSchema,
+    description: z.string().min(1),
+    detection: z.enum(["path", "ast", "import_graph", "accepted_convention", "manual"]),
+    confidence_required_for_blocking: z.literal("high")
+  })).min(1),
+  edge_policies: z.array(z.object({
+    from_role: CanonicalRoleSchema,
+    to_role: CanonicalRoleSchema,
+    edge_kind: ArchitectureEdgeKindSchema,
+    policy: ArchitectureEdgePolicySchema,
+    required_capabilities: z.array(z.string().min(1))
+  }))
+});
+
+export const ConventionRuleContractSchema = z.object({
+  schema_version: z.literal("drift.convention_rule.v2"),
+  rule_id: z.string().min(1),
+  rule_version: z.string().min(1),
+  convention_kind: ConventionKindSchema,
+  statement: z.string().min(1),
+  applies_to: z.object({
+    path_globs: z.array(RepoRelativePatternSchema).optional(),
+    file_roles: z.array(CanonicalRoleSchema).optional(),
+    entrypoint_kinds: z.array(z.string().min(1)).optional(),
+    methods: z.array(z.string().min(1)).optional()
+  }),
+  requires_capabilities: z.array(z.string().min(1)).min(1),
+  architecture_contract_id: z.string().min(1),
+  matcher: z.record(z.unknown()),
+  can_block_when: z.object({
+    convention_status: z.literal("active"),
+    coverage_decision: z.literal("blocking_allowed"),
+    capability_certification: z.literal("certified_deterministic")
+  }),
+  advisory_when: z.array(z.string().min(1)),
+  refuse_when: z.array(z.string().min(1))
+});
+
+export const ConventionElectionStateSchema = z.enum([
+  "detected",
+  "candidate",
+  "promoted",
+  "accepted",
+  "active",
+  "rejected",
+  "deprecated",
+  "superseded",
+  "conflicted",
+  "disabled",
+  "expired"
+]);
+
+export const ConventionElectionDecisionSchema = z.enum([
+  "create_candidate",
+  "promote",
+  "accept",
+  "activate",
+  "reject",
+  "disable",
+  "deprecate",
+  "supersede",
+  "mark_conflicted",
+  "expire"
+]);
+
+export const ConventionElectionContractV2Schema = z.object({
+  schema_version: z.literal("drift.convention_election.v2"),
+  election_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  candidate_id: z.string().min(1).optional(),
+  convention_id: z.string().min(1).optional(),
+  previous_state: ConventionElectionStateSchema.nullable(),
+  next_state: ConventionElectionStateSchema,
+  decision: ConventionElectionDecisionSchema,
+  human_actor: z.string().min(1).optional(),
+  automated_actor: z.enum(["drift_engine", "cli_import", "policy_import"]).optional(),
+  reason: z.string().min(1),
+  evidence_refs: z.array(z.string().min(1)),
+  counterexample_refs: z.array(z.string().min(1)),
+  required_capabilities: z.array(z.string().min(1)),
+  semantic_coverage_id: z.string().min(1).optional(),
+  architecture_contract_id: z.string().min(1),
+  convention_rule_id: z.string().min(1),
+  contract_fingerprint_before: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  contract_fingerprint_after: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  audit_event_id: z.string().min(1),
+  can_block: z.boolean(),
+  blocked_reason: z.string().min(1).optional(),
   created_at: z.string().datetime()
 });
 
@@ -1279,7 +1532,18 @@ export const RepoContractSchema = z.object({
   safe_commands: z.array(SafeCommandSchema),
   required_checks: z.array(RequiredCheckSchema),
   context_egress: ContextEgressPolicySchema,
-  agent_permissions: z.array(AgentPermissionSchema)
+  agent_permissions: z.array(AgentPermissionSchema),
+  semantic_capability_contract_version: z.literal("drift.semantic_capability.v1").optional(),
+  architecture_contract_id: z.string().min(1).optional(),
+  architecture_contract_fingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  active_convention_rule_ids: z.array(z.string().min(1)).optional(),
+  active_semantic_capability_ids: z.array(z.string().min(1)).optional(),
+  beta_claim_profile: z.enum(["narrow_route_layering", "security_boundary", "custom_internal"]).optional(),
+  enforcement_policy: z.object({
+    block_on_parser_gaps: z.literal(false),
+    refuse_on_required_capability_missing: z.literal(true),
+    advisory_on_heuristic_capability: z.literal(true)
+  }).optional()
 });
 
 export const PolicyDecisionSchema = z.object({

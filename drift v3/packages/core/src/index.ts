@@ -11,5 +11,6 @@ export * from "./ids.js";
 export * from "./policy.js";
 export * from "./scans.js";
 export * from "./security.js";
+export * from "./semantic-capabilities.js";
 export * from "./schemas.js";
 export * from "./versions.js";

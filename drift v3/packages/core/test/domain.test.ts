@@ -717,6 +717,7 @@ describe("core domain", () => {
       "FactQualityContract",
       "GraphContract",
       "ScanStatusContract",
+      "SemanticCapabilityContract",
       "RoleOntologyContract",
       "LayerArchitectureContract",
       "AdapterContract",
