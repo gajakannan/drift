@@ -341,19 +341,19 @@ function classifyFact(fact: FactRecord): PatternSeed[] {
     return classifySymbolCall(fact, file);
   }
   if (fact.kind === "request_validation_called") {
-    return [{ area: "request_validation", pattern: fact.name, semanticRole: "validator", file, proofBacked: true }];
+    return [{ area: "request_validation", pattern: fact.name, semanticRole: "validator", file }];
   }
   if (fact.kind === "authorization_guard_called") {
-    return [{ area: "authorization", pattern: fact.name, semanticRole: "authorization_guard", file, proofBacked: true }];
+    return [{ area: "authorization", pattern: fact.name, semanticRole: "authorization_guard", file }];
   }
   if (fact.kind === "tenant_source") {
     return [{ area: "tenant_scope", pattern: fact.name, semanticRole: "tenant_precondition", file }];
   }
   if (fact.kind === "tenant_guard_called") {
-    return [{ area: "tenant_scope", pattern: fact.name, semanticRole: "tenant_predicate", file, proofBacked: true }];
+    return [{ area: "tenant_scope", pattern: fact.name, semanticRole: "tenant_predicate", file }];
   }
   if (fact.kind === "middleware_protects_route") {
-    return [{ area: "middleware_coverage", pattern: fact.name, semanticRole: "middleware", file, proofBacked: true }];
+    return [{ area: "middleware_coverage", pattern: fact.name, semanticRole: "middleware", file }];
   }
   if (fact.kind === "data_operation_detected") {
     if (isGenericDataOperationName(fact.name)) {
@@ -373,7 +373,7 @@ function classifyFact(fact: FactRecord): PatternSeed[] {
     return [{ area: "raw_sql", pattern: fact.name, semanticRole: "raw_sql", file }];
   }
   if (fact.kind === "parameterized_sql_used") {
-    return [{ area: "raw_sql", pattern: fact.name, semanticRole: "parameterized_sql", file, proofBacked: true }];
+    return [{ area: "raw_sql", pattern: fact.name, semanticRole: "parameterized_sql", file }];
   }
   if (fact.kind === "cors_policy_declared") {
     return [{ area: "cors", pattern: fact.name, semanticRole: "cors_policy", file }];

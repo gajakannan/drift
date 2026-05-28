@@ -8,6 +8,9 @@ import { runScanRepo,scanStatusPayload } from "../domain/scan-status.js";
 import { formatScanStatusText } from "../formatters/scan-status.js";
 
 export async function scanRepo(storage: SqliteDriftStorage, parsed: ParsedArgs) {
+  if (stringFlag(parsed, "repo")) {
+    throw new Error("--repo is not supported for drift scan; use --repo-root with --state-root, or run scan status for an existing repo id.");
+  }
   return runScanRepo(storage, {
     now: stringFlag(parsed, "now") ?? new Date().toISOString(),
     repoRoot: resolveRepoRoot(parsed),
