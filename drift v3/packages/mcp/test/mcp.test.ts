@@ -1424,6 +1424,52 @@ describe("read-only MCP handlers", () => {
       }],
       createdAt: "2026-05-10T00:00:08.000Z"
     }));
+    storage.upsertFrameworkScanData({
+      repoId: "repo_abc",
+      scanId: "scan_abc",
+      adapters: [{
+        schema_version: "drift.framework.adapter.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        adapter_version: "0.1.0",
+        package_names: ["next"],
+        entrypoint_kinds: ["api_route"],
+        supported_patterns: ["app/api/**/route.{ts,tsx,js,jsx}"],
+        unsupported_patterns: [],
+        capabilities: []
+      }],
+      entrypoints: [{
+        schema_version: "drift.normalized_entrypoint.v1",
+        entrypoint_id: `entrypoint:next_app:${routePath}:GET`,
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        kind: "api_route",
+        file_path: routePath,
+        route_pattern: "/api/users",
+        method: "GET",
+        middleware_refs: [],
+        request_source_refs: [],
+        response_sink_refs: [],
+        data_operation_refs: [],
+        confidence_label: "high",
+        evidence_refs: ["fact_route_users_get"],
+        parser_gap_ids: []
+      }],
+      parserGaps: [],
+      capabilities: [{
+        schema_version: "drift.framework.capability.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        capability: "entrypoint_discovery",
+        status: "complete",
+        can_block: true,
+        block_requires_accepted_convention: true,
+        parser_gap_ids: [],
+        missing_proof_ids: []
+      }]
+    });
     storage.close();
 
     const mapped = createReadOnlyMcpHandlers({ databasePath }).get_repo_map({
@@ -1438,6 +1484,10 @@ describe("read-only MCP handlers", () => {
         exported_symbols: string[];
         calls: string[];
       }>;
+      framework_entrypoints: {
+        summary: { entrypoint_count: number };
+        entrypoints: Array<{ file_path: string; route_pattern?: string; method?: string }>;
+      };
     };
 
     expect(mapped.summary.call_count).toBe(2);
@@ -1447,6 +1497,14 @@ describe("read-only MCP handlers", () => {
       exported_symbols: ["GET"],
       calls: expect.arrayContaining(["Response.json", "db.user.findMany"])
     })]);
+    expect(mapped.framework_entrypoints.summary.entrypoint_count).toBe(1);
+    expect(mapped.framework_entrypoints.entrypoints).toEqual([
+      expect.objectContaining({
+        file_path: routePath,
+        route_pattern: "/api/users",
+        method: "GET"
+      })
+    ]);
   });
 
   it("exposes required-check execution proof through read-only MCP", async () => {

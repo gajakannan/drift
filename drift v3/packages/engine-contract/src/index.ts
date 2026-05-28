@@ -108,6 +108,8 @@ export const EngineFrameworkAdapterSchema = z.object({
 export const EngineNormalizedEntrypointSchema = z.object({
   schema_version: z.literal("engine.normalized_entrypoint.v1"),
   entrypoint_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
   adapter_id: z.string().min(1),
   framework: EngineFrameworkNameSchema,
   kind: EngineEntrypointKindSchema,
@@ -131,6 +133,8 @@ export const EngineNormalizedEntrypointSchema = z.object({
 export const EngineFrameworkParserGapSchema = z.object({
   schema_version: z.literal("engine.framework.parser_gap.v1"),
   parser_gap_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
   adapter_id: z.string().min(1),
   framework: EngineFrameworkNameSchema.optional(),
   file_path: z.string().min(1),
@@ -150,7 +154,8 @@ export const EngineFrameworkParserGapSchema = z.object({
   reason: z.string().min(1),
   affected_entrypoint_ids: z.array(z.string().min(1)),
   affected_contract_kinds: z.array(z.string().min(1)),
-  blocks_enforcement: z.boolean()
+  blocks_enforcement: z.boolean(),
+  suggested_next_step: z.string().min(1)
 }).superRefine((gap, context) => {
   if (
     gap.start_line !== undefined &&
@@ -1251,6 +1256,26 @@ export const EngineStreamEventSchema = z.discriminatedUnion("event", [
     schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),
     event: z.literal("graph_evidence_batch"),
     graph_evidence: z.array(GraphEvidenceSchema)
+  }),
+  z.object({
+    schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),
+    event: z.literal("framework_adapter_batch"),
+    framework_adapters: z.array(EngineFrameworkAdapterSchema)
+  }),
+  z.object({
+    schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),
+    event: z.literal("normalized_entrypoint_batch"),
+    normalized_entrypoints: z.array(EngineNormalizedEntrypointSchema)
+  }),
+  z.object({
+    schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),
+    event: z.literal("framework_parser_gap_batch"),
+    framework_parser_gaps: z.array(EngineFrameworkParserGapSchema)
+  }),
+  z.object({
+    schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),
+    event: z.literal("framework_capability_batch"),
+    framework_capabilities: z.array(EngineFrameworkCapabilitySchema)
   }),
   z.object({
     schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),

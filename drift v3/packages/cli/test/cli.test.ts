@@ -10268,6 +10268,29 @@ describe("drift CLI convention review", () => {
         ]),
         unknown_zones: []
       },
+      framework_entrypoints: {
+        schema_version: "drift.framework_entrypoints.read_model.v1",
+        repo_id: repoId,
+        summary: {
+          entrypoint_count: 1,
+          supported_count: 1,
+          parser_gap_count: 0
+        },
+        by_framework: [{
+          framework: "next_app",
+          adapter_id: "framework_adapter_next_v1",
+          entrypoint_count: 1,
+          capability_status: "complete",
+          can_block: true
+        }],
+        entrypoints: [expect.objectContaining({
+          framework: "next_app",
+          kind: "api_route",
+          file_path: "apps/web/app/api/users/route.ts",
+          route_pattern: "/api/users",
+          method: "GET"
+        })]
+      },
       freshness_requirement: {
         required: false,
         satisfied: true

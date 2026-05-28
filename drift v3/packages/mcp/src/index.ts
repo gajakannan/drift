@@ -50,6 +50,7 @@ import {
 import { FACTGRAPH_SCHEMA_VERSION } from "@drift/factgraph";
 import {
   buildChangeImpact,
+  buildFrameworkEntrypointReadModel,
   buildFindingsReadModel,
   buildRepoContractReadModel,
   buildReadiness,
@@ -1511,6 +1512,15 @@ function repoMapPayload(
   const facts = latestScan ? storage.listFacts(latestScan.id) : [];
   const findings = storage.listFindings(repoId);
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
+  const frameworkEntryPoints = latestScan
+    ? buildFrameworkEntrypointReadModel({
+        repo_id: repoId,
+        scan_id: latestScan.id,
+        entrypoints: storage.listNormalizedEntrypoints(repoId, latestScan.id),
+        parser_gaps: storage.listFrameworkParserGaps(repoId, latestScan.id),
+        capabilities: storage.listFrameworkCapabilities(repoId, latestScan.id)
+      })
+    : null;
   const offset = options.offset ?? 0;
   const readModel = buildRepoMapReadModel({
     repoId,
@@ -1580,6 +1590,7 @@ function repoMapPayload(
     topology: readModel.topology,
     pagination: readModel.pagination,
     routes: phase8Security.routes,
+    framework_entrypoints: frameworkEntryPoints,
     freshness_requirement: freshnessRequirement(Boolean(options.requireFresh), scanStatus),
     files: readModel.listed_files,
     redactions: {

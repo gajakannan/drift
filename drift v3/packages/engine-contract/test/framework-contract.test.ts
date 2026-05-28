@@ -5,7 +5,8 @@ import {
   EngineFrameworkParserGapSchema,
   EngineNormalizedEntrypointSchema,
   parseEngineScanResult,
-  parseEngineSecurityProofEvent
+  parseEngineSecurityProofEvent,
+  parseEngineStreamEvent
 } from "../src/index.js";
 
 describe("engine framework contract schemas", () => {
@@ -31,6 +32,8 @@ describe("engine framework contract schemas", () => {
       normalized_entrypoints: [{
         schema_version: "engine.normalized_entrypoint.v1",
         entrypoint_id: "entrypoint_express_users_get",
+        repo_id: "repo_framework",
+        scan_id: "scan_framework",
         adapter_id: "framework_adapter_express_v1",
         framework: "express",
         kind: "api_route",
@@ -124,6 +127,8 @@ describe("engine framework contract schemas", () => {
     expect(EngineFrameworkParserGapSchema.parse({
       schema_version: "engine.framework.parser_gap.v1",
       parser_gap_id: "gap_custom_router",
+      repo_id: "repo_framework",
+      scan_id: "scan_framework",
       adapter_id: "framework_adapter_custom_v1",
       framework: "custom",
       file_path: "apps/api/src/router.ts",
@@ -131,8 +136,68 @@ describe("engine framework contract schemas", () => {
       reason: "Custom router factory is not supported.",
       affected_entrypoint_ids: [],
       affected_contract_kinds: ["api_route_requires_auth_helper"],
-      blocks_enforcement: true
+      blocks_enforcement: true,
+      suggested_next_step: "Add a deterministic custom router adapter."
     }).blocks_enforcement).toBe(true);
+  });
+
+  it("validates framework stream batch events", () => {
+    const adapterEvent = parseEngineStreamEvent({
+      schema_version: "engine.stream.event.v1",
+      event: "framework_adapter_batch",
+      framework_adapters: [{
+        schema_version: "engine.framework.adapter.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        adapter_version: "0.1.0",
+        package_names: ["next"],
+        entrypoint_kinds: ["api_route"],
+        supported_patterns: ["app/api/**/route.{ts,tsx,js,jsx}"],
+        unsupported_patterns: []
+      }]
+    });
+    const entrypointEvent = parseEngineStreamEvent({
+      schema_version: "engine.stream.event.v1",
+      event: "normalized_entrypoint_batch",
+      normalized_entrypoints: [{
+        schema_version: "engine.normalized_entrypoint.v1",
+        entrypoint_id: "entrypoint:next_app:app/api/users/route.ts:GET",
+        repo_id: "repo_framework",
+        scan_id: "scan_framework",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        kind: "api_route",
+        file_path: "app/api/users/route.ts",
+        route_pattern: "/api/users",
+        method: "GET",
+        middleware_refs: [],
+        request_source_refs: [],
+        response_sink_refs: [],
+        data_operation_refs: [],
+        confidence_label: "high",
+        evidence_refs: ["fact:app/api/users/route.ts:route_declared:GET:1-3"],
+        parser_gap_ids: []
+      }]
+    });
+    const capabilityEvent = parseEngineStreamEvent({
+      schema_version: "engine.stream.event.v1",
+      event: "framework_capability_batch",
+      framework_capabilities: [{
+        schema_version: "engine.framework.capability.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        capability: "entrypoint_discovery",
+        status: "complete",
+        can_block: true,
+        block_requires_accepted_convention: true,
+        parser_gap_ids: [],
+        missing_proof_ids: []
+      }]
+    });
+
+    expect(adapterEvent.event).toBe("framework_adapter_batch");
+    expect(entrypointEvent.event).toBe("normalized_entrypoint_batch");
+    expect(capabilityEvent.event).toBe("framework_capability_batch");
   });
 
   it("allows security proofs to reference normalized entrypoint ids", () => {

@@ -100,6 +100,47 @@ describe("engine scan data bridge", () => {
         start_line: 1,
         end_line: 1
       }],
+      framework_adapters: [{
+        schema_version: "engine.framework.adapter.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        adapter_version: "0.1.0",
+        package_names: ["next"],
+        entrypoint_kinds: ["api_route"],
+        supported_patterns: ["app/api/**/route.{ts,tsx,js,jsx}"],
+        unsupported_patterns: []
+      }],
+      normalized_entrypoints: [{
+        schema_version: "engine.normalized_entrypoint.v1",
+        entrypoint_id: "entrypoint:next_app:app/api/users/route.ts:GET",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        kind: "api_route",
+        file_path: "app/api/users/route.ts",
+        route_pattern: "/api/users",
+        method: "GET",
+        middleware_refs: [],
+        request_source_refs: [],
+        response_sink_refs: [],
+        data_operation_refs: [],
+        confidence_label: "high",
+        evidence_refs: ["fact:app/api/users/route.ts:route_declared:GET:1-1"],
+        parser_gap_ids: []
+      }],
+      framework_parser_gaps: [],
+      framework_capabilities: [{
+        schema_version: "engine.framework.capability.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        capability: "entrypoint_discovery",
+        status: "complete",
+        can_block: true,
+        block_requires_accepted_convention: true,
+        parser_gap_ids: [],
+        missing_proof_ids: []
+      }],
       diagnostics: [],
       stats: {
         files_seen: 1,
@@ -142,6 +183,19 @@ describe("engine scan data bridge", () => {
       resolution_status: "resolved",
       confidence_label: "certain"
     }]);
+    expect(scanData.framework_adapters).toHaveLength(1);
+    expect(scanData.normalized_entrypoints).toMatchObject([{
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      entrypoint_id: "entrypoint:next_app:app/api/users/route.ts:GET",
+      framework: "next_app",
+      route_pattern: "/api/users"
+    }]);
+    expect(scanData.framework_capabilities).toMatchObject([{
+      framework: "next_app",
+      capability: "entrypoint_discovery",
+      can_block: true
+    }]);
   });
 
   it("rejects malformed engine scan results before mapping", () => {
@@ -183,6 +237,58 @@ describe("engine scan data bridge", () => {
       },
       {
         schema_version: "engine.stream.event.v1",
+        event: "framework_adapter_batch",
+        framework_adapters: [{
+          schema_version: "engine.framework.adapter.v1",
+          adapter_id: "framework_adapter_next_v1",
+          framework: "next_app",
+          adapter_version: "0.1.0",
+          package_names: ["next"],
+          entrypoint_kinds: ["api_route"],
+          supported_patterns: ["app/api/**/route.{ts,tsx,js,jsx}"],
+          unsupported_patterns: []
+        }]
+      },
+      {
+        schema_version: "engine.stream.event.v1",
+        event: "normalized_entrypoint_batch",
+        normalized_entrypoints: [{
+          schema_version: "engine.normalized_entrypoint.v1",
+          entrypoint_id: "entrypoint:next_app:app/api/users/route.ts:GET",
+          repo_id: "repo_abc",
+          scan_id: "scan_abc",
+          adapter_id: "framework_adapter_next_v1",
+          framework: "next_app",
+          kind: "api_route",
+          file_path: "app/api/users/route.ts",
+          route_pattern: "/api/users",
+          method: "GET",
+          middleware_refs: [],
+          request_source_refs: [],
+          response_sink_refs: [],
+          data_operation_refs: [],
+          confidence_label: "high",
+          evidence_refs: ["fact:app/api/users/route.ts:route_declared:GET:1-1"],
+          parser_gap_ids: []
+        }]
+      },
+      {
+        schema_version: "engine.stream.event.v1",
+        event: "framework_capability_batch",
+        framework_capabilities: [{
+          schema_version: "engine.framework.capability.v1",
+          adapter_id: "framework_adapter_next_v1",
+          framework: "next_app",
+          capability: "entrypoint_discovery",
+          status: "complete",
+          can_block: true,
+          block_requires_accepted_convention: true,
+          parser_gap_ids: [],
+          missing_proof_ids: []
+        }]
+      },
+      {
+        schema_version: "engine.stream.event.v1",
         event: "scan_completed",
         stats: {
           files_seen: 1,
@@ -212,6 +318,16 @@ describe("engine scan data bridge", () => {
     expect(scanData.engineSource).toBe("rust");
     expect(scanData.files).toEqual(["app/api/users/route.ts"]);
     expect(scanData.facts).toHaveLength(1);
+    expect(scanData.framework_adapters).toHaveLength(1);
+    expect(scanData.normalized_entrypoints).toMatchObject([{
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      entrypoint_id: "entrypoint:next_app:app/api/users/route.ts:GET"
+    }]);
+    expect(scanData.framework_capabilities).toMatchObject([{
+      framework: "next_app",
+      capability: "entrypoint_discovery"
+    }]);
   });
 
   it("preserves engine graph stream batches for durable graph persistence", () => {

@@ -219,6 +219,14 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
       storage.upsertScanFileChanges(scanFileChanges);
       storage.upsertFacts(scanData.facts);
       storage.upsertParserGaps(parserGaps);
+      storage.upsertFrameworkScanData({
+        repoId: repo.id,
+        scanId,
+        adapters: scanData.framework_adapters,
+        entrypoints: scanData.normalized_entrypoints,
+        parserGaps: scanData.framework_parser_gaps,
+        capabilities: scanData.framework_capabilities
+      });
       storage.upsertScanCapabilityReport(capabilityReport);
       storage.upsertFactGraphArtifact(graphArtifact);
       for (const candidate of candidates) {

@@ -122,6 +122,8 @@ pub struct EngineNormalizedEntrypoint {
 pub struct EngineFrameworkParserGap {
     pub schema_version: &'static str,
     pub parser_gap_id: String,
+    pub repo_id: String,
+    pub scan_id: String,
     pub adapter_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub framework: Option<String>,
@@ -135,6 +137,7 @@ pub struct EngineFrameworkParserGap {
     pub affected_entrypoint_ids: Vec<String>,
     pub affected_contract_kinds: Vec<String>,
     pub blocks_enforcement: bool,
+    pub suggested_next_step: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -530,6 +533,26 @@ pub enum ScanStreamEvent {
     GraphEvidenceBatch {
         schema_version: &'static str,
         graph_evidence: Vec<GraphEvidence>,
+    },
+    #[serde(rename = "framework_adapter_batch")]
+    FrameworkAdapterBatch {
+        schema_version: &'static str,
+        framework_adapters: Vec<EngineFrameworkAdapter>,
+    },
+    #[serde(rename = "normalized_entrypoint_batch")]
+    NormalizedEntrypointBatch {
+        schema_version: &'static str,
+        normalized_entrypoints: Vec<EngineNormalizedEntrypoint>,
+    },
+    #[serde(rename = "framework_parser_gap_batch")]
+    FrameworkParserGapBatch {
+        schema_version: &'static str,
+        framework_parser_gaps: Vec<EngineFrameworkParserGap>,
+    },
+    #[serde(rename = "framework_capability_batch")]
+    FrameworkCapabilityBatch {
+        schema_version: &'static str,
+        framework_capabilities: Vec<EngineFrameworkCapability>,
     },
     #[serde(rename = "diagnostic_batch")]
     DiagnosticBatch {

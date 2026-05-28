@@ -246,6 +246,7 @@ fn stream_scan_repo(
         reuse_index.as_ref(),
     )?;
     add_middleware_coverage_facts(&mut scanned.scanned);
+    let framework_scan_data = collect_framework_scan_data(&repo_id, &scan_id, &scanned.scanned);
     files_skipped += scan_diagnostics.len();
     if !scan_diagnostics.is_empty() {
         diagnostics_emitted += scan_diagnostics.len();
@@ -258,6 +259,42 @@ fn stream_scan_repo(
         )?;
     }
     resolver.exported_symbols = exported_symbols_by_file(&scanned.scanned);
+    if !framework_scan_data.adapters.is_empty() {
+        write_event(
+            &mut stdout,
+            &ScanStreamEvent::FrameworkAdapterBatch {
+                schema_version: ENGINE_STREAM_EVENT_SCHEMA_VERSION,
+                framework_adapters: framework_scan_data.adapters,
+            },
+        )?;
+    }
+    if !framework_scan_data.entrypoints.is_empty() {
+        write_event(
+            &mut stdout,
+            &ScanStreamEvent::NormalizedEntrypointBatch {
+                schema_version: ENGINE_STREAM_EVENT_SCHEMA_VERSION,
+                normalized_entrypoints: framework_scan_data.entrypoints,
+            },
+        )?;
+    }
+    if !framework_scan_data.parser_gaps.is_empty() {
+        write_event(
+            &mut stdout,
+            &ScanStreamEvent::FrameworkParserGapBatch {
+                schema_version: ENGINE_STREAM_EVENT_SCHEMA_VERSION,
+                framework_parser_gaps: framework_scan_data.parser_gaps,
+            },
+        )?;
+    }
+    if !framework_scan_data.capabilities.is_empty() {
+        write_event(
+            &mut stdout,
+            &ScanStreamEvent::FrameworkCapabilityBatch {
+                schema_version: ENGINE_STREAM_EVENT_SCHEMA_VERSION,
+                framework_capabilities: framework_scan_data.capabilities,
+            },
+        )?;
+    }
     let files_reused = scanned.files_reused;
     for (file, facts) in scanned.scanned {
         if !reused_file(&file, reuse_index.as_ref()) {
