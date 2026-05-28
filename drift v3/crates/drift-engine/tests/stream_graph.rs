@@ -572,6 +572,101 @@ fn scan_stream_emits_static_endpoint_shape_for_next_routes() {
 }
 
 #[test]
+fn scan_json_emits_normalized_next_entrypoints() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let app_route = dir.path().join("src/app/api/users/[id]");
+    fs::create_dir_all(&app_route).expect("create app route dir");
+    fs::write(
+        app_route.join("route.ts"),
+        r#"export async function DELETE() {
+  return Response.json({});
+}
+"#,
+    )
+    .expect("write app route");
+    let pages_route = dir.path().join("pages/api/projects/[projectId].ts");
+    fs::create_dir_all(pages_route.parent().expect("parent")).expect("create pages api dir");
+    fs::write(
+        &pages_route,
+        r#"export default function handler() {
+  return Response.json({});
+}
+"#,
+    )
+    .expect("write pages api route");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_drift-engine"))
+        .args([
+            "scan-repo",
+            dir.path().to_str().expect("utf8 temp dir"),
+            "--repo-id",
+            "repo_framework",
+            "--scan-id",
+            "scan_framework",
+        ])
+        .output()
+        .expect("run drift-engine");
+    assert!(
+        output.status.success(),
+        "engine failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("scan json");
+    let adapters = payload["framework_adapters"]
+        .as_array()
+        .expect("framework adapters");
+    assert!(
+        adapters.iter().any(|adapter| {
+            adapter["schema_version"] == "engine.framework.adapter.v1"
+                && adapter["adapter_id"] == "framework_adapter_next_v1"
+                && adapter["framework"] == "next_app"
+        }),
+        "missing Next framework adapter: {payload:#?}"
+    );
+    let entrypoints = payload["normalized_entrypoints"]
+        .as_array()
+        .expect("normalized entrypoints");
+    assert!(
+        entrypoints.iter().any(|entrypoint| {
+            entrypoint["schema_version"] == "engine.normalized_entrypoint.v1"
+                && entrypoint["entrypoint_id"]
+                    == "entrypoint:next_app:src/app/api/users/[id]/route.ts:DELETE"
+                && entrypoint["adapter_id"] == "framework_adapter_next_v1"
+                && entrypoint["framework"] == "next_app"
+                && entrypoint["kind"] == "api_route"
+                && entrypoint["route_pattern"] == "/api/users/:id"
+                && entrypoint["method"] == "DELETE"
+                && entrypoint["parser_gap_ids"] == serde_json::json!([])
+        }),
+        "missing normalized app route entrypoint: {entrypoints:#?}"
+    );
+    assert!(
+        entrypoints.iter().any(|entrypoint| {
+            entrypoint["entrypoint_id"]
+                == "entrypoint:next_pages:pages/api/projects/[projectId].ts:default"
+                && entrypoint["framework"] == "next_pages"
+                && entrypoint["route_pattern"] == "/api/projects/:projectId"
+                && entrypoint["method"] == "default"
+        }),
+        "missing normalized pages route entrypoint: {entrypoints:#?}"
+    );
+    let capabilities = payload["framework_capabilities"]
+        .as_array()
+        .expect("framework capabilities");
+    assert!(
+        capabilities.iter().any(|capability| {
+            capability["schema_version"] == "engine.framework.capability.v1"
+                && capability["adapter_id"] == "framework_adapter_next_v1"
+                && capability["capability"] == "entrypoint_discovery"
+                && capability["status"] == "complete"
+                && capability["can_block"] == true
+        }),
+        "missing framework capability: {capabilities:#?}"
+    );
+}
+
+#[test]
 fn scan_stream_infers_service_boundary_from_route_import_targets() {
     let dir = tempfile::tempdir().expect("tempdir");
     fs::write(

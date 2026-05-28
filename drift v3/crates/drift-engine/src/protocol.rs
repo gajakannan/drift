@@ -34,6 +34,10 @@ pub struct ScanRepoOutput {
     pub adapter_versions: BTreeMap<String, String>,
     pub file_snapshots: Vec<ScannedFile>,
     pub facts: Vec<EngineFact>,
+    pub framework_adapters: Vec<EngineFrameworkAdapter>,
+    pub normalized_entrypoints: Vec<EngineNormalizedEntrypoint>,
+    pub framework_parser_gaps: Vec<EngineFrameworkParserGap>,
+    pub framework_capabilities: Vec<EngineFrameworkCapability>,
     pub diagnostics: Vec<EngineDiagnostic>,
     pub stats: EngineStats,
     pub completeness: Vec<EngineCompleteness>,
@@ -67,6 +71,83 @@ pub struct EngineDiagnostic {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EngineFrameworkAdapter {
+    pub schema_version: &'static str,
+    pub adapter_id: String,
+    pub framework: String,
+    pub adapter_version: String,
+    pub package_names: Vec<String>,
+    pub entrypoint_kinds: Vec<String>,
+    pub supported_patterns: Vec<String>,
+    pub unsupported_patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EngineNormalizedEntrypoint {
+    pub schema_version: &'static str,
+    pub entrypoint_id: String,
+    pub repo_id: String,
+    pub scan_id: String,
+    pub adapter_id: String,
+    pub framework: String,
+    pub kind: String,
+    pub file_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exported_symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handler_symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_pattern: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subdirectory_role: Option<String>,
+    pub middleware_refs: Vec<String>,
+    pub request_source_refs: Vec<String>,
+    pub response_sink_refs: Vec<String>,
+    pub data_operation_refs: Vec<String>,
+    pub confidence_label: String,
+    pub evidence_refs: Vec<String>,
+    pub parser_gap_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EngineFrameworkParserGap {
+    pub schema_version: &'static str,
+    pub parser_gap_id: String,
+    pub adapter_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub framework: Option<String>,
+    pub file_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<usize>,
+    pub code: String,
+    pub reason: String,
+    pub affected_entrypoint_ids: Vec<String>,
+    pub affected_contract_kinds: Vec<String>,
+    pub blocks_enforcement: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EngineFrameworkCapability {
+    pub schema_version: &'static str,
+    pub adapter_id: String,
+    pub framework: String,
+    pub capability: String,
+    pub status: String,
+    pub can_block: bool,
+    pub block_requires_accepted_convention: bool,
+    pub parser_gap_ids: Vec<String>,
+    pub missing_proof_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
