@@ -1203,7 +1203,10 @@ function scanStatusPayload(
     parser_gaps: parserGapSummary(parserGaps),
     readiness,
     capability_report: capabilityReport,
-    security_capabilities: proofRuns.length > 0 ? securityReadModel?.security_capabilities ?? [] : [],
+    security_capabilities: proofRuns.length > 0 ||
+      (securityReadModel?.repo_security_contracts.length ?? 0) > 0
+      ? securityReadModel?.security_capabilities ?? []
+      : [],
     machine_contract_versions: currentMachineContractVersions(latestScan?.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands

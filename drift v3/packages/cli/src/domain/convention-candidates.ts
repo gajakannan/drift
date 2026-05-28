@@ -335,7 +335,7 @@ export function conventionCandidateListNextCommands(
 ): string[] {
   const candidate = candidates[0];
   if (!candidate) {
-    return [`drift scan --repo ${repoId} --json`];
+    return [`drift scan status --repo ${repoId} --json`];
   }
   return [
     `drift conventions show ${candidate.id} --repo ${repoId} --json`,

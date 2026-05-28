@@ -196,16 +196,25 @@ function knownPhase8Routes(files: RepoMapFile[]) {
 
 function routePathForFile(filePath: string): string | undefined {
   const normalized = filePath.replaceAll("\\", "/");
-  const prefix = "app/api/";
-  const prefixIndex = normalized.indexOf(prefix);
   const suffix = ["/route.ts", "/route.tsx", "/route.js", "/route.jsx"]
     .find((candidate) => normalized.endsWith(candidate));
-  if (prefixIndex === -1 || !suffix) {
+  if (!suffix) {
     return undefined;
   }
-  const route = normalized.slice(prefixIndex + prefix.length, -suffix.length);
-  const segments = route.split("/").filter((segment) => !(segment.startsWith("(") && segment.endsWith(")")));
-  return segments.length === 0
+  const withoutSuffix = normalized.slice(0, -suffix.length);
+  const segments = withoutSuffix.split("/");
+  const appIndex = segments.lastIndexOf("app");
+  if (appIndex === -1) {
+    return undefined;
+  }
+  const apiIndex = segments.indexOf("api", appIndex + 1);
+  if (apiIndex === -1) {
+    return undefined;
+  }
+  const routeSegments = segments
+    .slice(apiIndex + 1)
+    .filter((segment) => !(segment.startsWith("(") && segment.endsWith(")")));
+  return routeSegments.length === 0
     ? "/api"
-    : `/api/${segments.join("/").replaceAll("[", ":").replaceAll("]", "")}`;
+    : `/api/${routeSegments.join("/").replaceAll("[", ":").replaceAll("]", "")}`;
 }

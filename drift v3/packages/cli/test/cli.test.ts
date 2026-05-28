@@ -507,6 +507,27 @@ describe("drift CLI convention review", () => {
     expect(result.stderr).not.toContain("Missing --db");
   });
 
+  it("rejects repo id scans instead of silently scanning the current working directory", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-scan-repo-id-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      "export async function GET() { return Response.json({ ok: true }); }\n"
+    );
+
+    const result = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--repo", "repo_not_supported_for_scan",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--repo is not supported for drift scan");
+  });
+
   it("prints machine-readable capability metadata without requiring a database", async () => {
     const result = await runCli(["capabilities", "--json"]);
     const payload = JSON.parse(result.stdout);
@@ -1279,11 +1300,18 @@ describe("drift CLI convention review", () => {
     expect(payload.candidates).toEqual([]);
     expect(payload.accepted).toBeUndefined();
     expect(payload.onboarding).toMatchObject({
-      status: "needs_more_signal",
+      status: "ready",
       accepted_default: false,
+      contract_ready: true,
       candidate_count: 0
     });
 
+    const contract = await runCli([
+      "--db", payload.database_path,
+      "contract", "show",
+      "--repo", payload.repo.id,
+      "--json"
+    ]);
     const mapped = await runCli([
       "--db", payload.database_path,
       "repo", "map",
@@ -1305,7 +1333,18 @@ describe("drift CLI convention review", () => {
       "--confirm",
       "--json"
     ]);
+    const checked = await runCli([
+      "--db", payload.database_path,
+      "check",
+      "--repo", payload.repo.id,
+      "--scope", "full",
+      "--json"
+    ]);
 
+    expect(contract.exitCode).toBe(0);
+    expect(JSON.parse(contract.stdout)).toMatchObject({
+      summary: { convention_count: 0 }
+    });
     expect(mapped.exitCode).toBe(0);
     expect(JSON.parse(mapped.stdout)).toMatchObject({
       policy: { allowed: true, surface: "cli-preflight" },
@@ -1321,6 +1360,13 @@ describe("drift CLI convention review", () => {
     expect(JSON.parse(backup.stdout)).toMatchObject({
       policy: { allowed: true, surface: "artifact" },
       manifest: { repo_id: payload.repo.id }
+    });
+    expect(checked.exitCode).toBe(0);
+    expect(JSON.parse(checked.stdout)).toMatchObject({
+      summary: {
+        findings_count: 0,
+        blocking_count: 0
+      }
     });
   });
 
@@ -1479,6 +1525,45 @@ describe("drift CLI convention review", () => {
       modified: ["apps/web/app/api/users/route.ts"]
     });
     storage.close();
+  });
+
+  it("maps Next.js API route paths inside route groups", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-route-groups-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/(ee)/api/admin/analytics"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/(ee)/api/admin/analytics/route.ts"),
+      "export async function GET() { return Response.json({ ok: true }); }\n"
+    );
+
+    const scan = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:10.000Z",
+      "--json"
+    ]);
+    expect(scan.exitCode).toBe(0);
+    const scanPayload = JSON.parse(scan.stdout);
+
+    const mapped = await runCli([
+      "--db", scanPayload.database_path,
+      "repo", "map",
+      "--repo", scanPayload.repo.id,
+      "--json"
+    ]);
+
+    expect(mapped.exitCode).toBe(0);
+    const payload = JSON.parse(mapped.stdout);
+    expect(payload.routes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        file_path: "apps/web/app/(ee)/api/admin/analytics/route.ts",
+        path: "/api/admin/analytics",
+        method: "GET"
+      })
+    ]));
   });
 
   it("reports parser gap summaries in scan status", async () => {
@@ -2249,6 +2334,55 @@ describe("drift CLI convention review", () => {
     expect(storage.listFindings(repoId!)[0]?.evidence_refs[0]?.scan_id).toMatch(/^scan_/);
     expect(storage.listFindings(repoId!)[0]?.evidence_refs[0]?.file_hash).toHaveLength(64);
     storage.close();
+  });
+
+  it("reuses the real indexed scan immediately after onboarding baselines findings", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-start-incremental-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      [
+        "import { prisma } from \"@/lib/prisma\";",
+        "export async function POST() {",
+        "  return Response.json(await prisma.user.findMany());",
+        "}",
+        ""
+      ].join("\n")
+    );
+
+    const started = await runCli([
+      "start",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--accept-defaults",
+      "--now", "2026-05-10T00:00:30.000Z",
+      "--json"
+    ]);
+    expect(started.exitCode).toBe(0);
+    const startedPayload = JSON.parse(started.stdout);
+
+    const second = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:40.000Z",
+      "--json"
+    ]);
+
+    expect(second.exitCode).toBe(0);
+    const secondPayload = JSON.parse(second.stdout);
+    expect(secondPayload.scan.previous_scan_id).toBe(startedPayload.scan.id);
+    expect(secondPayload.summary.incremental_plan).toMatchObject({
+      previous_scan_id: startedPayload.scan.id,
+      execution_mode: "incremental_reuse",
+      reuse_applied: true,
+      reusable_file_count: 1,
+      changed_file_count: 0,
+      blocked_reasons: []
+    });
   });
 
   it("materializes a default required check when onboarding accepts a deterministic convention", async () => {
@@ -10424,6 +10558,63 @@ describe("drift CLI convention review", () => {
       "session_trust",
       "authorization",
       "tenant_scope"
+    ]));
+  });
+
+  it("scan status reports missing security capabilities for accepted conventions without proof runs", async () => {
+    const { databasePath, repoId } = await seedStartedDoctorState("drift-scan-status-security-missing-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const existingContract = storage.getRepoContract(repoId)!;
+    storage.upsertAcceptedConvention(repoId, {
+      id: "convention_security_auth",
+      contract_id: existingContract.id,
+      kind: "api_route_requires_auth_helper",
+      statement: "API routes must use requireUser.",
+      rationale: "accepted for test",
+      scope: { path_globs: ["apps/web/app/api/**/route.ts"], file_roles: ["api_route"] },
+      matcher: {
+        kind: "api_route_requires_auth_helper",
+        required_calls: ["requireUser"],
+        applies_to_file_roles: ["api_route"]
+      },
+      requires: { auth_helpers: [{ symbol: "requireUser" }] },
+      severity: "error",
+      enforcement_mode: "block",
+      enforcement_capability: "deterministic_check",
+      exceptions: [],
+      evidence_refs: [],
+      counterexample_refs: [],
+      accepted_by: "test",
+      accepted_at: "2026-05-27T00:00:00.000Z",
+      updated_at: "2026-05-27T00:00:00.000Z"
+    });
+    storage.upsertRepoContract({
+      ...existingContract,
+      conventions: storage.listAcceptedConventions(repoId),
+      updated_at: "2026-05-27T00:00:00.000Z"
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", repoId,
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.security_capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "control_flow_guard_dominance",
+        capability: "deterministic_check",
+        status: "missing",
+        can_block: true,
+        parser_gap_count: 0,
+        missing_proof_count: 0,
+        affected_files: []
+      })
     ]));
   });
 

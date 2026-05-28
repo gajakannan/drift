@@ -196,4 +196,39 @@ describe("security architecture audit", () => {
     expect(JSON.stringify(model)).not.toContain("https://token@example.com");
     expect(model.next_steps).toContain("Review candidate-only security patterns before accepting enforcement.");
   });
+
+  it("does not label raw security facts as accepted proof without Rust proofs", () => {
+    const model = buildSecurityArchitectureAudit({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      facts: [
+        fact({ kind: "file_role_detected", file_path: "app/api/apps/route.ts", name: "api_route", start_line: 1 }),
+        fact({ kind: "request_validation_called", file_path: "app/api/apps/route.ts", name: "validateBody", start_line: 5 }),
+        fact({ kind: "authorization_guard_called", file_path: "app/api/apps/route.ts", name: "requireAdmin", start_line: 6 }),
+        fact({ kind: "tenant_guard_called", file_path: "app/api/apps/route.ts", name: "scopeWorkspace", start_line: 7 }),
+        fact({ kind: "parameterized_sql_used", file_path: "app/api/apps/route.ts", name: "sql", start_line: 8 })
+      ],
+      candidates: [],
+      accepted_conventions: [],
+      parser_gaps: [],
+      proofs: []
+    });
+
+    expect(model.areas.request_validation.patterns.find((pattern) => pattern.pattern === "validateBody")).toMatchObject({
+      proof_truth: "fact_inventory",
+      accepted: false
+    });
+    expect(model.areas.authorization.patterns.find((pattern) => pattern.pattern === "requireAdmin")).toMatchObject({
+      proof_truth: "fact_inventory",
+      accepted: false
+    });
+    expect(model.areas.tenant_scope.patterns.find((pattern) => pattern.pattern === "scopeWorkspace")).toMatchObject({
+      proof_truth: "fact_inventory",
+      accepted: false
+    });
+    expect(model.areas.raw_sql.patterns.find((pattern) => pattern.pattern === "sql")).toMatchObject({
+      proof_truth: "fact_inventory",
+      accepted: false
+    });
+  });
 });

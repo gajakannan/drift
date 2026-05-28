@@ -64,7 +64,7 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
   const actor = input.actor;
   const repo = repoRecordForRoot(repoRoot, now);
   storage.upsertRepo(repo);
-  const previousScan = storage.listScanManifests(repo.id).find((scan) => scan.status === "completed");
+  const previousScan = latestIndexedScan(storage.listScanManifests(repo.id));
 
   const scanId = `scan_${hashStable(`${repo.id}:${now}`).slice(0, 16)}`;
   let reuseManifest: { path: string; dir: string; blocked_reasons: string[] } | null = null;
@@ -659,7 +659,11 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     parser_gaps: parserGapSummary(parserGaps),
     readiness,
     capability_report: capabilityReport,
-    security_capabilities: proofs.length > 0 || legacyScanProofRuns.length > 0 ? securityReadModel.security_capabilities : [],
+    security_capabilities: proofs.length > 0 ||
+      legacyScanProofRuns.length > 0 ||
+      securityReadModel.repo_security_contracts.length > 0
+      ? securityReadModel.security_capabilities
+      : [],
     machine_contract_versions: currentMachineContractVersions(latestScan.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands
