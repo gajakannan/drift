@@ -32,6 +32,7 @@ export { buildRepoTopology } from "./repo-topology.js";
 export { buildReadiness } from "./readiness.js";
 export { buildSecurityBoundaryProofReadModel, buildSecurityPhase8ReadModel } from "./security-boundary-proof.js";
 export { buildSecurityArchitectureAudit } from "./security-architecture-audit.js";
+export { buildFrameworkEntrypointReadModel } from "./framework-entrypoints.js";
 export type { BuildEntrypointFlowProofInput } from "./flow-proof.js";
 export type { BuildChangeImpactInput, ChangeImpactRouteFlow } from "./change-impact.js";
 export type { ClassifyDataOperationRiskInput } from "./data-operation-risk.js";
@@ -67,6 +68,7 @@ export type {
   SecurityArchitectureProofTruth,
   SecurityArchitectureSemanticRole
 } from "./security-architecture-audit.js";
+export type { BuildFrameworkEntrypointReadModelInput } from "./framework-entrypoints.js";
 
 export interface GraphRepoMapFile {
   path: string;
