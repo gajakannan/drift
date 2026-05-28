@@ -1,4 +1,4 @@
-import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type ParserGap,type ParserGapConfidenceImpact,type ParserGapKind,type RepoRecord,type ScanCapabilityReport,type ScanFileChange,type ScanManifest } from "@drift/core";
+import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type ParserGap,type ParserGapConfidenceImpact,type ParserGapKind,type ParserGapV2,type RepoRecord,type ScanCapabilityReport,type ScanFileChange,type ScanManifest } from "@drift/core";
 import { buildFactGraphArtifactFromParts,type FactGraphArtifact } from "@drift/factgraph";
 import { buildReadiness,type DriftReadinessSurface } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
@@ -601,7 +601,9 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
   const sourceChangeCount = changes.added.length + changes.modified.length + changes.deleted.length;
   const nextCommands = scanStatusNextCommands(repoId, repo.root_path, stale);
   const parserGaps = storage.listParserGaps(repoId, latestScan.id);
-  const readiness = readinessForStoredScan(storage, repoId, latestScan.id, "scan_status", parserGaps);
+  const parserGapV2 = storage.listParserGapV2(repoId, latestScan.id);
+  const allParserGaps = [...parserGaps, ...parserGapV2];
+  const readiness = readinessForStoredScan(storage, repoId, latestScan.id, "scan_status", allParserGaps);
   const capabilityReport = storage.getScanCapabilityReport(repoId, latestScan.id) ?? null;
   const payload = {
     response_schema: "drift.scan.status.v1",
@@ -628,7 +630,7 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     stale,
     invalidation_reasons: invalidationReasons,
     changes,
-    parser_gaps: parserGapSummary(parserGaps),
+    parser_gaps: parserGapSummary(allParserGaps),
     readiness,
     capability_report: capabilityReport,
     security_capabilities: securityCapabilitySummary(capabilityReport),
@@ -694,7 +696,9 @@ export function readinessForStoredScan(
   repoId: string,
   scanId: string | null,
   surface: DriftReadinessSurface,
-  parserGaps: ParserGap[] = scanId ? storage.listParserGaps(repoId, scanId) : []
+  parserGaps: Array<ParserGap | ParserGapV2> = scanId
+    ? [...storage.listParserGaps(repoId, scanId), ...storage.listParserGapV2(repoId, scanId)]
+    : []
 ) {
   const graphAvailable = Boolean(scanId && storage.getFactGraphArtifact(repoId, scanId));
   return buildReadiness({
@@ -740,15 +744,23 @@ export function parserGapsFromDiagnostics(input: {
     .filter((gap): gap is ParserGap => Boolean(gap));
 }
 
-export function parserGapSummary(gaps: ParserGap[]): {
+export function parserGapSummary(gaps: Array<ParserGap | ParserGapV2>): {
   total_count: number;
-  by_kind: Record<ParserGapKind, number>;
+  by_kind: Record<string, number>;
   confidence_impact: Record<ParserGapConfidenceImpact, number>;
+  by_capability: Record<string, number>;
+  by_contract_kind: Record<string, number>;
 } {
   return {
     total_count: gaps.length,
-    by_kind: countBy(gaps.map((gap) => gap.kind)) as Record<ParserGapKind, number>,
-    confidence_impact: countBy(gaps.map((gap) => gap.confidence_impact)) as Record<ParserGapConfidenceImpact, number>
+    by_kind: countBy(gaps.map((gap) => gap.kind)),
+    confidence_impact: countBy(gaps.map((gap) => gap.confidence_impact)) as Record<ParserGapConfidenceImpact, number>,
+    by_capability: countBy(gaps.flatMap((gap) =>
+      "affected_capabilities" in gap ? gap.affected_capabilities : []
+    )) as Record<string, number>,
+    by_contract_kind: countBy(gaps.flatMap((gap) =>
+      "affected_contract_kinds" in gap ? gap.affected_contract_kinds : []
+    )) as Record<string, number>
   };
 }
 

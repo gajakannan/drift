@@ -622,6 +622,58 @@ describe("read-only MCP handlers", () => {
     });
   });
 
+  it("reports parser gap v2 summaries and readiness in scan status", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertParserGapV2([{
+      schema_version: "drift.parser_gap.v2",
+      parser_gap_id: "gap_dynamic_import_route_1",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      file_path: "apps/web/app/api/users/route.ts",
+      start_line: 4,
+      end_line: 4,
+      kind: "dynamic_import_unresolved",
+      message: "Dynamic import target is not statically resolvable.",
+      affected_capabilities: ["ts.dynamic_imports.v1", "ts.route_flow.v1"],
+      affected_contract_kinds: ["api_route_no_direct_data_access"],
+      confidence_impact: "blocks_enforcement",
+      suggested_action: "rewrite_static",
+      evidence_refs: ["evidence_graph_1"]
+    }]);
+    storage.close();
+
+    expect(createReadOnlyMcpHandlers({ databasePath }).get_scan_status({ repo_id: "repo_abc" })).toMatchObject({
+      parser_gaps: {
+        total_count: 1,
+        by_kind: { dynamic_import_unresolved: 1 },
+        confidence_impact: { blocks_enforcement: 1 },
+        by_capability: {
+          "ts.dynamic_imports.v1": 1,
+          "ts.route_flow.v1": 1
+        },
+        by_contract_kind: {
+          api_route_no_direct_data_access: 1
+        }
+      },
+      readiness: {
+        parser_gap_count: 1,
+        parser_gaps_by_kind: { dynamic_import_unresolved: 1 },
+        confidence: 0,
+        decision: "refuse",
+        reasons: [
+          "graph_incomplete",
+          "graph_missing",
+          "graph_unavailable",
+          "missing_capability:fact_graph",
+          "parser_gap_blocks_enforcement",
+          "parser_gaps_present"
+        ]
+      }
+    });
+  });
+
   it("reports missing repo roots as stale in scan status", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-mcp-missing-root-"));
     tempDirs.push(dir);
@@ -2910,7 +2962,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 22,
+        supported_sqlite_schema_version: 23,
         storage_driver: "sqlite"
       },
       v1_scope: {

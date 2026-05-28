@@ -2,12 +2,20 @@ import { describe, expect, it } from "vitest";
 import {
   BUILTIN_SEMANTIC_CAPABILITIES,
   ArchitectureContractV1Schema,
+  AgentPreflightSemanticEnvelopeSchema,
+  CallResolutionRecordSchema,
   ConventionElectionContractV2Schema,
   ConventionRuleContractSchema,
+  DataOperationRecordV2Schema,
+  FrameworkAdapterContractV2Schema,
+  ModuleResolutionRecordSchema,
   ParserGapV2Schema,
   RepoContractSchema,
+  SemanticBetaProofSchema,
+  SemanticCheckProofSchema,
   SemanticCoverageContractSchema,
   SemanticCapabilityContractSchema,
+  SymbolIdentityV2Schema,
   validateConventionRuleCapabilities
 } from "../src/index.js";
 
@@ -236,5 +244,163 @@ describe("semantic capabilities", () => {
       semantic_capability_contract_version: "drift.semantic_capability.v1",
       beta_claim_profile: "narrow_route_layering"
     });
+  });
+
+  it("validates module, symbol, call, and data operation semantic records", () => {
+    expect(ModuleResolutionRecordSchema.parse({
+      schema_version: "drift.module_resolution.v1",
+      resolution_id: "resolution_abc",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      importer_file: "app/api/users/route.ts",
+      source: "@/lib/db",
+      specifier_kind: "absolute_alias",
+      import_kind: "static_import",
+      resolved_file_path: "src/lib/db.ts",
+      status: "resolved",
+      resolver_strategy: "tsconfig_paths",
+      evidence_ref: "evidence_1"
+    })).toMatchObject({ status: "resolved" });
+
+    expect(SymbolIdentityV2Schema.parse({
+      schema_version: "drift.symbol_identity.v2",
+      symbol_id: "symbol_listUsers",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      canonical_name: "listUsers",
+      declaration_file: "src/services/users.ts",
+      declaration_span: { start_line: 1, start_column: 1, end_line: 3, end_column: 2 },
+      symbol_kind: "function",
+      export_kind: "named",
+      aliases: [],
+      re_export_chain: [],
+      reference_count: 2,
+      confidence: "high",
+      resolution_status: "resolved",
+      parser_gap_ids: []
+    })).toMatchObject({ canonical_name: "listUsers" });
+
+    expect(CallResolutionRecordSchema.parse({
+      schema_version: "drift.call_resolution.v1",
+      call_id: "call_findMany",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      file_path: "app/api/users/route.ts",
+      span: { start_line: 4, start_column: 9, end_line: 4, end_column: 27 },
+      callee_text: "db.user.findMany",
+      receiver_text: "db.user",
+      root_identifier: "db",
+      shape: "member",
+      resolved_import_id: "resolution_db",
+      resolution_status: "resolved",
+      confidence: "high"
+    })).toMatchObject({ shape: "member" });
+
+    expect(DataOperationRecordV2Schema.parse({
+      schema_version: "drift.data_operation.v2",
+      operation_id: "data_op_findMany",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      file_path: "app/api/users/route.ts",
+      call_id: "call_findMany",
+      operation_family: "database",
+      operation_kind: "read",
+      receiver_root: "db",
+      receiver_path: ["user"],
+      store_name: "user",
+      tenant_sensitive: true,
+      mutation: false,
+      confidence: "high",
+      evidence_ref: "evidence_1",
+      parser_gap_ids: []
+    })).toMatchObject({ operation_kind: "read" });
+  });
+
+  it("validates framework adapter, preflight, check proof, and beta proof contracts", () => {
+    expect(FrameworkAdapterContractV2Schema.parse({
+      schema_version: "drift.framework_adapter.v2",
+      adapter_id: "next_app_router",
+      framework: "next",
+      certification: "certified_deterministic",
+      route_patterns_supported: ["app/api/**/route.ts"],
+      unsupported_patterns: ["decorator routing"],
+      emitted_entrypoint_kinds: ["api_route"],
+      emitted_capabilities: ["ts.entrypoints.next.v1"],
+      parser_gap_kinds: ["unsupported_framework_pattern"],
+      fixture_suites: ["next-app-routes"],
+      can_block: true
+    })).toMatchObject({ adapter_id: "next_app_router" });
+
+    const coverage = SemanticCoverageContractSchema.parse({
+      schema_version: "drift.semantic_coverage.v1",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      scope: "preflight",
+      scope_id: "task_abc",
+      required_capabilities: ["ts.route_flow.v1"],
+      complete_capabilities: ["ts.route_flow.v1"],
+      partial_capabilities: [],
+      missing_capabilities: [],
+      unsupported_capabilities: [],
+      parser_gap_ids: [],
+      unsupported_pattern_ids: [],
+      confidence: 0.98,
+      decision: "blocking_allowed",
+      reasons: [],
+      generated_at: "2026-05-28T00:00:00.000Z"
+    });
+
+    expect(AgentPreflightSemanticEnvelopeSchema.parse({
+      schema_version: "drift.agent_preflight_semantic.v1",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      task: "Update users route",
+      decision: "safe_to_edit",
+      semantic_coverage: coverage,
+      parser_gaps: [],
+      affected_files: ["app/api/users/route.ts"],
+      affected_symbols: ["listUsers"],
+      affected_routes: ["/api/users"],
+      affected_data_operations: ["db.user.findMany"],
+      required_checks: ["pnpm test"],
+      safe_commands: ["pnpm test"],
+      source_content_included: false,
+      graph_context_included: true
+    })).toMatchObject({ decision: "safe_to_edit" });
+
+    expect(SemanticCheckProofSchema.parse({
+      schema_version: "drift.semantic_check_proof.v1",
+      check_id: "check_abc",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      repo_contract_id: "contract_abc",
+      convention_id: "convention_abc",
+      convention_rule_id: "api_route_no_direct_data_access",
+      semantic_coverage_id: "coverage_abc",
+      architecture_contract_id: "default_ts_architecture_v1",
+      required_capabilities: ["ts.route_flow.v1"],
+      coverage_decision: "blocking_allowed",
+      parser_gap_ids: [],
+      graph_edge_ids: ["edge_1"],
+      graph_node_ids: ["node_1"],
+      evidence_refs: ["evidence_1"],
+      result: "block"
+    })).toMatchObject({ result: "block" });
+
+    expect(SemanticBetaProofSchema.parse({
+      schema_version: "drift.semantic_beta_proof.v1",
+      commit_sha: "abc123",
+      semantic_capability_contracts_verified: true,
+      architecture_contract_verified: true,
+      convention_election_contract_verified: true,
+      repo_contract_materialization_verified: true,
+      cli_mcp_semantic_parity_verified: true,
+      unsupported_pattern_visibility_verified: true,
+      blocking_safety_verified: true,
+      claim_gate_verified: true,
+      partial_beta_required_count: 0,
+      unsupported_beta_required_count: 0,
+      evidence: {}
+    })).toMatchObject({ claim_gate_verified: true });
   });
 });

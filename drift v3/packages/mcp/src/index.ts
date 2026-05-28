@@ -11,6 +11,7 @@ import type {
   ParserGap,
   ParserGapConfidenceImpact,
   ParserGapKind,
+  ParserGapV2,
   PolicyDecision,
   RepoContract,
   RepoRecord,
@@ -54,6 +55,7 @@ import {
   buildFindingsReadModel,
   buildRepoContractReadModel,
   buildReadiness,
+  buildSemanticCoverage,
   classifyAgentTask,
   buildRepoMapReadModel,
   createGraphQueryService,
@@ -246,16 +248,32 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const parserGaps = scanStatus.latest_scan
         ? storage.listParserGaps(requestedRepoId, scanStatus.latest_scan.id)
         : [];
+      const parserGapV2 = scanStatus.latest_scan
+        ? storage.listParserGapV2(requestedRepoId, scanStatus.latest_scan.id)
+        : [];
+      const allParserGaps = [...parserGaps, ...parserGapV2];
       const readiness = buildReadiness({
         repo_id: requestedRepoId,
         scan_id: scanStatus.latest_scan?.id ?? null,
         surface: "prepare",
         graph_available: graphContext.available,
         graph_complete: graphContext.completeness?.complete ?? false,
-        parser_gaps: parserGaps,
+        parser_gaps: allParserGaps,
         completeness_reasons: graphContext.completeness?.reasons ?? graphContext.diagnostics,
-        required_capabilities: ["route_flow_graph"],
+        required_capabilities: ["ts.route_flow.v1"],
         missing_capabilities: graphContext.available ? [] : ["fact_graph"]
+      });
+      const semanticCoverage = buildSemanticCoverage({
+        repo_id: requestedRepoId,
+        scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
+        scope: "preflight",
+        scope_id: requestedPath ?? requestedTask,
+        required_capabilities: ["ts.route_flow.v1"],
+        certified_capabilities: scanStatus.capability_report?.certified_capabilities ?? [],
+        missing_capabilities: readiness.missing_capabilities,
+        readiness,
+        parser_gaps: allParserGaps,
+        generated_at: generatedAt
       });
       const contextPolicy = createContextPolicyMatrix(contract, policy);
       const taskPreflightPacket = AgentPreflightPacketV2Schema.parse({
@@ -266,7 +284,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         repo_map_summary: {
           relevant_file_count: relevantFiles.length,
           route_flow_count: graphContext.route_flows.length,
-          parser_gap_count: parserGaps.length
+          parser_gap_count: allParserGaps.length
         },
         accepted_conventions: activeConventions.map(preflightConvention),
         relevant_files: relevantFiles,
@@ -298,6 +316,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         }),
         policy,
         readiness,
+        semantic_coverage: semanticCoverage,
         contract: {
           id: contractReady ? contract.id : null,
           schema_version: contract.contract_schema_version,
@@ -1102,10 +1121,12 @@ function scanStatusPayload(
   const snapshots = latestScan ? storage.listFileSnapshots(repoId, latestScan.id) : [];
   const scanFileChanges = latestScan ? storage.listScanFileChanges(repoId, latestScan.id) : [];
   const parserGaps = latestScan ? storage.listParserGaps(repoId, latestScan.id) : [];
+  const parserGapV2 = latestScan ? storage.listParserGapV2(repoId, latestScan.id) : [];
+  const allParserGaps = [...parserGaps, ...parserGapV2];
   const capabilityReport = latestScan
     ? storage.getScanCapabilityReport(repoId, latestScan.id) ?? null
     : null;
-  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "scan_status", parserGaps);
+  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "scan_status", allParserGaps);
   const repoRootMissing = !existsSync(repo.root_path);
   const currentBranch = repoRootMissing
     ? "unknown"
@@ -1162,7 +1183,7 @@ function scanStatusPayload(
     stale,
     invalidation_reasons: invalidationReasons,
     changes,
-    parser_gaps: parserGapSummary(parserGaps),
+    parser_gaps: parserGapSummary(allParserGaps),
     readiness,
     capability_report: capabilityReport,
     security_capabilities: securityCapabilitySummary(capabilityReport),
@@ -1204,7 +1225,9 @@ function readinessForStoredScan(
   repoId: string,
   scanId: string | null,
   surface: DriftReadinessSurface,
-  parserGaps: ParserGap[] = scanId ? storage.listParserGaps(repoId, scanId) : []
+  parserGaps: Array<ParserGap | ParserGapV2> = scanId
+    ? [...storage.listParserGaps(repoId, scanId), ...storage.listParserGapV2(repoId, scanId)]
+    : []
 ) {
   const graphAvailable = Boolean(scanId && storage.getFactGraphArtifact(repoId, scanId));
   const requiredCapabilities = scanId ? ["fact_graph"] : ["fact_graph", "scan_manifest"];
@@ -1224,15 +1247,23 @@ function readinessForStoredScan(
   });
 }
 
-function parserGapSummary(gaps: ParserGap[]): {
+function parserGapSummary(gaps: Array<ParserGap | ParserGapV2>): {
   total_count: number;
   by_kind: Record<ParserGapKind, number>;
   confidence_impact: Record<ParserGapConfidenceImpact, number>;
+  by_capability: Record<string, number>;
+  by_contract_kind: Record<string, number>;
 } {
   return {
     total_count: gaps.length,
     by_kind: countBy(gaps, (gap) => gap.kind) as Record<ParserGapKind, number>,
-    confidence_impact: countBy(gaps, (gap) => gap.confidence_impact) as Record<ParserGapConfidenceImpact, number>
+    confidence_impact: countBy(gaps, (gap) => gap.confidence_impact) as Record<ParserGapConfidenceImpact, number>,
+    by_capability: countBy(gaps.flatMap((gap) =>
+      "affected_capabilities" in gap ? gap.affected_capabilities : []
+    ), (capability) => capability) as Record<string, number>,
+    by_contract_kind: countBy(gaps.flatMap((gap) =>
+      "affected_contract_kinds" in gap ? gap.affected_contract_kinds : []
+    ), (contractKind) => contractKind) as Record<string, number>
   };
 }
 

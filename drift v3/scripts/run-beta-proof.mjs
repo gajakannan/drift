@@ -14,7 +14,7 @@ const root = process.cwd();
 
 ensureBuiltRuntime();
 
-const [{ runCli }, { createReadOnlyMcpHandlers }, { openDriftStorage }, { createContractParityLedger }] = await Promise.all([
+const [{ runCli }, { createReadOnlyMcpHandlers }, { openDriftStorage }, { BUILTIN_SEMANTIC_CAPABILITIES, createContractParityLedger }] = await Promise.all([
   import(pathToFileURL(resolve("packages/cli/dist/index.js")).href),
   import(pathToFileURL(resolve("packages/mcp/dist/index.js")).href),
   import(pathToFileURL(resolve("packages/storage/dist/index.js")).href),
@@ -195,6 +195,52 @@ try {
         execution.status === "passed"
       )
   );
+  const semanticCapabilities = Array.from(BUILTIN_SEMANTIC_CAPABILITIES ?? []);
+  const betaRequiredSemanticCapabilities = semanticCapabilities.filter((capability) =>
+    capability.required_for_beta_claims?.includes("narrow_route_layering")
+  );
+  const semanticBetaProof = {
+    schema_version: "drift.semantic_beta_proof.v1",
+    commit_sha: gitOutput(root, ["rev-parse", "HEAD"]) || "unknown",
+    semantic_capability_contracts_verified: betaRequiredSemanticCapabilities.length > 0 &&
+      betaRequiredSemanticCapabilities.every((capability) =>
+        capability.schema_version === "drift.semantic_capability.v1" &&
+        capability.certification === "certified_deterministic" &&
+        capability.can_block === true &&
+        capability.fixture_suites.length > 0
+      ),
+    architecture_contract_verified: contractParity.contracts?.some((row) =>
+      row.name === "LayerArchitectureContract" &&
+      row.confidence === "complete"
+    ) === true,
+    convention_election_contract_verified: contractParity.contracts?.some((row) =>
+      row.name === "ConventionElectionContract" &&
+      row.confidence === "complete"
+    ) === true,
+    repo_contract_materialization_verified: Boolean(contract.contract?.id),
+    cli_mcp_semantic_parity_verified: parity.verified,
+    unsupported_pattern_visibility_verified: semanticCapabilities.some((capability) =>
+      capability.support === "deferred" &&
+      capability.parser_gap_kinds.length > 0
+    ),
+    blocking_safety_verified: capabilityReportVerified && findingEvidenceComplete,
+    claim_gate_verified: contractParityVerified,
+    partial_beta_required_count: betaRequiredSemanticCapabilities.filter((capability) =>
+      capability.support !== "supported" ||
+      capability.certification !== "certified_deterministic" ||
+      capability.can_block !== true
+    ).length,
+    unsupported_beta_required_count: betaRequiredSemanticCapabilities.filter((capability) =>
+      capability.support === "unsupported" ||
+      capability.certification === "unsupported"
+    ).length,
+    evidence: {
+      beta_required_capabilities: betaRequiredSemanticCapabilities.map((capability) => capability.capability_id),
+      deferred_capabilities: semanticCapabilities
+        .filter((capability) => capability.support === "deferred" || capability.certification === "unsupported")
+        .map((capability) => capability.capability_id)
+    }
+  };
 
   const betaProof = {
     verify_ci_status: process.env.DRIFT_VERIFY_CI_STATUS ?? null,
@@ -224,6 +270,16 @@ try {
     machine_contract_versions_verified: machineContractVersionsVerified,
     finding_evidence_confidence_verified: findingEvidenceConfidenceVerified,
     required_check_execution_proof_verified: requiredCheckExecutionProofVerified,
+    semantic_beta_proof_verified: semanticBetaProof.semantic_capability_contracts_verified &&
+      semanticBetaProof.architecture_contract_verified &&
+      semanticBetaProof.convention_election_contract_verified &&
+      semanticBetaProof.repo_contract_materialization_verified &&
+      semanticBetaProof.cli_mcp_semantic_parity_verified &&
+      semanticBetaProof.unsupported_pattern_visibility_verified &&
+      semanticBetaProof.blocking_safety_verified &&
+      semanticBetaProof.claim_gate_verified &&
+      semanticBetaProof.partial_beta_required_count === 0 &&
+      semanticBetaProof.unsupported_beta_required_count === 0,
     contract_parity_verified: contractParityVerified,
     mcp_cli_parity_hash: parity.hash,
     mcp_cli_parity_verified: parity.verified,
@@ -271,6 +327,7 @@ try {
         argv: requiredCheckExecution.execution?.argv ?? [],
         mcp_summary: mcpRequiredCheckExecutions.summary ?? null
       },
+      semantic_beta_proof: semanticBetaProof,
       contract_parity: contractParity,
       mcp_cli_parity: parity.bundle,
       audit_verification: audit.verification
@@ -577,6 +634,7 @@ function assertBetaProof(proof) {
     "machine_contract_versions_verified",
     "finding_evidence_confidence_verified",
     "required_check_execution_proof_verified",
+    "semantic_beta_proof_verified",
     "contract_parity_verified",
     "mcp_cli_parity_verified",
     "audit_verified"
@@ -632,6 +690,14 @@ function valueFlag(name) {
     throw new Error(`${name} requires a value.`);
   }
   return value;
+}
+
+function gitOutput(cwd, args) {
+  try {
+    return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
 }
 
 function canonicalJson(value) {

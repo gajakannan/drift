@@ -62,7 +62,8 @@ describe("SQLite Drift storage", () => {
       "019_scan_capability_reports",
       "020_machine_contract_versions",
       "021_graph_evidence_confidence",
-      "022_fact_imported_name"
+      "022_fact_imported_name",
+      "023_parser_gap_v2_metadata"
     ]);
     storage.close();
   });
@@ -130,7 +131,8 @@ describe("SQLite Drift storage", () => {
       "019_scan_capability_reports",
       "020_machine_contract_versions",
       "021_graph_evidence_confidence",
-      "022_fact_imported_name"
+      "022_fact_imported_name",
+      "023_parser_gap_v2_metadata"
     ]);
     expect(storage.getRepo("repo_abc")?.fingerprint).toBe("repo-fp");
     storage.close();
@@ -267,7 +269,7 @@ describe("SQLite Drift storage", () => {
         schema_version: "drift.machine_contract_versions.v1",
         cli_version: "0.1.0",
         core_version: "0.1.0",
-        storage_schema_version: 22,
+        storage_schema_version: 23,
         contract_schema_version: 1,
         engine_contract_versions: {
           scan_request: "engine.scan.request.v1",
@@ -353,7 +355,7 @@ describe("SQLite Drift storage", () => {
         repo_contract_id: "contract_abc",
         machine_contract_versions: expect.objectContaining({
           schema_version: "drift.machine_contract_versions.v1",
-          storage_schema_version: 22,
+          storage_schema_version: 23,
           factgraph_schema_version: "factgraph.v2"
         }),
         status: "fail",
@@ -803,6 +805,62 @@ describe("SQLite Drift storage", () => {
       expect.objectContaining({
         gap_id: "parser_gap_first",
         evidence_refs: ["diagnostic_a", "diagnostic_b"]
+      })
+    ]);
+    storage.close();
+  });
+
+  it("persists parser gap v2 semantic metadata", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+
+    storage.upsertRepo({
+      id: "repo_abc",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_abc",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    storage.upsertParserGapV2([{
+      schema_version: "drift.parser_gap.v2",
+      parser_gap_id: "gap_dynamic_import_route_1",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      file_path: "app/api/users/route.ts",
+      start_line: 4,
+      end_line: 4,
+      kind: "dynamic_import_unresolved",
+      message: "Dynamic import target is not statically resolvable.",
+      affected_capabilities: ["ts.dynamic_imports.v1", "ts.route_flow.v1"],
+      affected_contract_kinds: ["api_route_no_direct_data_access"],
+      confidence_impact: "blocks_enforcement",
+      suggested_action: "rewrite_static",
+      evidence_refs: ["evidence_graph_1"]
+    }]);
+
+    expect(storage.listParserGapV2("repo_abc", "scan_abc")).toEqual([
+      expect.objectContaining({
+        parser_gap_id: "gap_dynamic_import_route_1",
+        affected_capabilities: ["ts.dynamic_imports.v1", "ts.route_flow.v1"],
+        affected_contract_kinds: ["api_route_no_direct_data_access"],
+        suggested_action: "rewrite_static"
       })
     ]);
     storage.close();

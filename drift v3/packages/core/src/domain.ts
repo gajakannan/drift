@@ -616,6 +616,159 @@ export interface ConventionElectionContractV2 {
   created_at: string;
 }
 
+export type ModuleSpecifierKind = "relative" | "absolute_alias" | "package" | "workspace_package" | "node_builtin" | "dynamic" | "commonjs";
+export type ModuleResolutionStatus = "resolved" | "unresolved" | "external" | "unsupported" | "partial";
+export type ModuleImportKind = "static_import" | "export_from" | "require" | "dynamic_import" | "type_only";
+export type ModuleResolverStrategy = "relative_extensions" | "index_file" | "tsconfig_paths" | "jsconfig_paths" | "package_exports" | "workspace_package" | "node_builtin" | "unsupported_dynamic";
+
+export interface ModuleResolutionRecord {
+  schema_version: "drift.module_resolution.v1";
+  resolution_id: string;
+  repo_id: string;
+  scan_id: string;
+  importer_file: string;
+  source: string;
+  specifier_kind: ModuleSpecifierKind;
+  import_kind: ModuleImportKind;
+  resolved_file_path?: string;
+  resolved_package_name?: string;
+  status: ModuleResolutionStatus;
+  resolver_strategy: ModuleResolverStrategy;
+  evidence_ref: string;
+  parser_gap_id?: string;
+}
+
+export interface SymbolIdentityV2 {
+  schema_version: "drift.symbol_identity.v2";
+  symbol_id: string;
+  repo_id: string;
+  scan_id: string;
+  canonical_name: string;
+  declaration_file: string;
+  declaration_span: SourceSpan;
+  symbol_kind: "function" | "class" | "const" | "let" | "var" | "type" | "interface" | "namespace" | "default_export" | "unknown";
+  export_kind: "named" | "default" | "namespace" | "re_export" | "local";
+  aliases: Array<{
+    local_name: string;
+    imported_name?: string;
+    importer_file: string;
+    import_source: string;
+    resolution_id: string;
+  }>;
+  re_export_chain: string[];
+  reference_count: number;
+  confidence: "high" | "medium" | "low";
+  resolution_status: FactResolutionStatus;
+  parser_gap_ids: string[];
+}
+
+export type CallExpressionShape = "identifier" | "member" | "optional_member" | "chained" | "computed_member" | "call_result" | "new_expression" | "decorator" | "unknown";
+
+export interface CallResolutionRecord {
+  schema_version: "drift.call_resolution.v1";
+  call_id: string;
+  repo_id: string;
+  scan_id: string;
+  file_path: string;
+  span: SourceSpan;
+  callee_text: string;
+  receiver_text?: string;
+  root_identifier?: string;
+  shape: CallExpressionShape;
+  resolved_symbol_id?: string;
+  resolved_import_id?: string;
+  resolution_status: FactResolutionStatus;
+  confidence: "high" | "medium" | "low";
+  parser_gap_id?: string;
+}
+
+export interface DataOperationRecordV2 {
+  schema_version: "drift.data_operation.v2";
+  operation_id: string;
+  repo_id: string;
+  scan_id: string;
+  file_path: string;
+  call_id: string;
+  operation_family: "database" | "cache" | "queue" | "http" | "filesystem" | "secret" | "payment" | "email" | "analytics" | "unknown";
+  operation_kind: "read" | "create" | "update" | "delete" | "upsert" | "execute" | "publish" | "send" | "unknown";
+  receiver_root: string;
+  receiver_path: string[];
+  store_name?: string;
+  tenant_sensitive: boolean;
+  mutation: boolean;
+  confidence: "high" | "medium" | "low";
+  evidence_ref: string;
+  parser_gap_ids: string[];
+}
+
+export interface FrameworkAdapterContractV2 {
+  schema_version: "drift.framework_adapter.v2";
+  adapter_id: string;
+  framework: "next" | "express" | "nest" | "fastify" | "remix" | "unknown";
+  version_range?: string;
+  certification: "certified_deterministic" | "certified_heuristic" | "experimental";
+  route_patterns_supported: string[];
+  unsupported_patterns: string[];
+  emitted_entrypoint_kinds: string[];
+  emitted_capabilities: string[];
+  parser_gap_kinds: string[];
+  fixture_suites: string[];
+  can_block: boolean;
+}
+
+export interface AgentPreflightSemanticEnvelope {
+  schema_version: "drift.agent_preflight_semantic.v1";
+  repo_id: string;
+  scan_id: string | null;
+  task: string;
+  decision: "safe_to_edit" | "run_scan_first" | "blocked_by_policy" | "blocked_by_stale_graph" | "context_truncated" | "advisory_only" | "refuse";
+  semantic_coverage: SemanticCoverageContract;
+  parser_gaps: ParserGapV2[];
+  affected_files: string[];
+  affected_symbols: string[];
+  affected_routes: string[];
+  affected_data_operations: string[];
+  required_checks: string[];
+  safe_commands: string[];
+  source_content_included: boolean;
+  graph_context_included: boolean;
+}
+
+export interface SemanticCheckProof {
+  schema_version: "drift.semantic_check_proof.v1";
+  check_id: string;
+  repo_id: string;
+  scan_id: string;
+  repo_contract_id: string;
+  convention_id: string;
+  convention_rule_id: string;
+  semantic_coverage_id: string;
+  architecture_contract_id: string;
+  required_capabilities: string[];
+  coverage_decision: "blocking_allowed";
+  parser_gap_ids: string[];
+  graph_edge_ids: string[];
+  graph_node_ids: string[];
+  evidence_refs: string[];
+  result: "pass" | "block";
+}
+
+export interface SemanticBetaProof {
+  schema_version: "drift.semantic_beta_proof.v1";
+  commit_sha: string;
+  semantic_capability_contracts_verified: boolean;
+  architecture_contract_verified: boolean;
+  convention_election_contract_verified: boolean;
+  repo_contract_materialization_verified: boolean;
+  cli_mcp_semantic_parity_verified: boolean;
+  unsupported_pattern_visibility_verified: boolean;
+  blocking_safety_verified: boolean;
+  claim_gate_verified: boolean;
+  partial_beta_required_count: number;
+  unsupported_beta_required_count: number;
+  evidence: Record<string, unknown>;
+}
+
 export interface MachineContractVersions {
   schema_version: "drift.machine_contract_versions.v1";
   cli_version: string;

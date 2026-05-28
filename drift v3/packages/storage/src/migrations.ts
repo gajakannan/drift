@@ -671,5 +671,17 @@ export const MIGRATIONS: Migration[] = [
     sql: `
       ALTER TABLE facts ADD COLUMN imported_name TEXT;
     `
+  },
+  {
+    id: "023_parser_gap_v2_metadata",
+    sql: `
+      ALTER TABLE parser_gaps ADD COLUMN source_text_hash TEXT;
+      ALTER TABLE parser_gaps ADD COLUMN affected_capabilities_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE parser_gaps ADD COLUMN affected_contract_kinds_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE parser_gaps ADD COLUMN suggested_action TEXT;
+
+      CREATE INDEX IF NOT EXISTS idx_parser_gaps_repo_capability
+        ON parser_gaps(repo_id, scan_id);
+    `
   }
 ];

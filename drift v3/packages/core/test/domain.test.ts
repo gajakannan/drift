@@ -160,7 +160,7 @@ describe("core domain", () => {
       schema_version: "drift.machine_contract_versions.v1",
       cli_version: "0.1.0",
       core_version: "0.1.0",
-      storage_schema_version: 22,
+      storage_schema_version: 23,
       contract_schema_version: 1,
       engine_contract_versions: {
         scan_request: "engine.scan.request.v1",

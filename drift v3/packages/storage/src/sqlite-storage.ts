@@ -14,6 +14,7 @@ import type {
   Finding,
   ModuleDependent,
   ParserGap,
+  ParserGapV2,
   RepoContract,
   RepoRecord,
   RequiredCheckExecution,
@@ -36,6 +37,7 @@ import {
   FindingSchema,
   ModuleDependentSchema,
   ParserGapSchema,
+  ParserGapV2Schema,
   RepoContractSchema,
   RepoRecordSchema,
   RequiredCheckExecutionSchema,
@@ -122,6 +124,10 @@ export class SqliteDriftStorage {
       this.applyAuditSequenceMigration();
       return;
     }
+    if (migration.id === "023_parser_gap_v2_metadata") {
+      this.applyParserGapV2Migration();
+      return;
+    }
 
     this.db.exec(migration.sql);
   }
@@ -198,6 +204,48 @@ export class SqliteDriftStorage {
   private auditEventsColumnExists(columnName: string): boolean {
     return this.db
       .prepare("PRAGMA table_info(audit_events)")
+      .all()
+      .some((row) => rowValue<string>(row, "name") === columnName);
+  }
+
+  private applyParserGapV2Migration(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS parser_gaps (
+        gap_id TEXT PRIMARY KEY,
+        schema_version TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        start_line INTEGER NOT NULL,
+        end_line INTEGER NOT NULL,
+        confidence_impact TEXT NOT NULL,
+        message TEXT NOT NULL,
+        evidence_refs_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+    `);
+    for (const [column, definition] of [
+      ["source_text_hash", "TEXT"],
+      ["affected_capabilities_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["affected_contract_kinds_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["suggested_action", "TEXT"]
+    ] as const) {
+      if (!this.parserGapsColumnExists(column)) {
+        this.db.exec(`ALTER TABLE parser_gaps ADD COLUMN ${column} ${definition};`);
+      }
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_parser_gaps_repo_capability
+        ON parser_gaps(repo_id, scan_id);
+    `);
+  }
+
+  private parserGapsColumnExists(columnName: string): boolean {
+    return this.db
+      .prepare("PRAGMA table_info(parser_gaps)")
       .all()
       .some((row) => rowValue<string>(row, "name") === columnName);
   }
@@ -481,16 +529,74 @@ export class SqliteDriftStorage {
     transaction();
   }
 
+  upsertParserGapV2(gaps: ParserGapV2[]): void {
+    const parsedGaps = gaps.map((gap) => ParserGapV2Schema.parse(gap));
+    const insert = this.db.prepare(`
+      INSERT INTO parser_gaps (
+        gap_id, schema_version, repo_id, scan_id, kind, file_path, start_line, end_line,
+        confidence_impact, message, evidence_refs_json, created_at, source_text_hash,
+        affected_capabilities_json, affected_contract_kinds_json, suggested_action
+      )
+      VALUES (
+        @gap_id, @schema_version, @repo_id, @scan_id, @kind, @file_path, @start_line, @end_line,
+        @confidence_impact, @message, @evidence_refs_json, @created_at, @source_text_hash,
+        @affected_capabilities_json, @affected_contract_kinds_json, @suggested_action
+      )
+      ON CONFLICT(gap_id) DO UPDATE SET
+        schema_version = excluded.schema_version,
+        repo_id = excluded.repo_id,
+        scan_id = excluded.scan_id,
+        kind = excluded.kind,
+        file_path = excluded.file_path,
+        start_line = excluded.start_line,
+        end_line = excluded.end_line,
+        confidence_impact = excluded.confidence_impact,
+        message = excluded.message,
+        evidence_refs_json = excluded.evidence_refs_json,
+        source_text_hash = excluded.source_text_hash,
+        affected_capabilities_json = excluded.affected_capabilities_json,
+        affected_contract_kinds_json = excluded.affected_contract_kinds_json,
+        suggested_action = excluded.suggested_action
+    `);
+
+    const transaction = this.db.transaction(() => {
+      for (const gap of parsedGaps) {
+        insert.run({
+          ...gap,
+          gap_id: gap.parser_gap_id,
+          created_at: new Date(0).toISOString(),
+          source_text_hash: gap.source_text_hash ?? null,
+          evidence_refs_json: JSON.stringify(gap.evidence_refs),
+          affected_capabilities_json: JSON.stringify(gap.affected_capabilities),
+          affected_contract_kinds_json: JSON.stringify(gap.affected_contract_kinds)
+        });
+      }
+    });
+    transaction();
+  }
+
   listParserGaps(repoId: string, scanId?: string): ParserGap[] {
     const rows = scanId
       ? this.db
-          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND scan_id = ? ORDER BY file_path, start_line, gap_id")
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND scan_id = ? AND schema_version = 'drift.parser_gap.v1' ORDER BY file_path, start_line, gap_id")
           .all(repoId, scanId)
       : this.db
-          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? ORDER BY scan_id, file_path, start_line, gap_id")
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND schema_version = 'drift.parser_gap.v1' ORDER BY scan_id, file_path, start_line, gap_id")
           .all(repoId);
 
     return rows.map(parserGapFromRow);
+  }
+
+  listParserGapV2(repoId: string, scanId?: string): ParserGapV2[] {
+    const rows = scanId
+      ? this.db
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND scan_id = ? AND schema_version = 'drift.parser_gap.v2' ORDER BY file_path, start_line, gap_id")
+          .all(repoId, scanId)
+      : this.db
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND schema_version = 'drift.parser_gap.v2' ORDER BY scan_id, file_path, start_line, gap_id")
+          .all(repoId);
+
+    return rows.map(parserGapV2FromRow);
   }
 
   upsertScanCapabilityReport(report: ScanCapabilityReport): void {
@@ -1532,6 +1638,21 @@ function parserGapFromRow(row: unknown): ParserGap {
   const record = row as Record<string, unknown>;
   return ParserGapSchema.parse({
     ...record,
+    evidence_refs: typeof record.evidence_refs_json === "string"
+      ? JSON.parse(record.evidence_refs_json) as unknown
+      : []
+  });
+}
+
+function parserGapV2FromRow(row: unknown): ParserGapV2 {
+  const record = row as Record<string, unknown>;
+  return ParserGapV2Schema.parse({
+    ...record,
+    parser_gap_id: record.gap_id,
+    source_text_hash: record.source_text_hash ?? undefined,
+    affected_capabilities: parseJsonArray(record.affected_capabilities_json),
+    affected_contract_kinds: parseJsonArray(record.affected_contract_kinds_json),
+    suggested_action: record.suggested_action,
     evidence_refs: typeof record.evidence_refs_json === "string"
       ? JSON.parse(record.evidence_refs_json) as unknown
       : []
