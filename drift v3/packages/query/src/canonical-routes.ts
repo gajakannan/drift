@@ -93,7 +93,7 @@ export function buildCanonicalRouteReadModel(
     });
   }
 
-  const fallbackUsed = apiRouteEntrypoints.length === 0 && proofs.length === 0;
+  const fallbackUsed = apiRouteEntrypoints.length === 0;
   if (fallbackUsed) {
     for (const route of input.fallback_fact_routes ?? []) {
       routesById.set(route.route_id, {
@@ -134,6 +134,9 @@ function proofFreshnessFor(
 ): CanonicalRouteFreshness {
   if (proofs.length === 0) {
     return "none";
+  }
+  if (!scanId) {
+    return "stale";
   }
   if (scanId && proofs.some((proof) => proof.proof_scan_id && proof.proof_scan_id !== scanId)) {
     return "stale";

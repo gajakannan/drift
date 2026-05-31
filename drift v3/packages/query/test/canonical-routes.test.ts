@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCanonicalRouteReadModel } from "../src/canonical-routes.js";
+import { buildCanonicalRouteReadModel as buildCanonicalRouteReadModelFromIndex } from "../src/index.js";
 
 describe("buildCanonicalRouteReadModel", () => {
   it("uses normalized entrypoints as the route source of truth", () => {
@@ -44,6 +45,11 @@ describe("buildCanonicalRouteReadModel", () => {
       source: "normalized_entrypoint"
     })]);
     expect(model.fallback.used).toBe(false);
+    expect(model.route_source_summary).toMatchObject({
+      normalized_entrypoint: 1,
+      security_proof: 0,
+      legacy_fact_fallback: 0
+    });
   });
 
   it("marks legacy fact fallback explicitly when entrypoints are absent", () => {
@@ -104,7 +110,7 @@ describe("buildCanonicalRouteReadModel", () => {
     expect(model.routes[0]).toMatchObject({ source: "legacy_fact_fallback" });
   });
 
-  it("marks proof-only routes and scan mismatches explicitly", () => {
+  it("marks proof-only routes, scan mismatches, and missing normalized routes explicitly", () => {
     const model = buildCanonicalRouteReadModel({
       repo_id: "repo_abc",
       scan_id: "scan_new",
@@ -123,6 +129,33 @@ describe("buildCanonicalRouteReadModel", () => {
       source: "security_proof",
       freshness: "stale"
     });
+    expect(model.fallback).toMatchObject({
+      used: true,
+      reason: "normalized_entrypoints_missing"
+    });
     expect(model.proof_freshness).toBe("stale");
+  });
+
+  it("does not report fresh proof metadata without a canonical scan id", () => {
+    const model = buildCanonicalRouteReadModel({
+      repo_id: "repo_abc",
+      scan_id: null,
+      entrypoints: [],
+      proofs: [{
+        proof_scan_id: "scan_old",
+        route_id: "route:apps/web/app/api/projects/route.ts:GET",
+        file_path: "apps/web/app/api/projects/route.ts",
+        path: "/api/projects",
+        method: "GET"
+      }],
+      fallback_fact_routes: []
+    });
+
+    expect(model.proof_freshness).toBe("stale");
+    expect(model.routes[0]?.freshness).toBe("stale");
+  });
+
+  it("exports the read model builder from the package index", () => {
+    expect(buildCanonicalRouteReadModelFromIndex).toBe(buildCanonicalRouteReadModel);
   });
 });
