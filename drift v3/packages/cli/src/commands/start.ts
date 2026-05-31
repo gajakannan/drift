@@ -1,3 +1,4 @@
+import { BETA_START_RESPONSE_SCHEMA } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { doctorCommand } from "../args/doctor-commands.js";
@@ -5,10 +6,13 @@ import { actorFlag,stringFlag } from "../args/flag-readers.js";
 import { requiredDatabasePath,resolveRepoRoot } from "../args/repo-flags.js";
 import { runFullRepoCheck } from "../check/run-check.js";
 import { createBaselineForFindings } from "../domain/baselines.js";
+import { betaStartResponse } from "../domain/beta-surfaces.js";
 import { materializeRepoContract } from "../domain/contract-materialization.js";
 import { acceptDefaultCandidate } from "../domain/convention-candidates.js";
+import { engineProvenance } from "../domain/engine-provenance.js";
 import { contractIdForRepo } from "../domain/identifiers.js";
 import { runScanRepo } from "../domain/scan-status.js";
+import { currentMachineContractVersions,doctorV1Scope } from "../domain/versions.js";
 
 export async function startRepo(storage: SqliteDriftStorage, parsed: ParsedArgs): Promise<CommandPayload> {
   const now = stringFlag(parsed, "now") ?? new Date().toISOString();
@@ -55,9 +59,13 @@ export async function startRepo(storage: SqliteDriftStorage, parsed: ParsedArgs)
         `drift check --diff main...HEAD --repo ${result.repo.id} --scope changed-hunks`
       ];
   const onboardingPayload = {
+    response_schema: BETA_START_RESPONSE_SCHEMA,
     ...result,
     accepted,
     baselined_count: baselinedCount,
+    machine_contract_versions: currentMachineContractVersions(result.scan.adapter_versions),
+    engine: engineProvenance(),
+    v1_scope: doctorV1Scope(),
     onboarding: {
       status: contractReady ? "ready" : candidate ? "needs_convention_review" : "needs_more_signal",
       accepted_default: Boolean(accepted),
@@ -103,6 +111,6 @@ export async function startRepo(storage: SqliteDriftStorage, parsed: ParsedArgs)
   ].join("\n");
 
   return {
-    payload: parsed.flags.has("json") ? onboardingPayload : text
+    payload: parsed.flags.has("json") ? betaStartResponse(onboardingPayload) : text
   };
 }
