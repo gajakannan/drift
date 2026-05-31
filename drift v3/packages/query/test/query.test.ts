@@ -1638,6 +1638,43 @@ describe("GraphQueryService", () => {
     ]));
   });
 
+  it("fails closed when required scan capabilities are not certified", () => {
+    const readiness = buildReadiness({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      surface: "prepare",
+      graph_available: true,
+      graph_complete: true,
+      parser_gaps: [],
+      completeness_reasons: [],
+      required_capabilities: ["ts.route_flow.v1"],
+      missing_capabilities: []
+    });
+
+    const coverage = buildSemanticCoverageFromCapabilityReport({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      scope: "preflight",
+      scope_id: "task_users_route",
+      capability_report: {
+        certified_capabilities: ["fact_graph"],
+        required_capabilities: ["fact_graph", "import_resolution"],
+        missing_capabilities: []
+      },
+      readiness,
+      parser_gaps: [],
+      generated_at: "2026-05-28T00:00:00.000Z"
+    });
+
+    expect(coverage).toMatchObject({
+      required_capabilities: ["ts.import_resolution.v1", "ts.route_flow.v1"],
+      complete_capabilities: ["ts.route_flow.v1"],
+      missing_capabilities: ["ts.import_resolution.v1"],
+      decision: "refuse"
+    });
+    expect(coverage.reasons).toContain("missing_capability:ts.import_resolution.v1");
+  });
+
   it("allows blocking readiness when graph and parser evidence are complete", () => {
     const readiness = buildReadiness({
       repo_id: "repo_abc",

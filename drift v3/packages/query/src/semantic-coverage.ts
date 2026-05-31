@@ -110,7 +110,7 @@ export function buildSemanticCoverageFromCapabilityReport(
     ...(input.capability_report?.required_capabilities ?? [])
   ]);
   const certified = normalizeKnownCapabilities(input.capability_report?.certified_capabilities ?? []);
-  const missing = normalizeKnownCapabilities([
+  const reportedMissing = normalizeKnownCapabilities([
     ...(input.capability_report?.missing_capabilities ?? []),
     ...input.readiness.missing_capabilities
   ]);
@@ -120,6 +120,18 @@ export function buildSemanticCoverageFromCapabilityReport(
       SEMANTIC_CAPABILITIES.get(capabilityId)?.support !== "supported"
     )
   ]);
+  const certifiedCapabilities = new Set(certified);
+  const reportedMissingCapabilities = new Set(reportedMissing);
+  const unsupportedCapabilities = new Set(unsupported);
+  const gapAffectedCapabilities = new Set((input.parser_gaps ?? []).flatMap((gap) =>
+    "affected_capabilities" in gap ? gap.affected_capabilities : []
+  ));
+  const uncertifiedRequiredCapabilities = required.capabilities.filter((capabilityId) =>
+    !certifiedCapabilities.has(capabilityId) &&
+    !reportedMissingCapabilities.has(capabilityId) &&
+    !unsupportedCapabilities.has(capabilityId) &&
+    !gapAffectedCapabilities.has(capabilityId)
+  );
 
   return buildSemanticCoverage({
     repo_id: input.repo_id,
@@ -132,7 +144,8 @@ export function buildSemanticCoverageFromCapabilityReport(
     ]),
     certified_capabilities: certified,
     missing_capabilities: uniqueSorted([
-      ...missing,
+      ...reportedMissing,
+      ...uncertifiedRequiredCapabilities,
       ...required.unknown_capabilities
     ]),
     unsupported_capabilities: unsupported,
