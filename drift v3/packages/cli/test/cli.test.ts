@@ -2525,6 +2525,7 @@ supported_sqlite_schema_version: 27,
       end_line: 1,
       symbol: "prisma",
       import_source: "@/lib/prisma",
+      fact_ids: [expect.stringMatching(/^fact[:_]/)],
       redaction_state: "none"
     });
     expect(storage.listFindings(repoId!)[0]?.evidence_refs[0]?.scan_id).toMatch(/^scan_/);
@@ -2863,6 +2864,11 @@ supported_sqlite_schema_version: 27,
 
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout);
+    expect(payload.response_schema).toBe("drift.start.result.v1");
+    expect(payload.machine_contract_versions.schema_version).toBe("drift.machine_contract_versions.v1");
+    expect(payload.engine).toBeDefined();
+    expect(payload.v1_scope.primary_wedge).toBe("typescript_api_route_layering");
+    expect(payload.summary.engine_source).toBe("rust");
     expect(payload.onboarding).toMatchObject({
       status: "ready",
       accepted_default: true,
@@ -2881,6 +2887,48 @@ supported_sqlite_schema_version: 27,
       `drift check --diff main...HEAD --repo ${payload.repo.id} --scope changed-hunks`,
       `drift backup create --repo ${payload.repo.id} --confirm`
     ]);
+  });
+
+  it("emits beta fallback engine source for start --json when TypeScript fallback is used", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-start-json-fallback-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      "export async function GET() { return Response.json({ ok: true }); }\n"
+    );
+
+    const previousBin = process.env.DRIFT_ENGINE_BIN;
+    const previousFallback = process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK;
+    try {
+      process.env.DRIFT_ENGINE_BIN = join(repoRoot, "..", "missing-engine");
+      process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK = "1";
+      const result = await runCli([
+        "start",
+        "--repo-root", repoRoot,
+        "--state-root", stateRoot,
+        "--now", "2026-05-10T00:00:31.000Z",
+        "--json"
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload.response_schema).toBe("drift.start.result.v1");
+      expect(payload.summary.engine_source).toBe("typescript_fallback");
+    } finally {
+      if (previousBin === undefined) {
+        delete process.env.DRIFT_ENGINE_BIN;
+      } else {
+        process.env.DRIFT_ENGINE_BIN = previousBin;
+      }
+      if (previousFallback === undefined) {
+        delete process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK;
+      } else {
+        process.env.DRIFT_ALLOW_TYPESCRIPT_ENGINE_FALLBACK = previousFallback;
+      }
+    }
   });
 
   it("prints baseline status in a readable summary", async () => {
@@ -3320,6 +3368,10 @@ supported_schema_version: 27
 
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout);
+    expect(payload.response_schema).toBe("drift.doctor.result.v1");
+    expect(payload.machine_contract_versions.schema_version).toBe("drift.machine_contract_versions.v1");
+    expect(payload.engine).toBeDefined();
+    expect(payload.v1_scope.primary_wedge).toBe("typescript_api_route_layering");
     expect(payload.status).toBe("warn");
     expect(payload.database_path).toContain("drift.sqlite");
     expect(payload.checks.map((check: { id: string }) => check.id)).toContain("local_state");
@@ -4598,7 +4650,12 @@ storage_schema_version: 27
     });
     expect(payload.findings[0]).toMatchObject({
       status: "new",
-      diff_status: "touched_existing"
+      diff_status: "touched_existing",
+      evidence_refs: [
+        expect.objectContaining({
+          fact_ids: [expect.stringMatching(/^fact[:_]/)]
+        })
+      ]
     });
   });
 

@@ -152,6 +152,575 @@ fn infer_candidates_uses_resolved_import_targets_for_data_access_modules() {
 }
 
 #[test]
+fn infer_candidates_keeps_auth_payment_and_prisma_runtime_out_of_direct_data_access() {
+    let request = json!({
+        "repo": { "repo_id": "repo_abc" },
+        "graph": {
+            "graph_nodes": [
+                {
+                    "id": "module:app/api/auth/login/github/callback/route.ts",
+                    "kind": "module",
+                    "label": "app/api/auth/login/github/callback/route.ts",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "file_path": "app/api/auth/login/github/callback/route.ts" }
+                },
+                {
+                    "id": "module:src/lib/server/db.ts",
+                    "kind": "module",
+                    "label": "src/lib/server/db.ts",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "file_path": "src/lib/server/db.ts" }
+                },
+                {
+                    "id": "role:api_route",
+                    "kind": "role",
+                    "label": "api_route",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "role": "api_route" }
+                },
+                {
+                    "id": "role:data_access_module",
+                    "kind": "role",
+                    "label": "data_access_module",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "role": "data_access_module" }
+                },
+                {
+                    "id": "import:route:runtime",
+                    "kind": "import_decl",
+                    "label": "PrismaClientKnownRequestError from @prisma/client/runtime/library",
+                    "stable": false,
+                    "evidence_ids": [],
+                    "metadata": {
+                        "file_path": "app/api/auth/login/github/callback/route.ts",
+                        "local_name": "PrismaClientKnownRequestError",
+                        "source": "@prisma/client/runtime/library"
+                    }
+                },
+                {
+                    "id": "import:route:session",
+                    "kind": "import_decl",
+                    "label": "createSession from ~/lib/server/auth/session",
+                    "stable": false,
+                    "evidence_ids": [],
+                    "metadata": {
+                        "file_path": "app/api/auth/login/github/callback/route.ts",
+                        "local_name": "createSession",
+                        "source": "~/lib/server/auth/session",
+                        "resolved_file_path": "src/lib/server/auth/session.ts"
+                    }
+                },
+                {
+                    "id": "import:route:payment",
+                    "kind": "import_decl",
+                    "label": "stripe from ~/lib/server/payment",
+                    "stable": false,
+                    "evidence_ids": [],
+                    "metadata": {
+                        "file_path": "app/api/auth/login/github/callback/route.ts",
+                        "local_name": "stripe",
+                        "source": "~/lib/server/payment",
+                        "resolved_file_path": "src/lib/server/payment.ts"
+                    }
+                },
+                {
+                    "id": "import:route:db",
+                    "kind": "import_decl",
+                    "label": "prisma from ~/lib/server/db",
+                    "stable": false,
+                    "evidence_ids": ["graph_evidence_prisma"],
+                    "metadata": {
+                        "file_path": "app/api/auth/login/github/callback/route.ts",
+                        "local_name": "prisma",
+                        "source": "~/lib/server/db",
+                        "resolved_file_path": "src/lib/server/db.ts"
+                    }
+                }
+            ],
+            "graph_edges": [
+                {
+                    "id": "edge:route-role",
+                    "kind": "FILE_HAS_ROLE",
+                    "from": "module:app/api/auth/login/github/callback/route.ts",
+                    "to": "role:api_route",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": {}
+                },
+                {
+                    "id": "edge:db-role",
+                    "kind": "FILE_HAS_ROLE",
+                    "from": "module:src/lib/server/db.ts",
+                    "to": "role:data_access_module",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": {}
+                },
+                {
+                    "id": "edge:db-owner",
+                    "kind": "IMPORT_DECL_REFERENCES_MODULE",
+                    "from": "import:route:db",
+                    "to": "module:app/api/auth/login/github/callback/route.ts",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": {}
+                },
+                {
+                    "id": "edge:db-resolves",
+                    "kind": "IMPORT_RESOLVES_TO_MODULE",
+                    "from": "import:route:db",
+                    "to": "module:src/lib/server/db.ts",
+                    "stable": true,
+                    "evidence_ids": ["graph_evidence_prisma"],
+                    "metadata": {}
+                }
+            ],
+            "graph_evidence": [{
+                "id": "graph_evidence_prisma",
+                "repo_id": "repo_abc",
+                "scan_id": "scan_abc",
+                "artifact_id": "file_version:app/api/auth/login/github/callback/route.ts:aaaaaaaaaaaa",
+                "fact_ids": ["graph_fact_prisma"],
+                "file_path": "app/api/auth/login/github/callback/route.ts",
+                "start_line": 7,
+                "end_line": 7,
+                "file_hash": "a".repeat(64),
+                "adapter_id": "typescript",
+                "adapter_version": "0.1.0",
+                "redaction_state": "none"
+            }]
+        },
+        "scan": {
+            "scan_id": "scan_abc",
+            "file_snapshots": [
+                {
+                    "file_path": "app/api/auth/login/github/callback/route.ts",
+                    "content_hash": "a".repeat(64),
+                    "byte_size": 400,
+                    "indexed": true
+                },
+                {
+                    "file_path": "src/lib/server/auth/session.ts",
+                    "content_hash": "b".repeat(64),
+                    "byte_size": 120,
+                    "indexed": true
+                },
+                {
+                    "file_path": "src/lib/server/payment.ts",
+                    "content_hash": "c".repeat(64),
+                    "byte_size": 120,
+                    "indexed": true
+                },
+                {
+                    "file_path": "src/lib/server/db.ts",
+                    "content_hash": "d".repeat(64),
+                    "byte_size": 120,
+                    "indexed": true
+                }
+            ],
+            "facts": [
+                {
+                    "kind": "file_role_detected",
+                    "file_path": "app/api/auth/login/github/callback/route.ts",
+                    "name": "api_route",
+                    "start_line": 1,
+                    "end_line": 20
+                },
+                {
+                    "kind": "file_role_detected",
+                    "file_path": "src/lib/server/auth/session.ts",
+                    "name": "data_access_module",
+                    "start_line": 1,
+                    "end_line": 8
+                },
+                {
+                    "kind": "file_role_detected",
+                    "file_path": "src/lib/server/payment.ts",
+                    "name": "data_access_module",
+                    "start_line": 1,
+                    "end_line": 8
+                },
+                {
+                    "kind": "file_role_detected",
+                    "file_path": "src/lib/server/db.ts",
+                    "name": "data_access_module",
+                    "start_line": 1,
+                    "end_line": 8
+                },
+                {
+                    "kind": "import_used",
+                    "file_path": "app/api/auth/login/github/callback/route.ts",
+                    "name": "PrismaClientKnownRequestError",
+                    "value": "@prisma/client/runtime/library",
+                    "start_line": 1,
+                    "end_line": 1
+                },
+                {
+                    "kind": "import_used",
+                    "file_path": "app/api/auth/login/github/callback/route.ts",
+                    "name": "createSession",
+                    "value": "~/lib/server/auth/session",
+                    "start_line": 5,
+                    "end_line": 5
+                },
+                {
+                    "kind": "import_used",
+                    "file_path": "app/api/auth/login/github/callback/route.ts",
+                    "name": "stripe",
+                    "value": "~/lib/server/payment",
+                    "start_line": 6,
+                    "end_line": 6
+                },
+                {
+                    "kind": "import_used",
+                    "file_path": "app/api/auth/login/github/callback/route.ts",
+                    "name": "prisma",
+                    "value": "~/lib/server/db",
+                    "start_line": 7,
+                    "end_line": 7
+                },
+                {
+                    "kind": "import_used",
+                    "file_path": "src/lib/server/auth/session.ts",
+                    "name": "prisma",
+                    "value": "~/lib/server/db",
+                    "start_line": 1,
+                    "end_line": 1
+                },
+                {
+                    "kind": "import_used",
+                    "file_path": "src/lib/server/payment.ts",
+                    "name": "prisma",
+                    "value": "~/lib/server/db",
+                    "start_line": 1,
+                    "end_line": 1
+                }
+            ]
+        }
+    });
+    let payload = run_infer_candidates(request);
+    let direct = direct_data_access_candidate(&payload);
+
+    assert_eq!(
+        direct["matcher"]["forbidden_imports"],
+        json!(["~/lib/server/db"])
+    );
+    assert_eq!(evidence_symbols(direct), vec!["prisma"]);
+    let fact_ids = direct["evidence_refs"][0]["fact_ids"]
+        .as_array()
+        .expect("fact ids")
+        .iter()
+        .map(|value| value.as_str().expect("fact id"))
+        .collect::<Vec<_>>();
+    assert!(
+        fact_ids
+            .contains(&"fact:import_used:app/api/auth/login/github/callback/route.ts:prisma:7-7")
+    );
+    assert!(fact_ids.contains(&"graph_fact_prisma"));
+}
+
+#[test]
+fn infer_candidates_uses_graph_only_client_data_access_modules() {
+    let request = json!({
+        "repo": { "repo_id": "repo_abc" },
+        "graph": {
+            "graph_nodes": [
+                {
+                    "id": "module:app/api/users/route.ts",
+                    "kind": "module",
+                    "label": "app/api/users/route.ts",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "file_path": "app/api/users/route.ts" }
+                },
+                {
+                    "id": "module:src/lib/client.ts",
+                    "kind": "module",
+                    "label": "src/lib/client.ts",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "file_path": "src/lib/client.ts" }
+                },
+                {
+                    "id": "role:api_route",
+                    "kind": "role",
+                    "label": "api_route",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "role": "api_route" }
+                },
+                {
+                    "id": "role:data_access_module",
+                    "kind": "role",
+                    "label": "data_access_module",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "role": "data_access_module" }
+                },
+                {
+                    "id": "import:route:client",
+                    "kind": "import_decl",
+                    "label": "client from @/lib/client",
+                    "stable": false,
+                    "evidence_ids": ["graph_evidence_client"],
+                    "metadata": {
+                        "file_path": "app/api/users/route.ts",
+                        "local_name": "client",
+                        "source": "@/lib/client",
+                        "resolved_file_path": "src/lib/client.ts"
+                    }
+                }
+            ],
+            "graph_edges": [
+                {
+                    "id": "edge:route-role",
+                    "kind": "FILE_HAS_ROLE",
+                    "from": "module:app/api/users/route.ts",
+                    "to": "role:api_route",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": {}
+                },
+                {
+                    "id": "edge:client-role",
+                    "kind": "FILE_HAS_ROLE",
+                    "from": "module:src/lib/client.ts",
+                    "to": "role:data_access_module",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": {}
+                },
+                {
+                    "id": "edge:client-owner",
+                    "kind": "IMPORT_DECL_REFERENCES_MODULE",
+                    "from": "import:route:client",
+                    "to": "module:app/api/users/route.ts",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": {}
+                },
+                {
+                    "id": "edge:client-resolves",
+                    "kind": "IMPORT_RESOLVES_TO_MODULE",
+                    "from": "import:route:client",
+                    "to": "module:src/lib/client.ts",
+                    "stable": true,
+                    "evidence_ids": ["graph_evidence_client"],
+                    "metadata": {}
+                }
+            ],
+            "graph_evidence": [{
+                "id": "graph_evidence_client",
+                "repo_id": "repo_abc",
+                "scan_id": "scan_abc",
+                "artifact_id": "file_version:app/api/users/route.ts:aaaaaaaaaaaa",
+                "fact_ids": ["graph_fact_client"],
+                "file_path": "app/api/users/route.ts",
+                "start_line": 1,
+                "end_line": 1,
+                "file_hash": "a".repeat(64),
+                "adapter_id": "typescript",
+                "adapter_version": "0.1.0",
+                "redaction_state": "none"
+            }]
+        },
+        "scan": {
+            "scan_id": "scan_abc",
+            "file_snapshots": [
+                {
+                    "file_path": "app/api/users/route.ts",
+                    "content_hash": "a".repeat(64),
+                    "byte_size": 120,
+                    "indexed": true
+                },
+                {
+                    "file_path": "src/lib/client.ts",
+                    "content_hash": "b".repeat(64),
+                    "byte_size": 80,
+                    "indexed": true
+                }
+            ],
+            "facts": [{
+                "kind": "file_role_detected",
+                "file_path": "app/api/users/route.ts",
+                "name": "api_route",
+                "start_line": 1,
+                "end_line": 5
+            }]
+        }
+    });
+    let payload = run_infer_candidates(request);
+    let direct = direct_data_access_candidate(&payload);
+
+    assert_eq!(
+        direct["matcher"]["forbidden_imports"],
+        json!(["@/lib/client"])
+    );
+    assert_eq!(
+        direct["evidence_refs"][0]["fact_ids"],
+        json!(["graph_fact_client"])
+    );
+}
+
+#[test]
+fn infer_candidates_merges_duplicate_raw_and_graph_evidence_fact_ids() {
+    let request = json!({
+        "repo": { "repo_id": "repo_abc" },
+        "graph": {
+            "graph_nodes": [
+                {
+                    "id": "module:app/api/users/route.ts",
+                    "kind": "module",
+                    "label": "app/api/users/route.ts",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "file_path": "app/api/users/route.ts" }
+                },
+                {
+                    "id": "module:src/lib/db.ts",
+                    "kind": "module",
+                    "label": "src/lib/db.ts",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "file_path": "src/lib/db.ts" }
+                },
+                {
+                    "id": "role:api_route",
+                    "kind": "role",
+                    "label": "api_route",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "role": "api_route" }
+                },
+                {
+                    "id": "role:data_access_module",
+                    "kind": "role",
+                    "label": "data_access_module",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": { "role": "data_access_module" }
+                },
+                {
+                    "id": "import:route:db",
+                    "kind": "import_decl",
+                    "label": "db from @/lib/db",
+                    "stable": false,
+                    "evidence_ids": ["graph_evidence_db"],
+                    "metadata": {
+                        "file_path": "app/api/users/route.ts",
+                        "local_name": "db",
+                        "source": "@/lib/db",
+                        "resolved_file_path": "src/lib/db.ts"
+                    }
+                }
+            ],
+            "graph_edges": [
+                {
+                    "id": "edge:route-role",
+                    "kind": "FILE_HAS_ROLE",
+                    "from": "module:app/api/users/route.ts",
+                    "to": "role:api_route",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": {}
+                },
+                {
+                    "id": "edge:db-role",
+                    "kind": "FILE_HAS_ROLE",
+                    "from": "module:src/lib/db.ts",
+                    "to": "role:data_access_module",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": {}
+                },
+                {
+                    "id": "edge:db-owner",
+                    "kind": "IMPORT_DECL_REFERENCES_MODULE",
+                    "from": "import:route:db",
+                    "to": "module:app/api/users/route.ts",
+                    "stable": true,
+                    "evidence_ids": [],
+                    "metadata": {}
+                },
+                {
+                    "id": "edge:db-resolves",
+                    "kind": "IMPORT_RESOLVES_TO_MODULE",
+                    "from": "import:route:db",
+                    "to": "module:src/lib/db.ts",
+                    "stable": true,
+                    "evidence_ids": ["graph_evidence_db"],
+                    "metadata": {}
+                }
+            ],
+            "graph_evidence": [{
+                "id": "graph_evidence_db",
+                "repo_id": "repo_abc",
+                "scan_id": "scan_abc",
+                "artifact_id": "file_version:app/api/users/route.ts:aaaaaaaaaaaa",
+                "fact_ids": ["graph_fact_db"],
+                "file_path": "app/api/users/route.ts",
+                "start_line": 1,
+                "end_line": 1,
+                "file_hash": "a".repeat(64),
+                "adapter_id": "typescript",
+                "adapter_version": "0.1.0",
+                "redaction_state": "none"
+            }]
+        },
+        "scan": {
+            "scan_id": "scan_abc",
+            "file_snapshots": [
+                {
+                    "file_path": "app/api/users/route.ts",
+                    "content_hash": "a".repeat(64),
+                    "byte_size": 120,
+                    "indexed": true
+                },
+                {
+                    "file_path": "src/lib/db.ts",
+                    "content_hash": "b".repeat(64),
+                    "byte_size": 80,
+                    "indexed": true
+                }
+            ],
+            "facts": [
+                {
+                    "kind": "file_role_detected",
+                    "file_path": "app/api/users/route.ts",
+                    "name": "api_route",
+                    "start_line": 1,
+                    "end_line": 5
+                },
+                {
+                    "kind": "import_used",
+                    "file_path": "app/api/users/route.ts",
+                    "name": "db",
+                    "value": "@/lib/db",
+                    "start_line": 1,
+                    "end_line": 1
+                }
+            ]
+        }
+    });
+    let payload = run_infer_candidates(request);
+    let direct = direct_data_access_candidate(&payload);
+    let refs = direct["evidence_refs"].as_array().expect("evidence refs");
+
+    assert_eq!(refs.len(), 1, "{direct:#?}");
+    assert_eq!(
+        refs[0]["fact_ids"],
+        json!([
+            "fact:import_used:app/api/users/route.ts:db:1-1",
+            "graph_fact_db"
+        ])
+    );
+}
+
+#[test]
 fn infer_candidates_learns_workspace_wrappers_as_auth_patterns() {
     let request = json!({
         "repo": { "repo_id": "repo_abc" },
@@ -937,6 +1506,24 @@ fn run_infer_candidates(request: Value) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("json output")
+}
+
+fn direct_data_access_candidate(payload: &Value) -> &Value {
+    payload["candidates"]
+        .as_array()
+        .expect("candidates")
+        .iter()
+        .find(|candidate| candidate["kind"] == "api_route_no_direct_data_access")
+        .expect("direct data-access candidate")
+}
+
+fn evidence_symbols(candidate: &Value) -> Vec<&str> {
+    candidate["evidence_refs"]
+        .as_array()
+        .expect("evidence refs")
+        .iter()
+        .map(|reference| reference["symbol"].as_str().expect("symbol"))
+        .collect()
 }
 
 fn run_scan_repo(repo_root: &Path) -> Value {

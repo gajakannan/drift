@@ -1,4 +1,4 @@
-import { DRIFT_CONTRACT_SCHEMA_VERSION,type AuditChainVerification } from "@drift/core";
+import { BETA_DOCTOR_RESPONSE_SCHEMA,DRIFT_CONTRACT_SCHEMA_VERSION,type AuditChainVerification } from "@drift/core";
 import { openDriftStorage,type SqliteDriftStorage } from "@drift/storage";
 import { existsSync,statSync } from "node:fs";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { doctorNextCommands } from "../args/doctor-commands.js";
 import { stringFlag } from "../args/flag-readers.js";
 import { defaultDatabasePath,resolveRepoRoot } from "../args/repo-flags.js";
+import { betaDoctorResponse } from "../domain/beta-surfaces.js";
 import { engineProvenance,type EngineProvenance } from "../domain/engine-provenance.js";
 import { contractFingerprint,repoIdForRoot } from "../domain/identifiers.js";
 import { detectPackageManager,detectWorkspace,isApiRoutePath } from "../domain/repo-paths.js";
@@ -209,23 +210,23 @@ export function doctorRepo(parsed: ParsedArgs): CommandPayload {
     ...nextCommands.map((command) => `  ${command}`),
     ""
   ].join("\n");
+  const jsonPayload = {
+    response_schema: BETA_DOCTOR_RESPONSE_SCHEMA,
+    status,
+    repo_root: repoRoot,
+    database_path: databasePath,
+    runtime,
+    machine_contract_versions: machineContractVersions,
+    engine: runtimeEngineProvenance(),
+    v1_scope: v1Scope,
+    state_summary: stateSummary,
+    checks,
+    next_command: nextCommand,
+    next_commands: nextCommands
+  };
 
   return {
-    payload: parsed.flags.has("json")
-      ? {
-          status,
-          repo_root: repoRoot,
-          database_path: databasePath,
-          runtime,
-          machine_contract_versions: machineContractVersions,
-          engine: runtimeEngineProvenance(),
-          v1_scope: v1Scope,
-          state_summary: stateSummary,
-          checks,
-          next_command: nextCommand,
-          next_commands: nextCommands
-        }
-      : text
+    payload: parsed.flags.has("json") ? betaDoctorResponse(jsonPayload) : text
   };
 }
 

@@ -292,4 +292,28 @@ describe("fixture matrix", () => {
       storage.close();
     }
   });
+
+  it("keeps Chadlike auth and payment wrappers out of direct data-access imports", async () => {
+    const { repoRoot, stateRoot } = await fixtureRepo("next-real-repo-chadlike");
+    const started = await runCli([
+      "start",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--accept-defaults",
+      "--now", "2026-05-10T00:00:10.000Z",
+      "--json"
+    ]);
+    expect(started.exitCode).toBe(0);
+    const payload = JSON.parse(started.stdout);
+    const direct = payload.candidates.find((candidate: any) =>
+      candidate.kind === "api_route_no_direct_data_access"
+    );
+
+    expect(direct?.matcher.forbidden_imports).toEqual(["~/lib/server/db"]);
+    expect(payload.baselined_count).toBe(4);
+    expect(payload.accepted.evidence_refs.every((ref: any) => ref.fact_ids.length > 0)).toBe(true);
+    expect(payload.accepted.matcher.forbidden_imports).not.toContain("~/lib/server/auth/session");
+    expect(payload.accepted.matcher.forbidden_imports).not.toContain("~/lib/server/payment");
+    expect(payload.accepted.matcher.forbidden_imports).not.toContain("@prisma/client/runtime/library");
+  });
 });

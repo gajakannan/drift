@@ -147,7 +147,7 @@ describe("golden fixture CLI lifecycle", () => {
         "governance_read_only": false,
         "next_command_count": 3,
         "repo_matches": true,
-"schema_version": 27,
+        "schema_version": 27,
       }
     `);
 
@@ -166,7 +166,7 @@ describe("golden fixture CLI lifecycle", () => {
         "governance_read_only": false,
         "next_command_count": 2,
         "repo_matches": true,
-"schema_version": 27,
+        "schema_version": 27,
         "write_intent": true,
       }
     `);
@@ -193,6 +193,75 @@ describe("golden fixture CLI lifecycle", () => {
       }
     `);
   }, 15_000);
+
+  it("locks the Chadlike direct-data regression projection", async () => {
+    const { repoRoot, stateRoot } = await fixtureRepo("next-real-repo-chadlike");
+    const started = await runCli([
+      "start",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--accept-defaults",
+      "--now", "2026-05-10T00:00:10.000Z",
+      "--json"
+    ]);
+    expect(started.exitCode).toBe(0);
+    const payload = JSON.parse(started.stdout);
+
+    expect(goldenChadlikeStart(payload)).toMatchInlineSnapshot(`
+      {
+        "accepted_fact_counts": [
+          1,
+          1,
+          1,
+          1,
+        ],
+        "baselined_count": 4,
+        "candidates_count": 5,
+        "evidence_symbols": [
+          "prisma",
+          "prisma",
+          "prisma",
+          "prisma",
+        ],
+        "forbidden_imports": [
+          "~/lib/server/db",
+        ],
+        "response_schema": "drift.start.result.v1",
+      }
+    `);
+
+    const doctor = await runCli([
+      "--db", payload.state.database_path,
+      "doctor",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--json"
+    ]);
+    expect(doctor.exitCode).toBe(0);
+    expect(goldenDoctor(JSON.parse(doctor.stdout))).toMatchInlineSnapshot(`
+      {
+        "check_ids": [
+          "repo_root",
+          "git",
+          "package_manifest",
+          "package_manager",
+          "workspace",
+          "typescript_files",
+          "api_routes",
+          "local_state",
+          "drift_state",
+          "contract",
+          "scan_freshness",
+          "audit_integrity",
+          "backup_artifacts",
+        ],
+        "machine_contract_versions_schema": "drift.machine_contract_versions.v1",
+        "response_schema": "drift.doctor.result.v1",
+        "status": "warn",
+        "v1_scope": "typescript_api_route_layering",
+      }
+    `);
+  });
 });
 
 function goldenScan(payload: any) {
@@ -219,6 +288,28 @@ function goldenCheck(payload: any) {
     findings_count: payload.summary.findings_count,
     blocking_count: payload.summary.blocking_count,
     finding_statuses: payload.findings.map((finding: any) => finding.status)
+  };
+}
+
+function goldenChadlikeStart(payload: any) {
+  const direct = payload.candidates.find((candidate: any) => candidate.kind === "api_route_no_direct_data_access");
+  return {
+    response_schema: payload.response_schema ?? null,
+    candidates_count: payload.candidates.length,
+    baselined_count: payload.baselined_count,
+    forbidden_imports: direct?.matcher?.forbidden_imports,
+    evidence_symbols: direct?.evidence_refs?.map((ref: any) => ref.symbol),
+    accepted_fact_counts: payload.accepted?.evidence_refs?.map((ref: any) => ref.fact_ids.length)
+  };
+}
+
+function goldenDoctor(payload: any) {
+  return {
+    response_schema: payload.response_schema,
+    status: payload.status,
+    machine_contract_versions_schema: payload.machine_contract_versions.schema_version,
+    v1_scope: payload.v1_scope.primary_wedge,
+    check_ids: payload.checks.map((check: any) => check.id)
   };
 }
 

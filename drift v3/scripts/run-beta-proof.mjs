@@ -55,8 +55,31 @@ try {
     "--now", "2026-05-10T00:00:00.000Z",
     "--json"
   ]);
+  assertEqual(started.response_schema, "drift.start.result.v1", "start_response_schema");
+  assertEqual(started.machine_contract_versions?.schema_version, "drift.machine_contract_versions.v1", "start_machine_contract_versions");
   const databasePath = started.state.database_path;
   const repoId = started.repo.id;
+  const doctor = await runJson([
+    "--db", databasePath,
+    "doctor",
+    "--repo-root", fixture.repoRoot,
+    "--state-root", fixture.stateRoot,
+    "--json"
+  ]);
+  assertEqual(doctor.response_schema, "drift.doctor.result.v1", "doctor_response_schema");
+  assertEqual(doctor.machine_contract_versions?.schema_version, "drift.machine_contract_versions.v1", "doctor_machine_contract_versions");
+  const chadlike = await runJson([
+    "start",
+    "--repo-root", resolve("test/fixtures/next-real-repo-chadlike"),
+    "--state-root", join(tempRoot, "chadlike-state"),
+    "--accept-defaults",
+    "--now", "2026-05-10T00:00:10.000Z",
+    "--json"
+  ]);
+  const chadlikeDirect = chadlike.candidates.find((candidate) => candidate.kind === "api_route_no_direct_data_access");
+  assertJsonEqual(chadlikeDirect?.matcher?.forbidden_imports, ["~/lib/server/db"], "chadlike_forbidden_imports");
+  assertEqual(chadlike.baselined_count, 4, "chadlike_baselined_count");
+  assertEqual(chadlike.accepted?.evidence_refs?.every((ref) => ref.fact_ids.length > 0), true, "chadlike_fact_ids");
   promoteDirectDataAccessConventionToBlock({ databasePath, repoId });
 
   const requiredCheckCommand = "node -e \"process.stdout.write('ok')\"";
@@ -166,6 +189,9 @@ try {
       evidenceRefs.some((evidence) =>
         evidence.file_path === badRoute.path &&
         evidence.import_source === "@/lib/prisma" &&
+        Array.isArray(evidence.fact_ids) &&
+        evidence.fact_ids.length > 0 &&
+        evidence.fact_ids.every((factId) => typeof factId === "string" && factId.length > 0) &&
         Number.isInteger(evidence.start_line) &&
         Number.isInteger(evidence.end_line) &&
         evidence.start_line <= evidence.end_line &&
@@ -285,6 +311,8 @@ try {
       graphProof.graph_edges_count > 0 &&
       graphProof.graph_evidence_count > 0,
     response_schemas_verified: parity.responseSchemasVerified &&
+      started.response_schema === "drift.start.result.v1" &&
+      doctor.response_schema === "drift.doctor.result.v1" &&
       goodCheck.response_schema === "drift.check.result.v1" &&
       badCheck.response_schema === "drift.check.result.v1",
     dogfood_or_fixture_repo_id: repoId,
@@ -929,6 +957,18 @@ function assertBetaProof(proof) {
   }
   if (missing.length > 0) {
     throw new Error(`Incomplete beta proof: ${[...new Set(missing)].join(", ")}`);
+  }
+}
+
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) {
+    throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+  }
+}
+
+function assertJsonEqual(actual, expected, label) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
   }
 }
 
