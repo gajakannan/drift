@@ -108,6 +108,23 @@ export function findContractWaiverForImport(
   });
 }
 
+export function findContractWaiverForPath(
+  filePath: string,
+  contract: RepoContract,
+  now: string
+): RepoContract["waivers"][number] | undefined {
+  return contract.waivers.find((waiver) => {
+    if (!isActiveException(waiver, now)) {
+      return false;
+    }
+    const pathGlobs = waiver.path_globs ?? [];
+    if (pathGlobs.length === 0) {
+      return false;
+    }
+    return pathGlobs.some((glob) => matchesGlob(filePath, glob));
+  });
+}
+
 export function waiverRequiresReapproval(
   waiver: RepoContract["waivers"][number],
   filePath: string,

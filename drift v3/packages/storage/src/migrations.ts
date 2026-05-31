@@ -673,7 +673,147 @@ export const MIGRATIONS: Migration[] = [
     `
   },
   {
-    id: "023_parser_gap_v2_metadata",
+    id: "023_security_boundary_proofs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS security_boundary_proofs (
+        proof_id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        route_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        contract_kinds_json TEXT NOT NULL,
+        proof_status TEXT NOT NULL,
+        enforcement_result TEXT NOT NULL,
+        proof_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_security_boundary_proofs_repo_scan
+        ON security_boundary_proofs(repo_id, scan_id);
+
+      CREATE INDEX IF NOT EXISTS idx_security_boundary_proofs_repo_route
+        ON security_boundary_proofs(repo_id, route_id);
+    `
+  },
+  {
+    id: "024_phase7_candidate_election_metadata",
+    sql: `
+      ALTER TABLE convention_candidates ADD COLUMN requires_json TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN matcher_fingerprint TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN scope_fingerprint TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN graph_fingerprint TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN evidence_fingerprint TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN required_capabilities_json TEXT;
+      ALTER TABLE convention_candidates ADD COLUMN reason_not_blocking TEXT;
+
+      ALTER TABLE accepted_conventions ADD COLUMN requires_json TEXT;
+    `
+  },
+  {
+    id: "025_security_boundary_proof_runs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS security_boundary_proof_runs (
+        storage_id TEXT PRIMARY KEY,
+        proof_id TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        check_id TEXT NOT NULL,
+        route_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        contract_kinds_json TEXT NOT NULL,
+        capability_names_json TEXT NOT NULL,
+        proof_status TEXT NOT NULL,
+        enforcement_result TEXT NOT NULL,
+        parser_gap_count INTEGER NOT NULL,
+        missing_proof_count INTEGER NOT NULL,
+        affected_files_json TEXT NOT NULL,
+        proof_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id)
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_security_boundary_proof_runs_unique
+        ON security_boundary_proof_runs(check_id, proof_id);
+
+      CREATE INDEX IF NOT EXISTS idx_security_boundary_proof_runs_repo_scan
+        ON security_boundary_proof_runs(repo_id, scan_id);
+
+      CREATE INDEX IF NOT EXISTS idx_security_boundary_proof_runs_repo_check
+        ON security_boundary_proof_runs(repo_id, check_id);
+
+      CREATE INDEX IF NOT EXISTS idx_security_boundary_proof_runs_repo_route
+        ON security_boundary_proof_runs(repo_id, route_id);
+    `
+  },
+  {
+    id: "026_framework_entrypoints",
+    sql: `
+      CREATE TABLE IF NOT EXISTS framework_adapters (
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        framework TEXT NOT NULL,
+        adapter_json TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id, adapter_id),
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS normalized_entrypoints (
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        entrypoint_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        framework TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        route_pattern TEXT,
+        method TEXT,
+        entrypoint_json TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id, entrypoint_id),
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS framework_parser_gaps (
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        parser_gap_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        framework TEXT,
+        file_path TEXT NOT NULL,
+        code TEXT NOT NULL,
+        blocks_enforcement INTEGER NOT NULL CHECK (blocks_enforcement IN (0, 1)),
+        parser_gap_json TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id, parser_gap_id),
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS framework_capabilities (
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        framework TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        status TEXT NOT NULL,
+        can_block INTEGER NOT NULL CHECK (can_block IN (0, 1)),
+        capability_json TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id, adapter_id, capability),
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_normalized_entrypoints_repo_scan_framework
+        ON normalized_entrypoints(repo_id, scan_id, framework);
+
+      CREATE INDEX IF NOT EXISTS idx_normalized_entrypoints_repo_scan_file
+        ON normalized_entrypoints(repo_id, scan_id, file_path);
+    `
+  },
+  {
+    id: "027_parser_gap_v2_metadata",
     sql: `
       ALTER TABLE parser_gaps ADD COLUMN source_text_hash TEXT;
       ALTER TABLE parser_gaps ADD COLUMN affected_capabilities_json TEXT NOT NULL DEFAULT '[]';

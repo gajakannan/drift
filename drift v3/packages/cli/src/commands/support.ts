@@ -17,6 +17,8 @@ export function supportBundle(storage: SqliteDriftStorage, parsed: ParsedArgs) {
   const audit = storage.verifyAuditChain(repoId);
   const latestScan = storage.listScanManifests(repoId).find((scan) => scan.status === "completed") ?? null;
   const backups = storage.listBackupManifests(repoId);
+  const contract = storage.getRepoContract(repoId);
+  const candidates = storage.listConventionCandidates(repoId);
 
   return {
     response_schema: "drift.support.bundle.v1",
@@ -40,6 +42,7 @@ export function supportBundle(storage: SqliteDriftStorage, parsed: ParsedArgs) {
         "repo_identity_hashes",
         "migration_compatibility",
         "scan_counts",
+        "candidate_election_counts",
         "audit_integrity",
         "backup_count"
       ],
@@ -85,6 +88,12 @@ export function supportBundle(storage: SqliteDriftStorage, parsed: ParsedArgs) {
         valid: audit.valid,
         event_count: audit.event_count,
         head_event_hash: audit.head_event_hash
+      },
+      elections: {
+        candidate_count: candidates.filter((candidate) => candidate.status === "candidate").length,
+        accepted_count: candidates.filter((candidate) => candidate.status === "accepted").length,
+        rejected_count: candidates.filter((candidate) => candidate.status === "rejected").length,
+        rejected_inference_count: contract?.rejected_inferences.length ?? 0
       },
       backups: {
         count: backups.length

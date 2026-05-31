@@ -52,6 +52,149 @@ describe("security domain schemas", () => {
     })).toThrow(/blocking security contracts require deterministic capability/);
   });
 
+  it("validates accepted Phase 5 sensitive response and secret exposure contracts", () => {
+    const sensitiveResponseContract = SecurityConventionSchema.parse({
+      contract_id: "security_api_sensitive_response",
+      kind: "api_route_forbids_sensitive_response_fields",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: {
+        file_roles: ["api_route"],
+        methods: ["GET"]
+      },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "response",
+        path_globs: ["app/api/users/**/route.ts"],
+        diff_status: ["added", "modified", "renamed"]
+      },
+      requires: {
+        sensitive_response_fields: [{
+          field_path: "user.email",
+          classification: "pii",
+          source: "contract"
+        }],
+        response_serializers: [{
+          serializer_id: "serializePublicUser",
+          import_source: "@/lib/serializers/user",
+          imported_name: "serializePublicUser",
+          local_name: "serializePublicUser",
+          policy: "denylist",
+          filtered_fields: ["user.email"]
+        }]
+      },
+      exceptions: []
+    });
+
+    const secretExposureContract = SecurityConventionSchema.parse({
+      contract_id: "security_api_secret_exposure",
+      kind: "api_route_forbids_secret_exposure",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: {
+        file_roles: ["api_route"],
+        methods: ["POST"]
+      },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "response",
+        path_globs: ["app/api/tokens/**/route.ts"],
+        diff_status: ["added", "modified", "renamed"]
+      },
+      requires: {
+        secret_sources: ["env", "config", "secret_manager"],
+        log_sinks: ["console.error", "logger.error"]
+      },
+      exceptions: []
+    });
+
+    expect(sensitiveResponseContract.requires?.response_serializers).toEqual([{
+      serializer_id: "serializePublicUser",
+      import_source: "@/lib/serializers/user",
+      imported_name: "serializePublicUser",
+      local_name: "serializePublicUser",
+      policy: "denylist",
+      filtered_fields: ["user.email"]
+    }]);
+    expect(secretExposureContract.scope.path_globs).toEqual(["app/api/tokens/**/route.ts"]);
+    expect(secretExposureContract.matcher.methods).toEqual(["POST"]);
+  });
+
+  it("accepts candidate sensitive fields only for non-blocking advisory contracts", () => {
+    const advisory = SecurityConventionSchema.parse({
+      contract_id: "security_api_sensitive_candidate",
+      kind: "api_route_forbids_sensitive_response_fields",
+      capability: "heuristic_check",
+      enforcement_mode: "warn",
+      matcher: { file_roles: ["api_route"], methods: ["GET"] },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "response",
+        path_globs: ["app/api/users/**/route.ts"]
+      },
+      requires: {
+        sensitive_response_fields: [{
+          field_path: "password",
+          classification: "credential",
+          source: "candidate"
+        }]
+      }
+    });
+
+    expect(advisory.requires?.sensitive_response_fields).toEqual([{
+      field_path: "password",
+      classification: "credential",
+      source: "candidate"
+    }]);
+
+    expect(() => SecurityConventionSchema.parse({
+      ...advisory,
+      capability: "deterministic_check",
+      enforcement_mode: "block"
+    })).toThrow(/candidate sensitive fields cannot back blocking enforcement/);
+  });
+
+  it("rejects unsafe Phase 5 contract payloads", () => {
+    expect(() => SecurityConventionSchema.parse({
+      contract_id: "security_api_unknown_serializer",
+      kind: "api_route_forbids_sensitive_response_fields",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: { file_roles: ["api_route"], methods: ["GET"] },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "response",
+        path_globs: ["app/api/users/**/route.ts"]
+      },
+      requires: {
+        sensitive_response_fields: [{ field_path: "user.email", classification: "pii", source: "contract" }],
+        response_serializers: [{
+          serializer_id: "serializePublicUser",
+          import_source: "@/lib/serializers/user",
+          policy: "unknown",
+          filtered_fields: ["user.email"]
+        }]
+      }
+    })).toThrow(/serializer policy/i);
+
+    expect(() => SecurityConventionSchema.parse({
+      contract_id: "security_api_secret_value",
+      kind: "api_route_forbids_secret_exposure",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: { file_roles: ["api_route"], methods: ["POST"] },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "response",
+        path_globs: ["app/api/tokens/**/route.ts"]
+      },
+      requires: {
+        secret_sources: ["env"],
+        source_value: "SECRET_VALUE_SHOULD_NOT_LEAK"
+      }
+    })).toThrow(/source values are not allowed/i);
+  });
+
   it("validates SecurityBoundaryProof.auth without snippets", () => {
     const proof = SecurityBoundaryProofSchema.parse({
       proof_id: "proof_route_projects_get",
@@ -107,6 +250,45 @@ describe("security domain schemas", () => {
 
     expect(JSON.stringify(proof)).not.toContain("const projects");
     expect(proof.auth.required).toBe(true);
+  });
+
+  it("accepts Phase 8 proof route metadata and sanitized evidence refs", () => {
+    const proof = validSecurityBoundaryProof({
+      route: {
+        route_id: "route_users_get",
+        file_path: "app/api/users/route.ts",
+        file_role: "api_route",
+        endpoint: { path: "/api/users", method: "GET", framework: "next" },
+        handler_symbol: "GET"
+      },
+      evidence_refs: [{
+        evidence_id: "evidence_auth_guard",
+        fact_id: "fact_auth_guard",
+        capability: "control_flow_guard_dominance",
+        kind: "auth_guard_called",
+        file_path: "app/api/users/route.ts",
+        start_line: 4,
+        end_line: 4,
+        role: "guard"
+      }]
+    });
+
+    expect(SecurityBoundaryProofSchema.parse(proof).evidence_refs).toHaveLength(1);
+  });
+
+  it("rejects Phase 8 proof evidence refs that carry source or secret values", () => {
+    const proof = validSecurityBoundaryProof({
+      evidence_refs: [{
+        evidence_id: "evidence_bad",
+        capability: "raw_sql",
+        kind: "raw_sql_called",
+        file_path: "app/api/users/route.ts",
+        role: "sink",
+        source: "await db.query(\"select secret\")"
+      }]
+    });
+
+    expect(() => SecurityBoundaryProofSchema.parse(proof)).toThrow();
   });
 
   it("validates middleware_must_cover_routes contracts and parser gaps", () => {
@@ -289,7 +471,7 @@ describe("security domain schemas", () => {
 
     expect(contract.kind).toBe("api_route_requires_request_validation");
     expect(proof.request_validation.required).toBe(true);
-    expect(JSON.stringify(proof)).not.toContain("secret");
+    expect(JSON.stringify(proof)).not.toContain("SECRET_VALUE_SHOULD_NOT_LEAK");
   });
 
   it("validates phase4 tenant authorization and session trust contracts", () => {
@@ -383,6 +565,92 @@ describe("security domain schemas", () => {
     expect(SecurityParserGapCodeSchema.parse("unsupported_tenant_dynamic_property")).toBe("unsupported_tenant_dynamic_property");
     expect(SecurityParserGapCodeSchema.parse("unsupported_tenant_query_object_alias")).toBe("unsupported_tenant_query_object_alias");
     expect(SecurityParserGapCodeSchema.parse("unsupported_session_nested_destructure")).toBe("unsupported_session_nested_destructure");
+  });
+
+  it("validates Phase 6 contract kinds and proof codes", () => {
+    expect(SecurityMissingProofCodeSchema.parse("request_controlled_url")).toBe("request_controlled_url");
+    expect(SecurityMissingProofCodeSchema.parse("raw_sql_unparameterized")).toBe("raw_sql_unparameterized");
+    expect(SecurityMissingProofCodeSchema.parse("unsupported_dynamic_cors_origin")).toBe("unsupported_dynamic_cors_origin");
+    expect(SecurityParserGapCodeSchema.parse("unsupported_dynamic_outbound_url")).toBe("unsupported_dynamic_outbound_url");
+
+    const contract = SecurityConventionSchema.parse({
+      contract_id: "security_api_no_untrusted_ssrf",
+      kind: "api_route_forbids_untrusted_ssrf",
+      capability: "deterministic_check",
+      enforcement_mode: "block",
+      matcher: {
+        file_roles: ["api_route"],
+        path_globs: ["**/app/api/**/route.ts"],
+        methods: ["POST"]
+      },
+      scope: {
+        check_scope: "changed-files",
+        applies_to: "route",
+        diff_status: ["added", "modified", "renamed"]
+      },
+      requires: {
+        outbound_url_allowlist_helpers: [{
+          helper_id: "network:assertAllowedOutboundUrl",
+          symbol: "assertAllowedOutboundUrl",
+          import_source: "@/lib/security/network"
+        }]
+      },
+      exceptions: []
+    });
+
+    expect(contract.kind).toBe("api_route_forbids_untrusted_ssrf");
+  });
+
+  it("rejects impossible proven Phase 6 SSRF proof states", () => {
+    const proof = validSecurityBoundaryProof({
+      contracts: [{
+        contract_id: "security_api_no_untrusted_ssrf",
+        kind: "api_route_forbids_untrusted_ssrf",
+        enforcement_mode: "block",
+        capability: "deterministic_check",
+        matched: true
+      }],
+      ssrf: {
+        required: true,
+        proven: true,
+        outbound_requests: [{
+          fact_id: "fact_fetch",
+          sink_id: "sink_fetch",
+          api: "fetch",
+          url_source: "request_input"
+        }],
+        allowlist_proofs: [],
+        missing_proof: []
+      }
+    });
+
+    expect(() => SecurityBoundaryProofSchema.parse(proof)).toThrow(/SSRF/i);
+  });
+
+  it("rejects impossible proven Phase 6 raw SQL proof states", () => {
+    const proof = validSecurityBoundaryProof({
+      contracts: [{
+        contract_id: "security_api_no_raw_sql",
+        kind: "api_route_forbids_raw_sql_without_params",
+        enforcement_mode: "block",
+        capability: "deterministic_check",
+        matched: true
+      }],
+      raw_sql: {
+        required: true,
+        proven: true,
+        raw_sql_calls: [{
+          fact_id: "fact_query",
+          sink_id: "sink_query",
+          query_shape: "concat",
+          uses_untrusted_input: true
+        }],
+        parameterized_sql: [],
+        missing_proof: []
+      }
+    });
+
+    expect(() => SecurityBoundaryProofSchema.parse(proof)).toThrow(/raw SQL/i);
   });
 
   it("rejects impossible request validation proof states", () => {

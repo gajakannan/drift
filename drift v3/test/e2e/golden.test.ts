@@ -147,7 +147,7 @@ describe("golden fixture CLI lifecycle", () => {
         "governance_read_only": false,
         "next_command_count": 3,
         "repo_matches": true,
-        "schema_version": 23,
+"schema_version": 27,
       }
     `);
 
@@ -166,7 +166,7 @@ describe("golden fixture CLI lifecycle", () => {
         "governance_read_only": false,
         "next_command_count": 2,
         "repo_matches": true,
-        "schema_version": 23,
+"schema_version": 27,
         "write_intent": true,
       }
     `);

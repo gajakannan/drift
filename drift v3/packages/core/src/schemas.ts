@@ -22,6 +22,13 @@ export const ConventionKindSchema = z.enum([
   "api_route_requires_auth_helper",
   "middleware_must_cover_routes",
   "api_route_requires_request_validation",
+  "api_route_forbids_untrusted_ssrf",
+  "api_route_forbids_raw_sql_without_params",
+  "api_route_cors_must_match_policy",
+  "api_route_requires_csrf_for_mutation",
+  "api_route_requires_rate_limit",
+  "api_route_forbids_sensitive_response_fields",
+  "api_route_forbids_secret_exposure",
   "session_object_must_come_from_trusted_helper",
   "api_route_requires_authorization",
   "api_route_requires_tenant_scope",
@@ -104,7 +111,14 @@ export const ConventionMatcherSchema = z.object({
   allowed_imports: z.array(z.string().min(1)).optional(),
   required_calls: z.array(z.string().min(1)).optional(),
   allowed_delegate_imports: z.array(z.string().min(1)).optional(),
-  applies_to_file_roles: z.array(FileRoleSchema).optional()
+  applies_to_file_roles: z.array(FileRoleSchema).optional(),
+  file_roles: z.array(FileRoleSchema).optional(),
+  path_globs: z.array(RepoRelativePatternSchema).optional(),
+  route_paths: z.array(z.string().min(1)).optional(),
+  methods: z.array(z.string().min(1)).optional(),
+  protection_kinds: z.array(z.string().min(1)).optional(),
+  middleware_ids: z.array(z.string().min(1)).optional(),
+  matcher_fact_ids: z.array(z.string().min(1)).optional()
 });
 
 export const EnforcementCapabilitySchema = z.enum([
@@ -294,7 +308,17 @@ export const FactKindSchema = z.enum([
   "tenant_guard_called",
   "authorization_guard_called",
   "request_validation_called",
-  "validated_input_used"
+  "validated_input_used",
+  "outbound_request_called",
+  "raw_sql_called",
+  "parameterized_sql_used",
+  "cors_policy_declared",
+  "csrf_guard_called",
+  "rate_limit_guard_called",
+  "sensitive_field_declared",
+  "response_emits_field",
+  "serializer_called",
+  "secret_read"
 ]);
 
 export const FactEvidenceLevelSchema = z.enum(["path", "text", "ast", "graph", "heuristic"]);
@@ -1068,6 +1092,7 @@ export const ConventionCandidateSchema = z.object({
   rationale: z.string().optional(),
   scope: ConventionScopeSchema,
   matcher: ConventionMatcherSchema,
+  requires: z.record(z.unknown()).optional(),
   suggested_severity: SeveritySchema,
   suggested_enforcement_mode: EnforcementModeSchema,
   enforcement_capability: EnforcementCapabilitySchema,
@@ -1075,6 +1100,16 @@ export const ConventionCandidateSchema = z.object({
   scoring: ConventionScoreSchema,
   evidence_refs: z.array(EvidenceRefSchema),
   counterexample_refs: z.array(EvidenceRefSchema),
+  matcher_fingerprint: z.string().min(1).optional(),
+  scope_fingerprint: z.string().min(1).optional(),
+  graph_fingerprint: z.string().min(1).optional(),
+  evidence_fingerprint: z.string().min(1).optional(),
+  required_capabilities: z.array(z.string().min(1)).optional(),
+  reason_not_blocking: z.enum([
+    "candidate_not_accepted",
+    "candidate_incomplete",
+    "candidate_heuristic"
+  ]).optional(),
   status: ConventionStatusSchema,
   created_at: z.string().datetime()
 });
@@ -1102,6 +1137,9 @@ export const AcceptedConventionSchema = z.object({
 
 export const RejectedInferenceSchema = z.object({
   candidate_id: z.string().min(1),
+  evidence_fingerprint: z.string().min(1).optional(),
+  matcher_fingerprint: z.string().min(1).optional(),
+  scope_fingerprint: z.string().min(1).optional(),
   reason: z.string().min(1),
   rejected_by: z.string().min(1),
   rejected_at: z.string().datetime()

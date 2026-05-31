@@ -4,6 +4,13 @@ export type ConventionKind =
   | "api_route_requires_auth_helper"
   | "middleware_must_cover_routes"
   | "api_route_requires_request_validation"
+  | "api_route_forbids_untrusted_ssrf"
+  | "api_route_forbids_raw_sql_without_params"
+  | "api_route_cors_must_match_policy"
+  | "api_route_requires_csrf_for_mutation"
+  | "api_route_requires_rate_limit"
+  | "api_route_forbids_sensitive_response_fields"
+  | "api_route_forbids_secret_exposure"
   | "session_object_must_come_from_trusted_helper"
   | "api_route_requires_authorization"
   | "api_route_requires_tenant_scope"
@@ -87,6 +94,13 @@ export interface ConventionMatcher {
   required_calls?: string[];
   allowed_delegate_imports?: string[];
   applies_to_file_roles?: FileRole[];
+  file_roles?: FileRole[];
+  path_globs?: string[];
+  route_paths?: string[];
+  methods?: string[];
+  protection_kinds?: string[];
+  middleware_ids?: string[];
+  matcher_fact_ids?: string[];
 }
 
 export type EnforcementCapability =
@@ -271,7 +285,17 @@ export type FactKind =
   | "tenant_guard_called"
   | "authorization_guard_called"
   | "request_validation_called"
-  | "validated_input_used";
+  | "validated_input_used"
+  | "outbound_request_called"
+  | "raw_sql_called"
+  | "parameterized_sql_used"
+  | "cors_policy_declared"
+  | "csrf_guard_called"
+  | "rate_limit_guard_called"
+  | "sensitive_field_declared"
+  | "response_emits_field"
+  | "serializer_called"
+  | "secret_read";
 
 export type FactEvidenceLevel = "path" | "text" | "ast" | "graph" | "heuristic";
 export type FactResolutionStatus = "resolved" | "unresolved" | "partial" | "unsupported";
@@ -1020,6 +1044,7 @@ export interface ConventionCandidate {
   rationale?: string;
   scope: ConventionScope;
   matcher: ConventionMatcher;
+  requires?: Record<string, unknown>;
   suggested_severity: Severity;
   suggested_enforcement_mode: EnforcementMode;
   enforcement_capability: EnforcementCapability;
@@ -1027,6 +1052,12 @@ export interface ConventionCandidate {
   scoring: ConventionScore;
   evidence_refs: EvidenceRef[];
   counterexample_refs: EvidenceRef[];
+  matcher_fingerprint?: string;
+  scope_fingerprint?: string;
+  graph_fingerprint?: string;
+  evidence_fingerprint?: string;
+  required_capabilities?: string[];
+  reason_not_blocking?: "candidate_not_accepted" | "candidate_incomplete" | "candidate_heuristic";
   status: ConventionStatus;
   created_at: string;
 }
@@ -1054,6 +1085,9 @@ export interface AcceptedConvention {
 
 export interface RejectedInference {
   candidate_id: string;
+  evidence_fingerprint?: string;
+  matcher_fingerprint?: string;
+  scope_fingerprint?: string;
   reason: string;
   rejected_by: string;
   rejected_at: string;

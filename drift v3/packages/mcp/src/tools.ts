@@ -77,7 +77,18 @@ export const DRIFT_READ_ONLY_MCP_TOOLS: DriftMcpTool[] = [
   {
     name: "get_security_context",
     description: "Return accepted security contract context and middleware coverage summaries without source snippets.",
-    inputSchema: repoOnlySchema()
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo_id: { type: "string" },
+        path: { type: "string" },
+        changed_files: { type: "array", items: { type: "string" } },
+        check_id: { type: "string" },
+        require_fresh: { type: "boolean" }
+      },
+      required: ["repo_id"],
+      additionalProperties: false
+    }
   },
   {
     name: "get_task_preflight",

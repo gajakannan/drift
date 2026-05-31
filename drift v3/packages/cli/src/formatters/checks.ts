@@ -1,4 +1,4 @@
-import { authorizeContextExport,type Finding } from "@drift/core";
+import { authorizeContextExport,type Finding,type SecurityBoundaryProof } from "@drift/core";
 import { findingLocation } from "./findings.js";
 
 export function formatCheckText(payload: {
@@ -24,6 +24,7 @@ export function formatCheckText(payload: {
     };
   };
   findings: Finding[];
+  security_boundary_proofs?: SecurityBoundaryProof[];
 }): string {
   const rows = payload.findings.length > 0
     ? payload.findings.map((finding) =>
@@ -52,8 +53,52 @@ export function formatCheckText(payload: {
     "",
     "Findings:",
     ...rows.map((row) => `  ${row}`),
+    ...securityBlocks(payload),
     ""
   ].join("\n");
+}
+
+function securityBlocks(payload: {
+  summary: { repo_id: string };
+  findings: Finding[];
+  security_boundary_proofs?: SecurityBoundaryProof[];
+}): string[] {
+  const findingsById = new Map(payload.findings.map((finding) => [finding.id, finding]));
+  const blocks = (payload.security_boundary_proofs ?? [])
+    .filter((proof) => proof.result.finding_ids.length > 0)
+    .map((proof) => {
+      const finding = proof.result.finding_ids
+        .map((id) => findingsById.get(id))
+        .find((candidate): candidate is Finding => Boolean(candidate));
+      const contract = proof.contracts.find((entry) => entry.matched) ?? proof.contracts[0];
+      const level = proof.result.enforcement_result === "block" ? "BLOCK" : "WARN";
+      const route = proof.route.endpoint?.method && proof.route.endpoint?.path
+        ? `${proof.route.endpoint.method} ${proof.route.endpoint.path}`
+        : "unknown";
+      return [
+        "",
+        `${level} ${contract?.kind ?? "security_boundary"}`,
+        `  Route: ${route}`,
+        `  File: ${proof.route.file_path}`,
+        `  Reason: ${proof.missing_proof[0]?.code ?? proof.parser_gaps[0]?.code ?? finding?.title ?? proof.result.proof_status}`,
+        `  Evidence: ${evidenceLine(proof)}`,
+        `  Capability: ${proof.capability_status[0]?.name ?? proof.missing_proof[0]?.capability ?? "security"} ${contract?.capability ?? "deterministic_check"}`,
+        `  Lifecycle: ${finding?.status ?? "unknown"}, ${finding?.diff_status ?? "changed-files"}`,
+        `  Next: drift repo map --repo ${payload.summary.repo_id} --path ${proof.route.file_path} --json`
+      ].join("\n");
+    });
+  return blocks;
+}
+
+function evidenceLine(proof: SecurityBoundaryProof): string {
+  const refs = proof.evidence_refs ?? [];
+  if (refs.length > 0) {
+    return refs.slice(0, 4).map((ref) =>
+      `${ref.kind}${ref.start_line ? ` line ${ref.start_line}` : ""}`
+    ).join("; ");
+  }
+  const missingIds = proof.missing_proof.flatMap((missing) => missing.fact_ids);
+  return missingIds.length > 0 ? missingIds.slice(0, 4).join("; ") : "proof metadata only";
 }
 
 function reasonLines(label: string, reasons: Array<{ reason: string; count: number }>): string[] {

@@ -1,4 +1,11 @@
-import type { FactRecord,FileSnapshot } from "@drift/core";
+import type {
+  FactRecord,
+  FileSnapshot,
+  FrameworkAdapter,
+  FrameworkCapability,
+  FrameworkParserGap,
+  NormalizedEntrypointFact
+} from "@drift/core";
 import type { EngineDiagnostic,EngineScanResult,EngineStats,EngineStreamEvent } from "@drift/engine-contract";
 import type { GraphEdge,GraphEvidence,GraphNode } from "@drift/factgraph";
 import { parseEngineScanResult,parseEngineStreamEvent } from "@drift/engine-contract";
@@ -18,6 +25,10 @@ export interface ScanData {
   graph_edges: GraphEdge[];
   graph_evidence: GraphEvidence[];
   graph_diagnostics: EngineDiagnostic[];
+  framework_adapters: FrameworkAdapter[];
+  normalized_entrypoints: NormalizedEntrypointFact[];
+  framework_parser_gaps: FrameworkParserGap[];
+  framework_capabilities: FrameworkCapability[];
 }
 
 export interface ScanFallbackStatus {
@@ -86,6 +97,10 @@ export async function collectScanData(input: ScanDataInput): Promise<ScanData> {
     graph_edges: [],
     graph_evidence: [],
     graph_diagnostics: [fallbackDiagnostic],
+    framework_adapters: [],
+    normalized_entrypoints: [],
+    framework_parser_gaps: [],
+    framework_capabilities: [],
     stats: {
       files_seen: files.length,
       files_skipped: 0,
@@ -132,6 +147,12 @@ export function scanDataFromEngineScanResult(value: unknown, input: ScanDataInpu
     graph_edges: [],
     graph_evidence: [],
     graph_diagnostics: [],
+    framework_adapters: parsed.framework_adapters.map((adapter) =>
+      engineFrameworkAdapter(adapter, parsed.framework_capabilities.map(engineFrameworkCapability))
+    ),
+    normalized_entrypoints: parsed.normalized_entrypoints.map(engineNormalizedEntrypoint),
+    framework_parser_gaps: parsed.framework_parser_gaps.map(engineFrameworkParserGap),
+    framework_capabilities: parsed.framework_capabilities.map(engineFrameworkCapability),
     stats: parsed.stats
   };
 }
@@ -148,6 +169,10 @@ export function scanDataFromEngineStreamEvents(events: EngineStreamEvent[], inpu
   const graphNodes: GraphNode[] = [];
   const graphEdges: GraphEdge[] = [];
   const graphEvidence: GraphEvidence[] = [];
+  const frameworkAdapters: EngineScanResult["framework_adapters"] = [];
+  const normalizedEntrypoints: EngineScanResult["normalized_entrypoints"] = [];
+  const frameworkParserGaps: EngineScanResult["framework_parser_gaps"] = [];
+  const frameworkCapabilities: EngineScanResult["framework_capabilities"] = [];
   let stats: EngineStats | undefined;
   let completed = false;
 
@@ -167,6 +192,18 @@ export function scanDataFromEngineStreamEvents(events: EngineStreamEvent[], inpu
         break;
       case "graph_evidence_batch":
         graphEvidence.push(...event.graph_evidence.map(engineGraphEvidence));
+        break;
+      case "framework_adapter_batch":
+        frameworkAdapters.push(...event.framework_adapters);
+        break;
+      case "normalized_entrypoint_batch":
+        normalizedEntrypoints.push(...event.normalized_entrypoints);
+        break;
+      case "framework_parser_gap_batch":
+        frameworkParserGaps.push(...event.framework_parser_gaps);
+        break;
+      case "framework_capability_batch":
+        frameworkCapabilities.push(...event.framework_capabilities);
         break;
       case "scan_completed":
         completed = true;
@@ -196,6 +233,12 @@ export function scanDataFromEngineStreamEvents(events: EngineStreamEvent[], inpu
     graph_edges: graphEdges,
     graph_evidence: graphEvidence,
     graph_diagnostics: diagnostics,
+    framework_adapters: frameworkAdapters.map((adapter) =>
+      engineFrameworkAdapter(adapter, frameworkCapabilities.map(engineFrameworkCapability))
+    ),
+    normalized_entrypoints: normalizedEntrypoints.map(engineNormalizedEntrypoint),
+    framework_parser_gaps: frameworkParserGaps.map(engineFrameworkParserGap),
+    framework_capabilities: frameworkCapabilities.map(engineFrameworkCapability),
     stats
   };
 }
@@ -234,6 +277,44 @@ function engineGraphEvidence(
     ...evidence,
     confidence_kind: evidence.confidence_kind ?? "deterministic",
     extractor: evidence.extractor ?? "drift-engine"
+  };
+}
+
+function engineNormalizedEntrypoint(
+  entrypoint: EngineScanResult["normalized_entrypoints"][number]
+): NormalizedEntrypointFact {
+  return {
+    ...entrypoint,
+    schema_version: "drift.normalized_entrypoint.v1"
+  };
+}
+
+function engineFrameworkAdapter(
+  adapter: EngineScanResult["framework_adapters"][number],
+  capabilities: FrameworkCapability[]
+): FrameworkAdapter {
+  return {
+    ...adapter,
+    schema_version: "drift.framework.adapter.v1",
+    capabilities: capabilities.filter((capability) => capability.adapter_id === adapter.adapter_id)
+  };
+}
+
+function engineFrameworkParserGap(
+  gap: EngineScanResult["framework_parser_gaps"][number]
+): FrameworkParserGap {
+  return {
+    ...gap,
+    schema_version: "drift.framework.parser_gap.v1"
+  };
+}
+
+function engineFrameworkCapability(
+  capability: EngineScanResult["framework_capabilities"][number]
+): FrameworkCapability {
+  return {
+    ...capability,
+    schema_version: "drift.framework.capability.v1"
   };
 }
 

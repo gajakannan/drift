@@ -26,6 +26,16 @@ pub enum FactKind {
     AuthorizationGuardCalled,
     RequestValidationCalled,
     ValidatedInputUsed,
+    OutboundRequestCalled,
+    RawSqlCalled,
+    ParameterizedSqlUsed,
+    CsrfGuardCalled,
+    RateLimitGuardCalled,
+    CorsPolicyDeclared,
+    SensitiveFieldDeclared,
+    ResponseEmitsField,
+    SerializerCalled,
+    SecretRead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

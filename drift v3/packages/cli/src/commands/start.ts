@@ -5,7 +5,9 @@ import { actorFlag,stringFlag } from "../args/flag-readers.js";
 import { requiredDatabasePath,resolveRepoRoot } from "../args/repo-flags.js";
 import { runFullRepoCheck } from "../check/run-check.js";
 import { createBaselineForFindings } from "../domain/baselines.js";
+import { materializeRepoContract } from "../domain/contract-materialization.js";
 import { acceptDefaultCandidate } from "../domain/convention-candidates.js";
+import { contractIdForRepo } from "../domain/identifiers.js";
 import { runScanRepo } from "../domain/scan-status.js";
 
 export async function startRepo(storage: SqliteDriftStorage, parsed: ParsedArgs): Promise<CommandPayload> {
@@ -21,13 +23,21 @@ export async function startRepo(storage: SqliteDriftStorage, parsed: ParsedArgs)
   const accepted = parsed.flags.has("accept-defaults") && candidate
     ? acceptDefaultCandidate(storage, { now, actor }, candidate)
     : undefined;
+  const defaultContract = parsed.flags.has("accept-defaults") && !accepted
+    ? storage.transaction(() => {
+        const contract = materializeRepoContract(storage, result.repo.id, contractIdForRepo(result.repo.id), now);
+        storage.upsertRepoContract(contract);
+        return contract;
+      })
+    : undefined;
+  const contractReady = Boolean(accepted || defaultContract || storage.getRepoContract(result.repo.id));
   const initialFindings = accepted
     ? runFullRepoCheck(storage, parsed, result.repo.id, result.scan.completed_at ?? result.scan.started_at)
     : [];
   const baselinedCount = accepted
     ? createBaselineForFindings(storage, { now, actor }, result.repo.id, initialFindings).created_count
     : 0;
-  const nextCommands = accepted
+  const nextCommands = contractReady
     ? [
         doctorCommand(result.repo.root_path, parsed),
         `drift scan status --repo ${result.repo.id}`,
@@ -49,8 +59,9 @@ export async function startRepo(storage: SqliteDriftStorage, parsed: ParsedArgs)
     accepted,
     baselined_count: baselinedCount,
     onboarding: {
-      status: accepted ? "ready" : candidate ? "needs_convention_review" : "needs_more_signal",
+      status: contractReady ? "ready" : candidate ? "needs_convention_review" : "needs_more_signal",
       accepted_default: Boolean(accepted),
+      contract_ready: contractReady,
       baselined_count: baselinedCount,
       candidate_count: result.candidates.length
     },

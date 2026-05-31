@@ -181,6 +181,13 @@ export function optionalConventionKindFlag(parsed: ParsedArgs, name: string): Co
     value === "api_route_requires_auth_helper" ||
     value === "middleware_must_cover_routes" ||
     value === "api_route_requires_request_validation" ||
+    value === "api_route_forbids_untrusted_ssrf" ||
+    value === "api_route_forbids_raw_sql_without_params" ||
+    value === "api_route_cors_must_match_policy" ||
+    value === "api_route_requires_csrf_for_mutation" ||
+    value === "api_route_requires_rate_limit" ||
+    value === "api_route_forbids_sensitive_response_fields" ||
+    value === "api_route_forbids_secret_exposure" ||
     value === "session_object_must_come_from_trusted_helper" ||
     value === "api_route_requires_authorization" ||
     value === "api_route_requires_tenant_scope" ||

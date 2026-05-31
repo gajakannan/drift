@@ -460,8 +460,11 @@ describe("engine contract schemas", () => {
           forbidden_imports: ["@/lib/db"],
           applies_to_file_roles: ["api_route"]
         },
+        requires: {
+          forbidden_imports: ["@/lib/db"]
+        },
         suggested_severity: "error",
-        suggested_enforcement_mode: "block",
+        suggested_enforcement_mode: "warn",
         enforcement_capability: "deterministic_check",
         confidence_label: "high",
         scoring: {
@@ -484,7 +487,9 @@ describe("engine contract schemas", () => {
           file_hash: "a".repeat(64),
           redaction_state: "none"
         }],
-        counterexample_refs: []
+        counterexample_refs: [],
+        reason_not_blocking: "candidate_not_accepted",
+        evidence_fingerprint: "evidence_fp"
       }],
       diagnostics: [],
       stats: {

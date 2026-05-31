@@ -1165,7 +1165,7 @@ describe("read-only MCP handlers", () => {
         }
       },
       review_items: [{ id: "finding_abc" }, { id: "finding_suppressed" }],
-      findings: [{ id: "finding_abc" }, { id: "finding_suppressed" }]
+      findings: [{ finding_id: "finding_abc" }, { finding_id: "finding_suppressed" }]
     });
     expect(allFindings.review_items[0]).toMatchObject({
       id: "finding_abc",
@@ -1178,13 +1178,24 @@ describe("read-only MCP handlers", () => {
       evidence_ref_count: 1,
       first_evidence: {
         file_path: "apps/web/app/api/users/route.ts",
-        start_line: 1,
-        import_source: "@/lib/prisma",
-        symbol: "prisma"
+        start_line: 1
       }
     });
-    expect(allFindings.findings[0]).toHaveProperty("message");
-    expect(allFindings.findings[0]).toHaveProperty("evidence_refs");
+    expect(allFindings.findings[0]).toMatchObject({
+      finding_id: "finding_abc",
+      title: "API route imports data access directly",
+      lifecycle: "new",
+      file_refs: [{
+        file_path: "apps/web/app/api/users/route.ts",
+        start_line: 1,
+        end_line: 1,
+        redaction_state: "line_only"
+      }]
+    });
+    expect(allFindings.findings[0]).not.toHaveProperty("message");
+    expect(allFindings.findings[0]).not.toHaveProperty("evidence_refs");
+    expect(JSON.stringify(allFindings)).not.toContain("@/lib/prisma");
+    expect(JSON.stringify(allFindings)).not.toContain("prisma");
     const pathFindings = handlers.get_findings({
       repo_id: "repo_abc",
       path: "apps/web/app/api/users/route.ts"
@@ -1210,7 +1221,7 @@ describe("read-only MCP handlers", () => {
         total_count: 2,
         filtered_count: 1
       },
-      findings: [{ id: "finding_abc" }]
+      findings: [{ finding_id: "finding_abc" }]
     });
     expect(handlers.get_findings({
       repo_id: "repo_abc",
@@ -1223,7 +1234,7 @@ describe("read-only MCP handlers", () => {
         total_count: 2,
         filtered_count: 2
       },
-      findings: [{ id: "finding_abc" }, { id: "finding_suppressed" }]
+      findings: [{ finding_id: "finding_abc" }, { finding_id: "finding_suppressed" }]
     });
     expect(handlers.get_findings({
       repo_id: "repo_abc",
@@ -1254,7 +1265,7 @@ describe("read-only MCP handlers", () => {
         total_count: 2,
         filtered_count: 2
       },
-      findings: [{ id: "finding_suppressed" }]
+      findings: [{ finding_id: "finding_suppressed" }]
     });
     expect(() => handlers.get_findings({
       repo_id: "repo_abc",
@@ -1277,7 +1288,7 @@ describe("read-only MCP handlers", () => {
         total_count: 2,
         filtered_count: 1
       },
-      findings: [{ id: "finding_abc" }]
+      findings: [{ finding_id: "finding_abc" }]
     });
     expect(handlers.get_findings({
       repo_id: "repo_abc",
@@ -1287,7 +1298,7 @@ describe("read-only MCP handlers", () => {
         total_count: 2,
         filtered_count: 1
       },
-      findings: [{ id: "finding_suppressed" }]
+      findings: [{ finding_id: "finding_suppressed" }]
     });
     expect(() => handlers.get_findings({
       repo_id: "repo_abc",
@@ -1465,6 +1476,52 @@ describe("read-only MCP handlers", () => {
       }],
       createdAt: "2026-05-10T00:00:08.000Z"
     }));
+    storage.upsertFrameworkScanData({
+      repoId: "repo_abc",
+      scanId: "scan_abc",
+      adapters: [{
+        schema_version: "drift.framework.adapter.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        adapter_version: "0.1.0",
+        package_names: ["next"],
+        entrypoint_kinds: ["api_route"],
+        supported_patterns: ["app/api/**/route.{ts,tsx,js,jsx}"],
+        unsupported_patterns: [],
+        capabilities: []
+      }],
+      entrypoints: [{
+        schema_version: "drift.normalized_entrypoint.v1",
+        entrypoint_id: `entrypoint:next_app:${routePath}:GET`,
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        kind: "api_route",
+        file_path: routePath,
+        route_pattern: "/api/users",
+        method: "GET",
+        middleware_refs: [],
+        request_source_refs: [],
+        response_sink_refs: [],
+        data_operation_refs: [],
+        confidence_label: "high",
+        evidence_refs: ["fact_route_users_get"],
+        parser_gap_ids: []
+      }],
+      parserGaps: [],
+      capabilities: [{
+        schema_version: "drift.framework.capability.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        capability: "entrypoint_discovery",
+        status: "complete",
+        can_block: true,
+        block_requires_accepted_convention: true,
+        parser_gap_ids: [],
+        missing_proof_ids: []
+      }]
+    });
     storage.close();
 
     const mapped = createReadOnlyMcpHandlers({ databasePath }).get_repo_map({
@@ -1479,6 +1536,10 @@ describe("read-only MCP handlers", () => {
         exported_symbols: string[];
         calls: string[];
       }>;
+      framework_entrypoints: {
+        summary: { entrypoint_count: number };
+        entrypoints: Array<{ file_path: string; route_pattern?: string; method?: string }>;
+      };
     };
 
     expect(mapped.summary.call_count).toBe(2);
@@ -1488,6 +1549,14 @@ describe("read-only MCP handlers", () => {
       exported_symbols: ["GET"],
       calls: expect.arrayContaining(["Response.json", "db.user.findMany"])
     })]);
+    expect(mapped.framework_entrypoints.summary.entrypoint_count).toBe(1);
+    expect(mapped.framework_entrypoints.entrypoints).toEqual([
+      expect.objectContaining({
+        file_path: routePath,
+        route_pattern: "/api/users",
+        method: "GET"
+      })
+    ]);
   });
 
   it("exposes required-check execution proof through read-only MCP", async () => {
@@ -1615,28 +1684,69 @@ describe("read-only MCP handlers", () => {
 
     const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
       repo_id: "repo_abc"
-    } as never) as {
-      middleware_coverage: {
-        routes: Array<{
-          file_path: string;
-          proven: boolean;
-          protection_kinds: string[];
-          middleware_ids: string[];
-        }>;
-        parser_gaps: Array<{ reason: string; blocking: boolean }>;
-      };
-    };
+    } as never) as Record<string, unknown>;
 
-    expect(securityContext.middleware_coverage.routes).toEqual([{
-      file_path: "apps/web/app/api/users/route.ts",
-      proven: true,
-      protection_kinds: ["auth"],
-      middleware_ids: ["middleware:middleware.ts"]
-    }]);
-    expect(securityContext.middleware_coverage.parser_gaps).toEqual([
-      { reason: "unsupported_dynamic_middleware_matcher", blocking: true }
-    ]);
+    expect(securityContext.response_schema).toBe("drift.security.context.v2");
+    expect(securityContext.middleware_coverage).toBeUndefined();
+    expect(securityContext.parser_gap_summaries).toEqual([]);
     expect(JSON.stringify(securityContext)).not.toContain("requireUser()");
+  });
+
+  it("v2 security context does not include legacy raw-fact sections", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertFacts([{
+      id: "fact_request_body_secret",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "request_input_read",
+      file_path: "apps/web/app/api/users/route.ts",
+      name: "body",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/users/route.ts:POST",
+        source: "request.json()",
+        variable: "body",
+        cookie: "session=secret"
+      }),
+      imported_name: undefined,
+      start_line: 1,
+      end_line: 1,
+      ...factQuality("scan_abc")
+    }, {
+      id: "fact_tenant_secret",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "tenant_source",
+      file_path: "apps/web/app/api/users/route.ts",
+      name: "tenantId",
+      value: JSON.stringify({
+        route_id: "route:apps/web/app/api/users/route.ts:GET",
+        variable: "session.user.tenantId",
+        trusted: true
+      }),
+      imported_name: undefined,
+      start_line: 2,
+      end_line: 2,
+      ...factQuality("scan_abc")
+    }]);
+    storage.close();
+
+    const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
+      repo_id: "repo_abc"
+    } as never) as Record<string, unknown>;
+
+    expect(securityContext.response_schema).toBe("drift.security.context.v2");
+    expect(securityContext.middleware_coverage).toBeUndefined();
+    expect(securityContext.request_validation).toBeUndefined();
+    expect(securityContext.session_trust).toBeUndefined();
+    expect(securityContext.authorization).toBeUndefined();
+    expect(securityContext.tenant_scope).toBeUndefined();
+    expect(securityContext.current_proof_status).toEqual([]);
+    expect(securityContext.required_proofs).toEqual(expect.any(Array));
+    expect(JSON.stringify(securityContext)).not.toContain("request.json()");
+    expect(JSON.stringify(securityContext)).not.toContain("session.user.tenantId");
+    expect(JSON.stringify(securityContext)).not.toContain("cookie");
   });
 
   it("exposes request validation proof summaries without snippets", async () => {
@@ -1743,37 +1853,20 @@ describe("read-only MCP handlers", () => {
     const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
       repo_id: "repo_abc"
     } as never) as {
-      accepted_contracts: Array<{ kind: string }>;
-      request_validation: {
-        routes: Array<{
-          route_id: string;
-          file_path: string;
-          proof_status: string;
-          proven: boolean;
-          input_sources: string[];
-          validated_sink_kinds: string[];
-        }>;
-        parser_gaps: Array<{ reason: string; blocking: boolean }>;
-      };
+      repo_security_contracts: Array<{ kind: string }>;
+      request_validation?: unknown;
+      parser_gap_summaries: unknown[];
+      do_not_include: string[];
     };
 
-    expect(securityContext.accepted_contracts).toContainEqual(expect.objectContaining({
+    expect(securityContext.repo_security_contracts).toContainEqual(expect.objectContaining({
       kind: "api_route_requires_request_validation"
     }));
-    expect(securityContext.request_validation.routes).toEqual([{
-      route_id: "route:apps/web/app/api/projects/route.ts:POST",
-      file_path: "apps/web/app/api/projects/route.ts",
-      proof_status: "not_evaluated",
-      proven: false,
-      input_sources: ["body"],
-      validated_sink_kinds: ["data_operation"]
-    }]);
-    expect(securityContext.request_validation.routes[0]?.proof_status).not.toBe("proven");
-    expect(securityContext.request_validation.parser_gaps).toEqual([
-      { reason: "unsupported_request_input_spread", blocking: true }
-    ]);
+    expect(securityContext.request_validation).toBeUndefined();
+    expect(securityContext.parser_gap_summaries).toEqual([]);
+    expect(securityContext.do_not_include).toContain("secret values");
     expect(JSON.stringify(securityContext)).not.toContain("request.json()");
-    expect(JSON.stringify(securityContext)).not.toContain("cookie");
+    expect(JSON.stringify(securityContext)).not.toContain("session=secret");
   });
 
   it("exposes phase4 security proof summaries without snippets", async () => {
@@ -1946,40 +2039,123 @@ describe("read-only MCP handlers", () => {
     const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
       repo_id: "repo_abc"
     } as never) as {
-      accepted_contracts: Array<{ kind: string }>;
-      session_trust: { routes: Array<{ proof_status: string; advisory_trusted_source_count: number }> };
-      authorization: { routes: Array<{ proof_status: string; advisory_guard_ids: string[]; advisory_role_count: number }> };
-      tenant_scope: {
-        routes: Array<{ proof_status: string; advisory_tenant_keys: string[]; advisory_trusted_source_count: number }>;
-        parser_gaps: Array<{ reason: string; blocking: boolean }>;
-      };
+      repo_security_contracts: Array<{ kind: string }>;
+      session_trust?: unknown;
+      authorization?: unknown;
+      tenant_scope?: unknown;
+      parser_gap_summaries: unknown[];
+      do_not_include: string[];
     };
 
-    expect(securityContext.accepted_contracts).toEqual(expect.arrayContaining([
+    expect(securityContext.repo_security_contracts).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "session_object_must_come_from_trusted_helper" }),
       expect.objectContaining({ kind: "api_route_requires_authorization" }),
       expect.objectContaining({ kind: "api_route_requires_tenant_scope" })
     ]));
-    expect(securityContext.session_trust.routes).toEqual([expect.objectContaining({
-      proof_status: "advisory_only",
-      advisory_trusted_source_count: 1
-    })]);
-    expect(securityContext.authorization.routes).toEqual([expect.objectContaining({
-      proof_status: "advisory_only",
-      advisory_guard_ids: ["authorization_require_role"],
-      advisory_role_count: 1
-    })]);
-    expect(securityContext.tenant_scope.routes).toEqual([expect.objectContaining({
-      proof_status: "advisory_only",
-      advisory_tenant_keys: ["tenantId"],
-      advisory_trusted_source_count: 1
-    })]);
-    expect(securityContext.tenant_scope.parser_gaps).toEqual([
-      { reason: "unsupported_tenant_dynamic_property", blocking: true }
-    ]);
+    expect(securityContext.session_trust).toBeUndefined();
+    expect(securityContext.authorization).toBeUndefined();
+    expect(securityContext.tenant_scope).toBeUndefined();
+    expect(securityContext.parser_gap_summaries).toEqual([]);
+    expect(securityContext.do_not_include).toContain("secret values");
     expect(JSON.stringify(securityContext)).not.toContain("session.user.tenantId");
-    expect(JSON.stringify(securityContext)).not.toContain("cookie");
+    expect(JSON.stringify(securityContext)).not.toContain("session=secret");
     expect(JSON.stringify(securityContext)).not.toContain("request.json()");
+  });
+
+  it("derives Phase 5 MCP context from trusted stored proof, not raw facts", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertSecurityBoundaryProofs({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      created_at: "2026-05-25T00:00:00.000Z",
+      proofs: [{
+        proof_id: "proof:route:apps/web/app/api/users/route.ts:GET:phase5",
+        proof_version: "security-boundary-proof/v1",
+        route: {
+          route_id: "route:apps/web/app/api/users/route.ts:GET",
+          file_path: "apps/web/app/api/users/route.ts",
+          file_role: "api_route",
+          handler_symbol: "GET"
+        },
+        contracts: [{
+          contract_id: "security_api_sensitive_response",
+          kind: "api_route_forbids_sensitive_response_fields",
+          enforcement_mode: "block",
+          capability: "deterministic_check",
+          matched: true
+        }],
+        capability_status: [{
+          name: "response_shape_facts",
+          status: "partial",
+          can_block: true,
+          parser_gap_ids: [],
+          missing_proof_ids: ["missing_proof_sensitive"]
+        }],
+        auth: {
+          required: false,
+          proven: false,
+          proof_kind: "none",
+          trusted_guard_calls: [],
+          dominated_sinks: [],
+          undominated_sinks: []
+        },
+        response_shape: {
+          required: true,
+          proven: false,
+          sensitive_leaks: [{
+            field_fact_id: "fact:apps/web/app/api/users/route.ts:4",
+            field_path: "user.email",
+            reason: "sensitive_field_without_serializer"
+          }]
+        },
+        sinks: { secrets: [] },
+        missing_proof: [{
+          id: "missing_proof_sensitive",
+          capability: "response_shape_facts",
+          code: "sensitive_response_field_unfiltered",
+          blocks_enforcement: true,
+          fact_ids: ["fact:apps/web/app/api/users/route.ts:4"],
+          graph_edge_ids: []
+        }],
+        parser_gaps: [],
+        result: {
+          proof_status: "missing_proof",
+          enforcement_result: "block",
+          can_block: true,
+          finding_ids: ["finding_sensitive"]
+        }
+      }]
+    });
+    storage.close();
+
+    const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
+      repo_id: "repo_abc"
+    } as never) as {
+      current_proof_status: Array<{ route_id: string; proof_status: string; enforcement_result: string }>;
+      changed_route_security: Array<{
+        route_id: string;
+        file_path: string;
+        current_proof_status: string;
+        missing_proof: Array<{ code: string }>;
+      }>;
+    };
+
+    expect(securityContext.current_proof_status).toEqual([{
+      route_id: "route:apps/web/app/api/users/route.ts:GET",
+      file_path: "apps/web/app/api/users/route.ts",
+      proof_status: "missing_proof",
+      enforcement_result: "block"
+    }]);
+    expect(securityContext.changed_route_security).toEqual([expect.objectContaining({
+      route_id: "route:apps/web/app/api/users/route.ts:GET",
+      file_path: "apps/web/app/api/users/route.ts",
+      current_proof_status: "missing_proof",
+      missing_proof: [expect.objectContaining({ code: "sensitive_response_field_unfiltered" })]
+    })]);
+    expect(JSON.stringify(securityContext)).not.toContain("redacted@example.test");
+    expect(JSON.stringify(securityContext)).not.toContain("process.env");
   });
 
   it("includes scan symbol identities in MCP change impact", async () => {
@@ -2962,7 +3138,7 @@ describe("read-only MCP handlers", () => {
         mcp_version: "0.1.0",
         core_version: "0.1.0",
         scanner_version: "0.1.0",
-        supported_sqlite_schema_version: 23,
+supported_sqlite_schema_version: 27,
         storage_driver: "sqlite"
       },
       v1_scope: {
