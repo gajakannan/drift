@@ -1351,7 +1351,10 @@ fn normalized_entrypoint_id(file_path: &str, handler_symbol: &str) -> Option<Str
         } else {
             "next_app"
         };
-        format!("entrypoint:{framework}:{file_path}:{handler_symbol}")
+        format!(
+            "entrypoint:{framework}:{}:{handler_symbol}",
+            identity.file_path
+        )
     })
 }
 

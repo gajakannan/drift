@@ -1191,16 +1191,7 @@ fn phase6_finding_text(kind: &str) -> (&'static str, &'static str, &'static str)
 }
 
 fn route_path_from_file(file_path: &str) -> Option<String> {
-    if let Some(identity) = next_api_route_identity(file_path) {
-        return Some(identity.route_path);
-    }
-    if let Some(rest) = file_path
-        .strip_prefix("pages")
-        .and_then(|path| path.strip_suffix(".ts"))
-    {
-        return Some(rest.to_string());
-    }
-    None
+    next_api_route_identity(file_path).map(|identity| identity.route_path)
 }
 
 fn path_matches_globs(file_path: &str, globs: Option<&[String]>) -> bool {
@@ -2985,7 +2976,10 @@ fn normalized_entrypoint_id(file_path: &str, handler_symbol: &str) -> Option<Str
         } else {
             "next_app"
         };
-        format!("entrypoint:{framework}:{file_path}:{handler_symbol}")
+        format!(
+            "entrypoint:{framework}:{}:{handler_symbol}",
+            identity.file_path
+        )
     })
 }
 
