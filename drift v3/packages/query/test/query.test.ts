@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Finding, RepoContract } from "@drift/core";
+import { API_ROUTE_SCOPE_GLOBS, type Finding, type RepoContract } from "@drift/core";
 import { buildFactGraphArtifact, buildFactGraphArtifactFromParts } from "@drift/factgraph";
 import { openDriftStorage } from "@drift/storage";
 import { afterEach, describe, expect, it } from "vitest";
@@ -401,6 +401,7 @@ describe("GraphQueryService", () => {
       task_intent: "feature",
       target_area: "user_management",
       likely_entrypoint_kinds: ["api_route"],
+      likely_files: expect.arrayContaining(API_ROUTE_SCOPE_GLOBS),
       human_approval_needed: false
     });
   });

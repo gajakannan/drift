@@ -1,4 +1,4 @@
-import type { AcceptedConvention,FindingDiffStatus } from "@drift/core";
+import { expandApiRouteScopeGlobs,type AcceptedConvention,type FindingDiffStatus } from "@drift/core";
 import { execFileSync } from "node:child_process";
 import { existsSync,readFileSync,statSync } from "node:fs";
 import { ParsedArgs } from "../app/command-types.js";
@@ -108,9 +108,12 @@ export function filesForConvention(
   scope: string
 ): string[] {
   const diffFiles = diff.files.map((file) => file.path);
+  const pathGlobs = appliesToApiRouteFiles(convention)
+    ? expandApiRouteScopeGlobs(convention.scope.path_globs)
+    : convention.scope.path_globs;
   const scoped = diffFiles.filter((filePath) =>
-    (convention.scope.path_globs.length === 0 ||
-      convention.scope.path_globs.some((glob) => matchesGlob(filePath, glob))) &&
+    (pathGlobs.length === 0 ||
+      pathGlobs.some((glob) => matchesGlob(filePath, glob))) &&
     !(convention.scope.exclude_path_globs ?? []).some((glob) => matchesGlob(filePath, glob))
   );
 
@@ -118,6 +121,13 @@ export function filesForConvention(
     return scoped;
   }
   return scoped;
+}
+
+function appliesToApiRouteFiles(convention: AcceptedConvention): boolean {
+  return Boolean(
+    convention.scope.file_roles?.includes("api_route") ||
+    convention.matcher.applies_to_file_roles?.includes("api_route")
+  );
 }
 
 export function diffStatusFor(

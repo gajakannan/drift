@@ -6,6 +6,8 @@ use std::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use drift_engine::next_routes::API_ROUTE_SCOPE_GLOBS;
+
 use crate::protocol::{
     CandidateRequest, CandidateResult, CheckFact, ENGINE_CANDIDATES_RESULT_SCHEMA_VERSION,
     EngineCandidate, EngineCandidateEvidenceRef, EngineCompleteness, GraphEvidence,
@@ -97,7 +99,7 @@ pub fn infer_candidates(request: CandidateRequest) -> CandidateResult {
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
         let scope = json!({
-            "path_globs": ["**/app/api/**/route.ts", "**/app/api/**/route.tsx", "**/pages/api/**/*.ts"],
+            "path_globs": API_ROUTE_SCOPE_GLOBS,
             "file_roles": ["api_route"]
         });
         let matcher = json!({
@@ -160,7 +162,7 @@ pub fn infer_candidates(request: CandidateRequest) -> CandidateResult {
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
         let scope = json!({
-            "path_globs": ["**/app/api/**/route.ts", "**/app/api/**/route.tsx", "**/pages/api/**/*.ts"],
+            "path_globs": API_ROUTE_SCOPE_GLOBS,
             "file_roles": ["api_route"]
         });
         let matcher = json!({

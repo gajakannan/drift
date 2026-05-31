@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::next_routes::next_api_route_identity;
 use tree_sitter::{Node, Parser};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -687,15 +688,12 @@ fn file_roles(file_path: &str) -> Vec<&'static str> {
 }
 
 fn is_api_route_path(file_path: &str) -> bool {
-    file_path.ends_with("/route.ts")
-        || file_path.ends_with("/route.tsx")
-        || file_path.ends_with("/route.js")
-        || file_path.ends_with("/route.jsx")
-        || is_next_pages_api_path(file_path)
+    next_api_route_identity(file_path).is_some()
 }
 
 fn is_next_pages_api_path(file_path: &str) -> bool {
-    file_path.contains("/pages/api/") || file_path.starts_with("pages/api/")
+    next_api_route_identity(file_path)
+        .is_some_and(|identity| identity.framework == "next_pages_api")
 }
 
 fn is_service_module_path(file_path: &str) -> bool {

@@ -1,4 +1,4 @@
-use crate::{Fact, FactKind};
+use crate::{Fact, FactKind, next_routes::next_api_route_identity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DominatedSink {
@@ -493,19 +493,7 @@ fn metadata_protection_kind(fact: &Fact) -> Option<String> {
 }
 
 fn route_path_from_file(file_path: &str) -> Option<String> {
-    if let Some(rest) = file_path
-        .strip_prefix("app/")
-        .and_then(|path| path.strip_suffix("/route.ts"))
-    {
-        return Some(format!("/{}", rest.trim_end_matches('/')));
-    }
-    if let Some(rest) = file_path
-        .strip_prefix("pages")
-        .and_then(|path| path.strip_suffix(".ts"))
-    {
-        return Some(rest.to_string());
-    }
-    None
+    next_api_route_identity(file_path).map(|identity| identity.route_path)
 }
 
 fn static_matcher_covers_path(pattern: &str, route_path: &str) -> bool {

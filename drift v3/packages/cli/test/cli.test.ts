@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
+import { API_ROUTE_SCOPE_GLOBS } from "@drift/core";
 import { buildFactGraphArtifactFromParts } from "@drift/factgraph";
 import { MIGRATIONS, openDriftStorage } from "@drift/storage";
 import { runCli } from "../src/index.js";
@@ -2116,11 +2117,11 @@ describe("drift CLI convention review", () => {
     storage.migrate();
     expect(storage.getRepoContract(payload.repo.id)?.required_checks).toMatchObject([
       {
-        command: `drift check --diff main...HEAD --repo ${payload.repo.id} --scope changed-hunks --json`,
-        applies_to: {
-          path_globs: ["**/app/api/**/route.ts", "**/app/api/**/route.tsx", "**/pages/api/**/*.ts"],
-          file_roles: ["api_route"]
-        },
+	        command: `drift check --diff main...HEAD --repo ${payload.repo.id} --scope changed-hunks --json`,
+	        applies_to: {
+	          path_globs: [...API_ROUTE_SCOPE_GLOBS].sort(),
+	          file_roles: ["api_route"]
+	        },
         reason: "Block newly introduced deterministic convention violations before code is merged."
       }
     ]);
@@ -2286,11 +2287,11 @@ describe("drift CLI convention review", () => {
     expect(prepared.exitCode).toBe(0);
     expect(JSON.parse(prepared.stdout).risky_areas).toMatchObject([
       {
-        id: "risk_data_access_api_routes",
-        risk_kind: "data_access",
-        path_globs: ["**/app/api/**/route.ts", "**/app/api/**/route.tsx", "**/pages/api/**/*.ts"],
-        reason: "API route changes can bypass the accepted data-access layering convention."
-      }
+	        id: "risk_data_access_api_routes",
+	        risk_kind: "data_access",
+	        path_globs: API_ROUTE_SCOPE_GLOBS,
+	        reason: "API route changes can bypass the accepted data-access layering convention."
+	      }
     ]);
   });
 

@@ -2,6 +2,7 @@ pub const DRIFT_ENGINE_VERSION: &str = "0.1.0";
 
 mod diff;
 mod facts;
+pub mod next_routes;
 mod rules;
 mod security_capabilities;
 mod security_control_flow;

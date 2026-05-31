@@ -42,6 +42,34 @@ export async function POST(request: Request) {
 }
 
 #[test]
+fn grouped_next_api_route_gets_api_route_role() {
+    let source = r#"export async function GET() { return Response.json({ ok: true }); }"#;
+    let facts = extract_typescript_facts("apps/web/app/(admin)/api/users/route.ts", source)
+        .expect("typescript facts");
+
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::FileRoleDetected && fact.name == "api_route"),
+        "missing api_route role: {facts:#?}"
+    );
+}
+
+#[test]
+fn grouped_non_api_app_route_does_not_get_api_route_role() {
+    let source = r#"export default function Page() { return null; }"#;
+    let facts = extract_typescript_facts("apps/web/app/(marketing)/about/route.ts", source)
+        .expect("typescript facts");
+
+    assert!(
+        !facts
+            .iter()
+            .any(|fact| fact.kind == FactKind::FileRoleDetected && fact.name == "api_route"),
+        "non-api route was mislabeled: {facts:#?}"
+    );
+}
+
+#[test]
 fn preserves_direct_data_access_alias_import_sources() {
     let source = r#"
 import { db } from "../../server/db";

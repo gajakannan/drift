@@ -29,6 +29,8 @@ import {
   createAgentPreflightPacket,
   createContextPolicyMatrix,
   createDriftCapabilities,
+  expandApiRouteScopeGlobs,
+  isNextApiRoutePath,
   matchesPolicyGlob
 } from "@drift/core";
 import {
@@ -1958,7 +1960,7 @@ function relevantFileForPath(
   }
 
   for (const convention of contract.conventions) {
-    const inScope = convention.scope.path_globs.some((glob) => matchesPolicyGlob(filePath, glob));
+    const inScope = apiCompatibleGlobs(convention.scope.path_globs).some((glob) => matchesPolicyGlob(filePath, glob));
     if (inScope) {
       reasons.add(`in scope for ${convention.id}`);
       for (const role of convention.scope.file_roles ?? []) {
@@ -1982,8 +1984,9 @@ function riskyAreasForFiles(
   relevantFiles: RelevantFile[]
 ): PreparedRiskArea[] {
   return contract.risky_areas.flatMap((area) => {
+    const pathGlobs = apiCompatibleGlobs(area.path_globs);
     const matchedFiles = relevantFiles
-      .filter((file) => area.path_globs.some((glob) => matchesPolicyGlob(file.path, glob)))
+      .filter((file) => pathGlobs.some((glob) => matchesPolicyGlob(file.path, glob)))
       .map((file) => file.path);
     return matchedFiles.length > 0 ? [{ ...area, matched_files: matchedFiles }] : [];
   });
@@ -2267,8 +2270,9 @@ function scopeMatchesFile(
   if ((scope.exclude_path_globs ?? []).some((glob) => matchesPolicyGlob(filePath, glob))) {
     return false;
   }
-  const pathMatches = scope.path_globs.length === 0 ||
-    scope.path_globs.some((glob) => matchesPolicyGlob(filePath, glob));
+  const pathGlobs = apiCompatibleGlobs(scope.path_globs);
+  const pathMatches = pathGlobs.length === 0 ||
+    pathGlobs.some((glob) => matchesPolicyGlob(filePath, glob));
   const roleMatches = !scope.file_roles?.length ||
     scope.file_roles.some((role) => roles.includes(role));
   return pathMatches && roleMatches;
@@ -2489,8 +2493,11 @@ function mcpAgentEnvelope(input: {
 }
 
 function isApiRoutePath(filePath: string): boolean {
-  return /(^|\/)(app|pages)\/api\/.+\.(ts|tsx|js|jsx)$/.test(filePath) ||
-    /(^|\/)route\.(ts|tsx|js|jsx)$/.test(filePath);
+  return isNextApiRoutePath(filePath);
+}
+
+function apiCompatibleGlobs(globs: string[]): string[] {
+  return expandApiRouteScopeGlobs(globs);
 }
 
 function validateFindingStatus(status: FindingStatus | undefined): FindingStatus | undefined {

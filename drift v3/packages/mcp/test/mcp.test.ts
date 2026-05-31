@@ -1724,6 +1724,39 @@ describe("read-only MCP handlers", () => {
     expect(JSON.stringify(securityContext)).not.toContain("cookie");
   });
 
+  it("normalizes grouped app api route ids in MCP security context fallbacks", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertFacts([{
+      id: "fact_grouped_request_body",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "request_input_read",
+      file_path: "apps/web/app/(admin)/api/projects/route.ts",
+      name: "body",
+      value: JSON.stringify({ source: "body" }),
+      imported_name: undefined,
+      start_line: 3,
+      end_line: 3,
+      ...factQuality("scan_abc")
+    }]);
+    storage.close();
+
+    const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
+      repo_id: "repo_abc"
+    } as never) as {
+      request_validation: {
+        routes: Array<{ route_id: string; file_path: string }>;
+      };
+    };
+
+    expect(securityContext.request_validation.routes).toContainEqual(expect.objectContaining({
+      route_id: "route:/api/projects:unknown",
+      file_path: "apps/web/app/(admin)/api/projects/route.ts"
+    }));
+  });
+
   it("exposes phase4 security proof summaries without snippets", async () => {
     const databasePath = await seedMcpDatabase();
     const storage = openDriftStorage({ databasePath });
@@ -2178,6 +2211,58 @@ describe("read-only MCP handlers", () => {
         matched_files: ["apps/web/app/api/users/route.ts"]
       })
     ]);
+  });
+
+  it("applies legacy MCP api-route scopes to grouped app routes", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const repoRoot = storage.getRepo("repo_abc")!.root_path;
+    const groupedRoute = "apps/web/app/(admin)/api/users/route.ts";
+    await mkdir(join(repoRoot, "apps/web/app/(admin)/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, groupedRoute),
+      "export async function GET() { return Response.json({ ok: true }); }\n"
+    );
+    const contract = storage.getRepoContract("repo_abc")!;
+    storage.upsertRepoContract({
+      ...contract,
+      required_checks: [{
+        command: "drift check --diff main...HEAD",
+        applies_to: { path_globs: ["apps/web/app/api/**/route.ts"], file_roles: ["api_route"] },
+        reason: "Validate accepted API route conventions."
+      }],
+      risky_areas: [{
+        id: "risk_api_routes",
+        path_globs: ["apps/web/app/api/**/route.ts"],
+        risk_kind: "data_access",
+        reason: "API route changes can bypass data-access layering."
+      }]
+    });
+    storage.close();
+
+    const preflight = createReadOnlyMcpHandlers({ databasePath })
+      .get_task_preflight({ repo_id: "repo_abc", task: "change users api route", path: groupedRoute }) as {
+        relevant_files: Array<{ path: string; roles: string[] }>;
+        summary: { required_check_count: number; risky_area_count: number };
+        required_checks: Array<{ command: string; matched_files: string[] }>;
+        risky_areas: Array<{ id: string; matched_files: string[] }>;
+      };
+
+    expect(preflight.relevant_files).toContainEqual(expect.objectContaining({
+      path: groupedRoute,
+      roles: ["api_route"]
+    }));
+    expect(preflight.summary).toMatchObject({
+      required_check_count: 1,
+      risky_area_count: 1
+    });
+    expect(preflight.required_checks).toContainEqual(expect.objectContaining({
+      matched_files: expect.arrayContaining([groupedRoute])
+    }));
+    expect(preflight.risky_areas).toContainEqual(expect.objectContaining({
+      matched_files: expect.arrayContaining([groupedRoute])
+    }));
   });
 
   it("scopes MCP preflight contract waivers to task-relevant files", async () => {

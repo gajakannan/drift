@@ -506,6 +506,62 @@ fn scan_stream_emits_static_endpoint_shape_for_next_routes() {
 }
 
 #[test]
+fn scan_stream_emits_endpoint_shape_for_grouped_next_api_routes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let route = dir.path().join("apps/web/src/app/(admin)/api/users/[id]");
+    fs::create_dir_all(&route).expect("create route dir");
+    fs::write(
+        route.join("route.ts"),
+        r#"export async function GET() {
+  return Response.json({ ok: true });
+}
+"#,
+    )
+    .expect("write route");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_drift-engine"))
+        .args([
+            "scan-repo",
+            dir.path().to_str().expect("utf8 temp dir"),
+            "--format",
+            "jsonl",
+            "--repo-id",
+            "repo_abc",
+            "--scan-id",
+            "scan_abc",
+        ])
+        .output()
+        .expect("run drift-engine");
+    assert!(
+        output.status.success(),
+        "engine failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = String::from_utf8(output.stdout)
+        .expect("utf8 stdout")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json line"))
+        .collect::<Vec<_>>();
+    let nodes = events
+        .iter()
+        .filter(|event| event["event"] == "graph_node_batch")
+        .flat_map(|event| event["graph_nodes"].as_array().expect("nodes").iter())
+        .collect::<Vec<_>>();
+
+    assert!(
+        nodes.iter().any(|node| {
+            node["kind"] == "endpoint"
+                && node["metadata"]["file_path"]
+                    == "apps/web/src/app/(admin)/api/users/[id]/route.ts"
+                && node["metadata"]["route_pattern"] == "/api/users/:id"
+                && node["metadata"]["framework_role"] == "next_app_route"
+        }),
+        "missing grouped route endpoint shape: {nodes:#?}"
+    );
+}
+
+#[test]
 fn scan_stream_infers_service_boundary_from_route_import_targets() {
     let dir = tempfile::tempdir().expect("tempdir");
     fs::write(

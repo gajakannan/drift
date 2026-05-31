@@ -9,6 +9,7 @@ use drift_engine::{
     evaluate_api_route_requires_auth_helper_with_middleware,
     evaluate_api_route_requires_authorization, evaluate_api_route_requires_request_validation,
     evaluate_api_route_requires_tenant_scope, evaluate_middleware_must_cover_routes,
+    extract_security_facts, static_middleware_coverage,
 };
 
 #[test]
@@ -42,6 +43,42 @@ export async function GET() {
     assert_eq!(findings[0].enforcement_result, SecurityFindingResult::Block);
     assert_eq!(findings[0].drift_category, "missing_proof");
     assert_eq!(findings[0].confidence_label, "certain");
+}
+
+#[test]
+fn middleware_matcher_covers_grouped_next_api_route() {
+    let middleware_facts = extract_security_facts(
+        "middleware.ts",
+        r#"import { NextResponse } from "next/server";
+export function middleware(request) {
+  return NextResponse.next();
+}
+export const config = { matcher: ["/api/:path*"] };
+"#,
+        &[AcceptedAuthHelper {
+            guard_id: "middleware_next_response".to_string(),
+            symbol: "NextResponse.next".to_string(),
+            behavior: AuthGuardBehavior::ReturnsUser,
+        }],
+    )
+    .expect("middleware facts");
+
+    let (matched, mismatches) = static_middleware_coverage(
+        &middleware_facts,
+        "app/(admin)/api/projects/route.ts",
+        "GET",
+    );
+
+    assert_eq!(
+        mismatches,
+        Vec::new(),
+        "unexpected mismatches: {mismatches:#?}"
+    );
+    assert_eq!(
+        matched.len(),
+        1,
+        "missing middleware coverage: {matched:#?}"
+    );
 }
 
 #[test]
@@ -1015,6 +1052,55 @@ export async function GET() {
     assert_eq!(findings[0].actual_layer, "path_not_matched");
     assert_eq!(findings[0].enforcement_result, SecurityFindingResult::Block);
     assert_eq!(findings[0].drift_category, "missing_proof");
+}
+
+#[test]
+fn route_paths_contract_selects_grouped_next_api_route_by_normalized_path() {
+    let middleware_source = r#"
+import { NextResponse } from "next/server";
+import { requireUser } from "@/server/auth";
+
+export async function middleware(request: Request) {
+  await requireUser();
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/api/admin/:path*"],
+};
+"#;
+    let route_source = r#"
+export async function GET() {
+  return Response.json({ ok: true });
+}
+"#;
+
+    let findings = evaluate_middleware_must_cover_routes(
+        "middleware.ts",
+        middleware_source,
+        "app/(admin)/api/projects/route.ts",
+        route_source,
+        &SecurityMiddlewareContract {
+            contract_id: "security_middleware_api_coverage".to_string(),
+            capability: SecurityContractCapability::DeterministicCheck,
+            enforcement_mode: SecurityEnforcementMode::Block,
+            route_paths: vec!["/api/projects".to_string()],
+            methods: Vec::new(),
+            accepted_auth_helpers: vec![AcceptedAuthHelper {
+                guard_id: "auth_require_user".to_string(),
+                symbol: "requireUser".to_string(),
+                behavior: AuthGuardBehavior::ReturnsUser,
+            }],
+        },
+    )
+    .expect("security findings");
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "grouped route must be selected by normalized route path: {findings:#?}"
+    );
+    assert_eq!(findings[0].actual_layer, "path_not_matched");
 }
 
 #[test]

@@ -281,6 +281,68 @@ fn infer_candidates_ignores_repo_fixture_routes_when_repo_root_is_not_the_fixtur
     );
 }
 
+#[test]
+fn infer_candidates_uses_route_group_aware_api_scope_globs() {
+    let request = json!({
+        "repo": { "repo_id": "repo_abc" },
+        "graph": {
+            "graph_nodes": [],
+            "graph_edges": [],
+            "graph_evidence": []
+        },
+        "scan": {
+            "scan_id": "scan_abc",
+            "file_snapshots": [{
+                "file_path": "apps/web/app/(admin)/api/users/route.ts",
+                "content_hash": "a".repeat(64),
+                "byte_size": 120,
+                "indexed": true
+            }],
+            "facts": [
+                {
+                    "kind": "file_role_detected",
+                    "file_path": "apps/web/app/(admin)/api/users/route.ts",
+                    "name": "api_route",
+                    "start_line": 1,
+                    "end_line": 5
+                },
+                {
+                    "kind": "import_used",
+                    "file_path": "apps/web/app/(admin)/api/users/route.ts",
+                    "name": "db",
+                    "value": "@/lib/db",
+                    "start_line": 1,
+                    "end_line": 1
+                }
+            ]
+        }
+    });
+    let payload = run_infer_candidates(request);
+    let candidates = payload["candidates"].as_array().expect("candidates");
+    let direct = candidates
+        .iter()
+        .find(|candidate| candidate["kind"] == "api_route_no_direct_data_access")
+        .expect("direct data-access candidate");
+
+    assert_eq!(
+        direct["scope"]["path_globs"],
+        json!([
+            "**/app/api/**/route.ts",
+            "**/app/api/**/route.tsx",
+            "**/app/api/**/route.js",
+            "**/app/api/**/route.jsx",
+            "**/app/**/api/**/route.ts",
+            "**/app/**/api/**/route.tsx",
+            "**/app/**/api/**/route.js",
+            "**/app/**/api/**/route.jsx",
+            "**/pages/api/**/*.ts",
+            "**/pages/api/**/*.tsx",
+            "**/pages/api/**/*.js",
+            "**/pages/api/**/*.jsx"
+        ])
+    );
+}
+
 fn run_infer_candidates(request: Value) -> Value {
     let mut child = Command::new(env!("CARGO_BIN_EXE_drift-engine"))
         .arg("infer-candidates")

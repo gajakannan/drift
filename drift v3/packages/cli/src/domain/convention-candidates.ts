@@ -1,4 +1,4 @@
-import { DRIFT_CONTRACT_SCHEMA_VERSION,type AcceptedConvention,type ConventionCandidate,type ConventionStatus,type EnforcementMode,type EvidenceRef,type FactRecord,type RepoContract,type Severity } from "@drift/core";
+import { API_ROUTE_SCOPE_GLOBS,DRIFT_CONTRACT_SCHEMA_VERSION,type AcceptedConvention,type ConventionCandidate,type ConventionStatus,type EnforcementMode,type EvidenceRef,type FactRecord,type RepoContract,type Severity } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { join } from "node:path";
 import { fileLooksLikeDataAccess,resolveImportTarget } from "../engine/import-resolution.js";
@@ -367,7 +367,7 @@ export function inferConventionCandidates(input: {
       statement: "API routes should not import data-access clients directly.",
       rationale: "Detected API route imports that look like database/data-access clients.",
       scope: {
-        path_globs: ["**/app/api/**/route.ts", "**/app/api/**/route.tsx", "**/pages/api/**/*.ts"],
+        path_globs: [...API_ROUTE_SCOPE_GLOBS],
         file_roles: ["api_route"]
       },
       matcher: {
@@ -417,7 +417,7 @@ export function inferConventionCandidates(input: {
         ? "Detected API route imports from service modules."
         : "Detected direct data-access imports; service delegation should be reviewed before enforcement.",
       scope: {
-        path_globs: ["**/app/api/**/route.ts", "**/app/api/**/route.tsx", "**/pages/api/**/*.ts"],
+        path_globs: [...API_ROUTE_SCOPE_GLOBS],
         file_roles: ["api_route"]
       },
       matcher: {

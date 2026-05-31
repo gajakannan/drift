@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { AgentTaskSchema, type AgentTask, type AgentTaskIntent, type EntrypointKind } from "@drift/core";
+import { AgentTaskSchema, API_ROUTE_SCOPE_GLOBS, type AgentTask, type AgentTaskIntent, type EntrypointKind } from "@drift/core";
 
 export function classifyAgentTask(taskText: string): AgentTask {
   const normalized = taskText.trim();
@@ -90,8 +90,9 @@ function targetAreaFor(task: string): string | null {
 function likelyFilesFor(task: string, entrypoints: EntrypointKind[], targetArea: string | null): string[] {
   const files = new Set<string>();
   if (entrypoints.includes("api_route")) {
-    files.add("**/app/api/**/route.ts");
-    files.add("**/pages/api/**/*.ts");
+    for (const glob of API_ROUTE_SCOPE_GLOBS) {
+      files.add(glob);
+    }
   }
   if (targetArea === "user_management" || /\buser|users\b/.test(task)) {
     files.add("**/*user*");

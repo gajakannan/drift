@@ -8,6 +8,7 @@ export * from "./contracts.js";
 export * from "./contract-ledger.js";
 export * from "./domain.js";
 export * from "./ids.js";
+export * from "./next-routes.js";
 export * from "./policy.js";
 export * from "./scans.js";
 export * from "./security.js";

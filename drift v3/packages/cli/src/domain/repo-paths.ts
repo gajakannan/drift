@@ -1,4 +1,10 @@
-import { DRIFT_CONTRACT_SCHEMA_VERSION,type ConventionCandidate,type RepoContract,type RepoRecord } from "@drift/core";
+import {
+  DRIFT_CONTRACT_SCHEMA_VERSION,
+  isNextApiRoutePath,
+  type ConventionCandidate,
+  type RepoContract,
+  type RepoRecord
+} from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -211,10 +217,7 @@ function gitOutput(repoRoot: string, args: string[]): string {
 }
 
 export function isApiRoutePath(filePath: string): boolean {
-  return (
-    /(^|\/)app\/api\/.+\/route\.[jt]sx?$/.test(filePath) ||
-    /(^|\/)pages\/api\/.+\.[jt]sx?$/.test(filePath)
-  );
+  return isNextApiRoutePath(filePath);
 }
 
 export function matchesGlob(filePath: string, glob: string): boolean {

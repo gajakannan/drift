@@ -1,4 +1,4 @@
-import type { AcceptedConvention,ConventionScope,EnforcementMode,Finding,RepoContract,Severity } from "@drift/core";
+import { expandApiRouteScopeGlobs,type AcceptedConvention,type ConventionScope,type EnforcementMode,type Finding,type RepoContract,type Severity } from "@drift/core";
 import { existsSync } from "node:fs";
 import { walkIndexableFiles } from "../engine/ts-fallback-scanner.js";
 import { baselineSummary } from "./baselines.js";
@@ -105,12 +105,12 @@ export function conventionsForFiles(
   if (relevantFiles.length === 0) {
     return conventions;
   }
-  return conventions.filter((convention) =>
-    relevantFiles.some((file) =>
-      convention.scope.path_globs.some((glob) => matchesGlob(file.path, glob)) &&
-      !(convention.scope.exclude_path_globs ?? []).some((glob) => matchesGlob(file.path, glob))
-    )
-  );
+	  return conventions.filter((convention) =>
+	    relevantFiles.some((file) =>
+	      apiCompatibleGlobs(convention.scope.path_globs).some((glob) => matchesGlob(file.path, glob)) &&
+	      !(convention.scope.exclude_path_globs ?? []).some((glob) => matchesGlob(file.path, glob))
+	    )
+	  );
 }
 
 export function findingsForTopic(
@@ -233,7 +233,7 @@ export function relevantFileForPath(
   }
 
   for (const convention of contract.conventions) {
-    const inScope = convention.scope.path_globs.some((glob) => matchesGlob(filePath, glob));
+    const inScope = apiCompatibleGlobs(convention.scope.path_globs).some((glob) => matchesGlob(filePath, glob));
     if (inScope) {
       reasons.add(`in scope for ${convention.id}`);
       for (const role of convention.scope.file_roles ?? []) {
@@ -258,8 +258,9 @@ export function riskyAreasForFiles(
   relevantFiles: RelevantFile[]
 ): PreparedRiskArea[] {
   return contract.risky_areas.flatMap((area) => {
+    const pathGlobs = apiCompatibleGlobs(area.path_globs);
     const matchedFiles = relevantFiles
-      .filter((file) => area.path_globs.some((glob) => matchesGlob(file.path, glob)))
+      .filter((file) => pathGlobs.some((glob) => matchesGlob(file.path, glob)))
       .map((file) => file.path);
     return matchedFiles.length > 0 ? [{ ...area, matched_files: matchedFiles }] : [];
   });
@@ -342,8 +343,9 @@ export function scopeMatchesFile(scope: ConventionScope, filePath: string, roles
   if ((scope.exclude_path_globs ?? []).some((glob) => matchesGlob(filePath, glob))) {
     return false;
   }
-  const pathMatches = scope.path_globs.length === 0 ||
-    scope.path_globs.some((glob) => matchesGlob(filePath, glob));
+  const pathGlobs = apiCompatibleGlobs(scope.path_globs);
+  const pathMatches = pathGlobs.length === 0 ||
+    pathGlobs.some((glob) => matchesGlob(filePath, glob));
   const roleMatches = !scope.file_roles?.length ||
     scope.file_roles.some((role) => roles.includes(role));
   return pathMatches && roleMatches;
@@ -351,6 +353,10 @@ export function scopeMatchesFile(scope: ConventionScope, filePath: string, roles
 
 export function rolesForPath(filePath: string): string[] {
   return isApiRoutePath(filePath) ? ["api_route"] : [];
+}
+
+function apiCompatibleGlobs(globs: string[]): string[] {
+  return expandApiRouteScopeGlobs(globs);
 }
 
 export function tokenizeTask(task: string): Set<string> {

@@ -14,7 +14,8 @@ use candidate_command::infer_candidates;
 use check_command::check_repo;
 use drift_engine::{
     Fact, FactKind, dynamic_middleware_matcher_line, extract_security_facts,
-    extract_typescript_facts, should_index_path, static_middleware_coverage,
+    extract_typescript_facts, next_routes::next_api_route_identity, should_index_path,
+    static_middleware_coverage,
 };
 use protocol::*;
 use serde_json::json;
@@ -1501,87 +1502,21 @@ fn receiver_root(receiver: &str) -> &str {
 
 fn endpoint_shape(file_path: &str, method: &str) -> Option<EndpointShape> {
     let normalized = file_path.replace('\\', "/");
-    if is_next_app_route_path(&normalized) {
-        let route_path = strip_before_segment(&normalized, "app/api/")?
-            .strip_suffix("/route.ts")
-            .or_else(|| strip_before_segment(&normalized, "app/api/")?.strip_suffix("/route.tsx"))
-            .or_else(|| strip_before_segment(&normalized, "app/api/")?.strip_suffix("/route.js"))
-            .or_else(|| {
-                strip_before_segment(&normalized, "app/api/")?.strip_suffix("/route.jsx")
-            })?;
-        let (pattern, dynamic_params) = route_pattern_from_segments(route_path);
+    if let Some(identity) = next_api_route_identity(&normalized) {
         return Some(EndpointShape {
-            pattern,
-            framework_role: "next_app_route",
-            dynamic_params,
-        });
-    }
-    if let Some(route_path) = strip_pages_api_route(&normalized) {
-        let (pattern, dynamic_params) = route_pattern_from_segments(route_path);
-        return Some(EndpointShape {
-            pattern,
-            framework_role: "next_pages_api",
-            dynamic_params,
+            pattern: identity.route_pattern,
+            framework_role: if identity.framework == "next_pages_api" {
+                "next_pages_api"
+            } else {
+                "next_app_route"
+            },
+            dynamic_params: identity.dynamic_params,
         });
     }
     if method.is_empty() {
         return None;
     }
     None
-}
-
-fn is_next_app_route_path(file_path: &str) -> bool {
-    file_path.ends_with("/route.ts")
-        || file_path.ends_with("/route.tsx")
-        || file_path.ends_with("/route.js")
-        || file_path.ends_with("/route.jsx")
-}
-
-fn strip_before_segment<'a>(file_path: &'a str, segment: &str) -> Option<&'a str> {
-    let index = file_path.find(segment)?;
-    Some(&file_path[index + "app/".len()..])
-}
-
-fn strip_pages_api_route(file_path: &str) -> Option<&str> {
-    let index = file_path.find("pages/api/")?;
-    let route = &file_path[index + "pages/".len()..];
-    route
-        .strip_suffix(".ts")
-        .or_else(|| route.strip_suffix(".tsx"))
-        .or_else(|| route.strip_suffix(".js"))
-        .or_else(|| route.strip_suffix(".jsx"))
-}
-
-fn route_pattern_from_segments(route_path: &str) -> (String, Vec<String>) {
-    let mut dynamic_params = Vec::new();
-    let segments = route_path
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| {
-            if let Some(param) = segment
-                .strip_prefix("[[...")
-                .and_then(|value| value.strip_suffix("]]"))
-            {
-                dynamic_params.push(param.to_string());
-                format!(":{param}*")
-            } else if let Some(param) = segment
-                .strip_prefix("[...")
-                .and_then(|value| value.strip_suffix(']'))
-            {
-                dynamic_params.push(param.to_string());
-                format!(":{param}*")
-            } else if let Some(param) = segment
-                .strip_prefix('[')
-                .and_then(|value| value.strip_suffix(']'))
-            {
-                dynamic_params.push(param.to_string());
-                format!(":{param}")
-            } else {
-                segment.to_string()
-            }
-        })
-        .collect::<Vec<_>>();
-    (format!("/{}", segments.join("/")), dynamic_params)
 }
 
 fn data_operation_parts<'a>(

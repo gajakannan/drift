@@ -1,4 +1,4 @@
-import type { AcceptedConvention, FactRecord, ParserGap, RepoContract, ScanManifest } from "@drift/core";
+import { nextApiRouteIdentity, type AcceptedConvention, type FactRecord, type ParserGap, type RepoContract, type ScanManifest } from "@drift/core";
 import type { openDriftStorage } from "@drift/storage";
 
 type DriftStorage = ReturnType<typeof openDriftStorage>;
@@ -93,6 +93,14 @@ function latestSecurityScan(scans: ScanManifest[]): ScanManifest | undefined {
   ) ?? scans.find((scan) => scan.status === "completed") ?? scans[0];
 }
 
+function routeIdForFact(routeId: string | undefined, filePath: string): string {
+  if (routeId) {
+    return routeId;
+  }
+  const identity = nextApiRouteIdentity(filePath);
+  return identity ? `route:${identity.route_path}:unknown` : `route:${filePath}:unknown`;
+}
+
 function securityConventions(conventions: AcceptedConvention[]) {
   return conventions
     .filter((convention) =>
@@ -122,7 +130,7 @@ function sessionTrustRoutes(sessionFacts: FactRecord[]) {
 
   for (const fact of sessionFacts) {
     const value = parseSessionReadValue(fact.value);
-    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const routeId = routeIdForFact(value.route_id, fact.file_path);
     const entry = byRoute.get(routeId) ?? {
       route_id: routeId,
       file_path: fact.file_path,
@@ -158,7 +166,7 @@ function authorizationRoutes(authorizationFacts: FactRecord[]) {
 
   for (const fact of authorizationFacts) {
     const value = parseAuthorizationGuardValue(fact.value);
-    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const routeId = routeIdForFact(value.route_id, fact.file_path);
     const entry = byRoute.get(routeId) ?? {
       route_id: routeId,
       file_path: fact.file_path,
@@ -194,7 +202,7 @@ function tenantScopeRoutes(tenantSourceFacts: FactRecord[], tenantGuardFacts: Fa
 
   for (const fact of tenantSourceFacts) {
     const value = parseTenantSourceValue(fact.value);
-    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const routeId = routeIdForFact(value.route_id, fact.file_path);
     const entry = byRoute.get(routeId) ?? {
       route_id: routeId,
       file_path: fact.file_path,
@@ -211,7 +219,7 @@ function tenantScopeRoutes(tenantSourceFacts: FactRecord[], tenantGuardFacts: Fa
 
   for (const fact of tenantGuardFacts) {
     const value = parseTenantGuardValue(fact.value);
-    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const routeId = routeIdForFact(value.route_id, fact.file_path);
     const entry = byRoute.get(routeId) ?? {
       route_id: routeId,
       file_path: fact.file_path,
@@ -246,7 +254,7 @@ function requestValidationRoutes(inputFacts: FactRecord[], validatedUseFacts: Fa
 
   for (const fact of inputFacts) {
     const value = parseRequestInputReadValue(fact.value);
-    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const routeId = routeIdForFact(value.route_id, fact.file_path);
     const entry = byRoute.get(routeId) ?? {
       route_id: routeId,
       file_path: fact.file_path,
@@ -261,7 +269,7 @@ function requestValidationRoutes(inputFacts: FactRecord[], validatedUseFacts: Fa
 
   for (const fact of validatedUseFacts) {
     const value = parseValidatedInputUsedValue(fact.value);
-    const routeId = value.route_id ?? `route:${fact.file_path}:unknown`;
+    const routeId = routeIdForFact(value.route_id, fact.file_path);
     const entry = byRoute.get(routeId) ?? {
       route_id: routeId,
       file_path: fact.file_path,

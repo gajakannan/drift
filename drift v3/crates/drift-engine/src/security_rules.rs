@@ -4,6 +4,7 @@ use crate::{
     Phase4SecurityPolicy, RequestValidationProofScope, SecurityProofStatus,
     build_auth_boundary_proof, build_middleware_coverage_proof,
     build_phase4_security_proof_with_policy, build_request_validation_proof_with_scope,
+    next_routes::next_api_route_identity,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -421,17 +422,5 @@ fn first_route_method(source: &str) -> Option<String> {
 }
 
 fn route_path_from_file(file_path: &str) -> Option<String> {
-    if let Some(rest) = file_path
-        .strip_prefix("app/")
-        .and_then(|path| path.strip_suffix("/route.ts"))
-    {
-        return Some(format!("/{}", rest.trim_end_matches('/')));
-    }
-    if let Some(rest) = file_path
-        .strip_prefix("pages")
-        .and_then(|path| path.strip_suffix(".ts"))
-    {
-        return Some(rest.to_string());
-    }
-    None
+    next_api_route_identity(file_path).map(|identity| identity.route_path)
 }
