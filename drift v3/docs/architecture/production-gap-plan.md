@@ -149,6 +149,11 @@ node packages/cli/dist/main.js --db <db> check --repo <repo_id> --scope full --j
 
 Impact: Live dogfood had 45 parser gaps. If prepare/check/repo-map claims do not carry this confidence consistently, agents can overtrust incomplete flow context.
 
+Current beta status: `drift.parser_gap_quality.v1` is now a query-owned derived
+read model surfaced through scan status, prepare/preflight, repo map, MCP parity,
+and beta proof. Readiness is still scan-level; path-scoped parser-gap readiness
+is not implemented in this slice.
+
 Evidence:
 
 - Dogfood scan status: 33 `unresolved_symbol`, 12 `unsupported_framework_pattern`.
@@ -580,7 +585,7 @@ Dogfood proves:
 
 - Drift can scan its own repo with the Rust engine.
 - It can persist 163 files and 20,440 facts.
-- It surfaces parser gaps honestly.
+- It surfaces parser gaps honestly, with derived parser-gap quality/user action on beta surfaces.
 - It builds repo map/topology.
 - It prepares a no-contract local packet.
 - It verifies audit integrity.

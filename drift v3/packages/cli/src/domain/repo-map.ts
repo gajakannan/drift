@@ -2,6 +2,7 @@ import { authorizeContextExport,type FileRole,type PolicyDecision,type RepoContr
 import {
   buildCanonicalRouteReadModel,
   buildFrameworkEntrypointReadModel,
+  buildParserGapQuality,
   buildRepoMapReadModel,
   buildSecurityPhase8ReadModel,
   createGraphQueryService,
@@ -127,7 +128,10 @@ export function repoMapPayload(
   const offset = options.offset ?? 0;
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
-  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "repo_map");
+  const allParserGaps = latestScan
+    ? [...storage.listParserGaps(repoId, latestScan.id), ...storage.listParserGapV2(repoId, latestScan.id)]
+    : [];
+  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "repo_map", allParserGaps);
   const proofRuns = latestScan
     ? storage.listLatestSecurityBoundaryProofRunsForRepo({
         repo_id: repoId,
@@ -186,6 +190,13 @@ export function repoMapPayload(
     }),
     policy,
     readiness,
+    parser_gap_quality: buildParserGapQuality({
+      repo_id: repoId,
+      scan_id: latestScan?.id ?? null,
+      surface: "repo_map",
+      parser_gaps: allParserGaps,
+      readiness
+    }),
     governance: preflightGovernance(),
     latest_scan: latestScan ?? null,
     scan_fingerprint: latestScan ? scanFingerprint(latestScan, snapshots) : null,

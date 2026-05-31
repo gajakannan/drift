@@ -57,6 +57,7 @@ import {
   buildCanonicalRouteReadModel,
   buildFrameworkEntrypointReadModel,
   buildFindingsReadModel,
+  buildParserGapQuality,
   buildParserGapSummary,
   buildRepoContractReadModel,
   buildReadiness,
@@ -290,6 +291,13 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         parser_gaps: allParserGaps,
         generated_at: generatedAt
       });
+      const parserGapQuality = buildParserGapQuality({
+        repo_id: requestedRepoId,
+        scan_id: scanStatus.latest_scan?.id ?? null,
+        surface: "prepare",
+        parser_gaps: allParserGaps,
+        readiness
+      });
       const contextPolicy = createContextPolicyMatrix(contract, policy);
       const taskPreflightPacket = AgentPreflightPacketV2Schema.parse({
         schema_version: "drift.agent_preflight.v2",
@@ -331,6 +339,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         }),
         policy,
         readiness,
+        parser_gap_quality: parserGapQuality,
         semantic_coverage: semanticCoverage,
         contract: {
           id: contractReady ? contract.id : null,
@@ -1228,6 +1237,13 @@ function scanStatusPayload(
     invalidation_reasons: invalidationReasons,
     changes,
     parser_gaps: parserGapSummary(allParserGaps),
+    parser_gap_quality: buildParserGapQuality({
+      repo_id: repoId,
+      scan_id: latestScan?.id ?? null,
+      surface: "scan_status",
+      parser_gaps: allParserGaps,
+      readiness
+    }),
     readiness,
     capability_report: capabilityReport,
     security_capabilities: proofRuns.length > 0 ||
@@ -1572,7 +1588,10 @@ function repoMapPayload(
   });
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
-  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "repo_map");
+  const allParserGaps = latestScan
+    ? [...storage.listParserGaps(repoId, latestScan.id), ...storage.listParserGapV2(repoId, latestScan.id)]
+    : [];
+  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "repo_map", allParserGaps);
   const proofRuns = latestScan
     ? storage.listLatestSecurityBoundaryProofRunsForRepo({
         repo_id: repoId,
@@ -1629,6 +1648,13 @@ function repoMapPayload(
     }),
     policy,
     readiness,
+    parser_gap_quality: buildParserGapQuality({
+      repo_id: repoId,
+      scan_id: latestScan?.id ?? null,
+      surface: "repo_map",
+      parser_gaps: allParserGaps,
+      readiness
+    }),
     governance: preflightGovernance(),
     latest_scan: latestScan ?? null,
     scan_fingerprint: latestScan ? scanFingerprint(latestScan, snapshots) : null,

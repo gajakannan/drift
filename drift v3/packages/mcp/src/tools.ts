@@ -28,7 +28,7 @@ export const DRIFT_READ_ONLY_MCP_TOOLS: DriftMcpTool[] = [
   },
   {
     name: "get_scan_status",
-    description: "Return the latest Drift scan status for a repo.",
+    description: "Return the latest Drift scan status for a repo, including parser-gap quality.",
     inputSchema: repoOnlySchema()
   },
   {
@@ -38,7 +38,7 @@ export const DRIFT_READ_ONLY_MCP_TOOLS: DriftMcpTool[] = [
   },
   {
     name: "get_repo_map",
-    description: "Return the latest indexed file-role/import/export/call map without source snippets.",
+    description: "Return the latest indexed file-role/import/export/call map and parser-gap quality without source snippets.",
     inputSchema: {
       type: "object",
       properties: {
@@ -92,7 +92,7 @@ export const DRIFT_READ_ONLY_MCP_TOOLS: DriftMcpTool[] = [
   },
   {
     name: "get_task_preflight",
-    description: "Return policy-filtered conventions and findings relevant to a task.",
+    description: "Return policy-filtered conventions, findings, and parser-gap quality relevant to a task.",
     inputSchema: {
       type: "object",
       properties: {

@@ -248,11 +248,11 @@ export const TYPESCRIPT_ADAPTER_MANIFEST: AdapterManifest = AdapterManifestSchem
   capabilities: [
     blockingCapability("file_discovery", ["typescript", "tsx", "javascript", "jsx"], [
       "next-api-direct-db",
-      "mixed-js-ts-next-repo"
+      "mixed-js-ts"
     ]),
     blockingCapability("syntax_facts", ["typescript", "tsx", "javascript", "jsx"], [
       "next-api-direct-db",
-      "next-api-clean"
+      "next-prisma-clean-service"
     ]),
     blockingCapability("import_resolution", ["typescript", "tsx", "javascript", "jsx"], [
       "monorepo-alias-db",
@@ -274,7 +274,7 @@ export const TYPESCRIPT_ADAPTER_MANIFEST: AdapterManifest = AdapterManifestSchem
     ]),
     blockingCapability("direct_data_access_check", ["typescript", "tsx", "javascript", "jsx"], [
       "next-api-direct-db",
-      "legacy-baselined-violations"
+      "next-real-repo-chadlike"
     ]),
     {
       id: "candidate_inference",

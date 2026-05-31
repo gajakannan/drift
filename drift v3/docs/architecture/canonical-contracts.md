@@ -98,6 +98,7 @@ Current mismatch:
 | Product/Capability | canonical-beta | `packages/core/src/capabilities.ts`, `packages/cli/src/domain/versions.ts`, CLI `capabilities --json` | Needs release gate that prevents broad claims beyond the narrow wedge. |
 | Repo Identity | canonical-beta | `RepoRecord`, `ScanManifest`, `repoIdForRoot`, `repoRecordForRoot`, migration `012_repo_identity` | Clean-commit enforcement remains a release/beta proof gate rather than a mutable repo row. |
 | Scan/Freshness | canonical-beta | `ScanManifest`, `ScanFileChange`, `scanStatusPayload`, resolver-input fingerprint, beta proof fresh scan check | Incremental reuse is not implemented; `check` uses check-time collection and reports that status explicitly. |
+| Parser Gap Quality | canonical-beta | `drift.parser_gap_quality.v1`, `packages/query/src/parser-gap-quality.ts`, CLI/MCP scan status, preflight, repo map, beta proof `parser_gap_quality_verified` | Derived read model only; not persisted and not a claim that all TypeScript semantics are production-complete. |
 | Engine Boundary | canonical-beta | `@drift/engine-contract` schemas, Rust bridge, stream parsing tests, fallback-used check blocking | TypeScript fallback remains dev-only and must stay visibly degraded. |
 | Fact | canonical-defined | `FactRecord`, `FactKind`, `facts` table | Facts lack confidence, extractor id, resolved target, and provenance beyond file/range/fact ids. |
 | Graph | canonical-beta | `@drift/factgraph`, graph migrations/projections, query package | Graph coverage must stay capability-gated; not every check output persists graph path. |
@@ -607,6 +608,7 @@ Current evidence:
 - `scripts/run-beta-proof.mjs` generates a fixture proof with repo id, scan id, repo contract id, good-route pass, bad-route block, finding evidence completeness, CLI/MCP parity hash, and audit head hash.
 - `scripts/run-beta-proof.mjs` also proves `start --json` and `doctor --json` expose stable schemas, machine contract versions, engine provenance, and V1 scope.
 - The beta proof includes `test/fixtures/next-real-repo-chadlike`, which guards the real-repo direct-data signal: auth/session/payment wrappers and Prisma runtime error imports must not become forbidden direct-data imports; the accepted convention must forbid only `~/lib/server/db`; all baseline finding evidence must retain `fact_ids`.
+- The beta proof also scans static realistic Next/Node fixtures for clean service delegation, no false Prisma semantics from fetch usage, and graceful non-Next indexing.
 - `scripts/generate-release-proof.mjs --beta-proof-file <path> --require-beta-proof` consumes the beta proof artifact.
 - Test fixture matrix exists in current working tree under `test/fixtures/*` and `test/e2e/fixture-matrix.test.ts:34`.
 - Golden lifecycle exists in `test/e2e/golden.test.ts:23`.

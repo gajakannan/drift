@@ -674,6 +674,11 @@ describe("read-only MCP handlers", () => {
     expect(createReadOnlyMcpHandlers({ databasePath }).get_scan_status({ repo_id: "repo_abc" })).toMatchObject({
       stale: true,
       invalidation_reasons: ["scan_missing"],
+      parser_gap_quality: {
+        schema_version: "drift.parser_gap_quality.v1",
+        total_count: 0,
+        user_action: "No parser gap action required."
+      },
       readiness: {
         missing_capabilities: ["fact_graph", "scan_manifest"],
         required_capabilities: ["fact_graph", "scan_manifest"]
@@ -722,6 +727,9 @@ describe("read-only MCP handlers", () => {
     expect(mcpScanStatus.readiness).toEqual(JSON.parse(cliScanStatus.stdout).readiness);
     expect(mcpRepoMap.readiness).toEqual(JSON.parse(cliRepoMap.stdout).readiness);
     expect(mcpPreflight.readiness).toEqual(JSON.parse(cliPreflight.stdout).readiness);
+    expect(mcpScanStatus.parser_gap_quality).toEqual(JSON.parse(cliScanStatus.stdout).parser_gap_quality);
+    expect(mcpRepoMap.parser_gap_quality).toEqual(JSON.parse(cliRepoMap.stdout).parser_gap_quality);
+    expect(mcpPreflight.parser_gap_quality).toEqual(JSON.parse(cliPreflight.stdout).parser_gap_quality);
   });
 
   it("reports parser gap summaries in scan status", async () => {
@@ -781,6 +789,15 @@ describe("read-only MCP handlers", () => {
         by_kind: { unresolved_import: 1 },
         confidence_impact: { lowers_flow: 1 }
       },
+      parser_gap_quality: {
+        schema_version: "drift.parser_gap_quality.v1",
+        total_count: 1,
+        advisory_count: 1,
+        top_actions: [{
+          suggested_action: "Resolve the import or add resolver configuration, then rerun drift scan.",
+          count: 1
+        }]
+      },
       readiness: {
         schema_version: "drift.readiness.v1",
         repo_id: "repo_abc",
@@ -834,6 +851,20 @@ describe("read-only MCP handlers", () => {
         by_contract_kind: {
           api_route_no_direct_data_access: 1
         }
+      },
+      parser_gap_quality: {
+        schema_version: "drift.parser_gap_quality.v1",
+        total_count: 1,
+        blocking_count: 1,
+        by_capability: {
+          "ts.dynamic_imports.v1": 1,
+          "ts.route_flow.v1": 1
+        },
+        by_contract_kind: {
+          api_route_no_direct_data_access: 1
+        },
+        decision: "refuse",
+        user_action: "Resolve blocking parser gaps before enabling blocking enforcement."
       },
       readiness: {
         parser_gap_count: 1,
@@ -1214,6 +1245,13 @@ describe("read-only MCP handlers", () => {
         schema_version: "drift.readiness.v1",
         surface: "prepare",
         repo_id: "repo_abc"
+      },
+      parser_gap_quality: {
+        schema_version: "drift.parser_gap_quality.v1",
+        surface: "prepare",
+        repo_id: "repo_abc",
+        total_count: 0,
+        user_action: "No parser gap action required."
       },
       conventions: [{
         id: "convention_no_direct_db",

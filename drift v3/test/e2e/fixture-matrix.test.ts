@@ -76,6 +76,47 @@ describe("fixture matrix", () => {
     }
   });
 
+  it("keeps a realistic Next Prisma service fixture clean when routes delegate", async () => {
+    const { scanPayload } = await scanFixture("next-prisma-clean-service");
+    const storage = openDriftStorage({ databasePath: scanPayload.database_path });
+
+    try {
+      const diagnostics = storage.listGraphDiagnostics(scanPayload.repo.id, scanPayload.scan.id);
+      const edges = storage.listGraphEdges(scanPayload.repo.id, scanPayload.scan.id);
+
+      expect(scanPayload.summary.files_indexed).toBeGreaterThanOrEqual(3);
+      expect(scanPayload.candidates.map((candidate: any) => candidate.kind))
+        .not.toContain("api_route_no_direct_data_access");
+      expect(diagnostics).not.toContainEqual(expect.objectContaining({ code: "unresolved_import" }));
+      expect(edges).toContainEqual(expect.objectContaining({
+        kind: "IMPORT_RESOLVES_TO_MODULE",
+        to: "module:apps/web/services/users.ts"
+      }));
+      expect(edges).toContainEqual(expect.objectContaining({
+        kind: "IMPORT_RESOLVES_TO_MODULE",
+        to: "module:apps/web/lib/prisma.ts"
+      }));
+    } finally {
+      storage.close();
+    }
+  });
+
+  it("does not invent Prisma or data-store conventions for service fetch usage", async () => {
+    const { scanPayload } = await scanFixture("next-non-prisma-fetch-service");
+
+    expect(scanPayload.candidates.map((candidate: any) => candidate.kind))
+      .not.toContain("api_route_no_direct_data_access");
+    expect(JSON.stringify(scanPayload)).not.toContain("prisma");
+  });
+
+  it("handles a non-Next Node API repo without Next route claims", async () => {
+    const { scanPayload } = await scanFixture("node-express-api");
+
+    expect(scanPayload.summary.files_indexed).toBeGreaterThanOrEqual(4);
+    expect(scanPayload.candidates.map((candidate: any) => candidate.kind))
+      .not.toContain("api_route_no_direct_data_access");
+  });
+
   it("resolves monorepo workspace package imports into graph module edges", async () => {
     const { repoRoot, stateRoot } = await fixtureRepo("monorepo-alias-db");
     const scan = await runCli([

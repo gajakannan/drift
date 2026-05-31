@@ -1,6 +1,6 @@
 import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type ParserGap,type ParserGapConfidenceImpact,type ParserGapKind,type ParserGapV2,type RepoRecord,type ScanCapabilityReport,type ScanFileChange,type ScanManifest } from "@drift/core";
 import { buildFactGraphArtifactFromParts,type FactGraphArtifact } from "@drift/factgraph";
-import { buildParserGapSummary,buildSecurityPhase8ReadModel,buildStoredScanReadiness,type DriftReadinessSurface } from "@drift/query";
+import { buildParserGapQuality,buildParserGapSummary,buildSecurityPhase8ReadModel,buildStoredScanReadiness,type DriftReadinessSurface } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,mkdtempSync,readdirSync,rmSync,statSync,writeFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
@@ -537,6 +537,13 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
   const latestScan = latestIndexedScan(scans);
   if (!latestScan) {
     const nextCommands = scanStatusNextCommands(repoId, repo.root_path, true);
+    const readiness = buildStoredScanReadiness({
+      repo_id: repoId,
+      scan_id: null,
+      surface: "scan_status",
+      graph_available: false,
+      parser_gaps: []
+    });
     return {
       response_schema: "drift.scan.status.v1",
       repo_id: repoId,
@@ -567,14 +574,15 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
       invalidation_reasons: ["scan_missing"],
       changes: { added: [], modified: [], deleted: [] },
       parser_gaps: parserGapSummary([]),
-      security_capabilities: [],
-      readiness: buildStoredScanReadiness({
+      parser_gap_quality: buildParserGapQuality({
         repo_id: repoId,
         scan_id: null,
         surface: "scan_status",
-        graph_available: false,
-        parser_gaps: []
+        parser_gaps: [],
+        readiness
       }),
+      security_capabilities: [],
+      readiness,
       capability_report: null,
       machine_contract_versions: currentMachineContractVersions(),
       next_command: nextCommands[0],
@@ -663,6 +671,13 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     invalidation_reasons: invalidationReasons,
     changes,
     parser_gaps: parserGapSummary(allParserGaps),
+    parser_gap_quality: buildParserGapQuality({
+      repo_id: repoId,
+      scan_id: latestScan.id,
+      surface: "scan_status",
+      parser_gaps: allParserGaps,
+      readiness
+    }),
     readiness,
     capability_report: capabilityReport,
     security_capabilities: proofs.length > 0 ||

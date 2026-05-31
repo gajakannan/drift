@@ -34,7 +34,7 @@ Source surfaces audited:
 - Contract schemas/canonicalization: `packages/core/src/schemas.ts`, `packages/core/src/contracts.ts`
 - Candidate/election acceptance: `packages/cli/src/domain/convention-candidates.ts`
 - Contract materialization/import: `packages/cli/src/domain/contract-materialization.ts`, `packages/cli/src/commands/contract.ts`
-- Scan status/parser gaps: `packages/cli/src/domain/scan-status.ts`
+- Scan status/parser gaps: `packages/cli/src/domain/scan-status.ts`; parser-gap quality is derived in `packages/query/src/parser-gap-quality.ts`
 - Graph readiness/preflight: `packages/cli/src/domain/graph-preflight.ts`
 - CLI prepare: `packages/cli/src/commands/prepare.ts`
 - CLI check: `packages/cli/src/check/run-check.ts`

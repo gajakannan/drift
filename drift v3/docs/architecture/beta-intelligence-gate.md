@@ -165,9 +165,13 @@ Use this checklist before every beta tag:
 - [ ] Engine package install smoke passes without `DRIFT_ENGINE_BIN` on the
       target platform.
 - [ ] Policy redaction tests cover CLI and MCP agent surfaces.
-- [ ] Fixture matrix covers the V1 import-resolution and route-flow wedge.
+- [ ] Fixture matrix covers the V1 import-resolution and route-flow wedge:
+      direct route-to-data-access, clean service delegation, no-Prisma
+      fetch/service shape, non-Next graceful scan, and adapter manifest fixture
+      IDs resolving to committed fixtures.
+- [ ] Parser-gap quality is visible in CLI/MCP scan status, preflight, repo map,
+      and beta proof as `parser_gap_quality_verified`.
 - [ ] Large synthetic repo scale gate passes.
 - [ ] No read-only MCP tool mutates governance state.
 - [ ] Known blockers above are either fixed or explicitly called out in release
       notes.
-

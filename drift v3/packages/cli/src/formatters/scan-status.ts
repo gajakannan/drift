@@ -1,5 +1,6 @@
 import type { AuditChainVerification,ScanManifest } from "@drift/core";
 import { ScanStatusChangeSet } from "../domain/scan-status.js";
+import type { ParserGapQuality } from "@drift/query";
 
 export function formatScanStatusText(payload: {
   repo_id: string;
@@ -12,10 +13,16 @@ export function formatScanStatusText(payload: {
   stale: boolean;
   invalidation_reasons?: string[];
   changes: ScanStatusChangeSet;
+  parser_gap_quality?: ParserGapQuality;
   next_command: string;
   next_commands?: string[];
 }): string {
   const nextCommands = payload.next_commands ?? [payload.next_command];
+  const parserGapLines = payload.parser_gap_quality && payload.parser_gap_quality.total_count > 0
+    ? [
+        `Parser gaps: ${payload.parser_gap_quality.blocking_count} blocking, ${payload.parser_gap_quality.advisory_count} advisory. Action: ${payload.parser_gap_quality.user_action}`
+      ]
+    : [];
   return [
     "Drift scan status",
     "",
@@ -32,6 +39,7 @@ export function formatScanStatusText(payload: {
     `Modified: ${payload.changes.modified.length}`,
     `Deleted: ${payload.changes.deleted.length}`,
     `Invalidations: ${payload.invalidation_reasons?.join(", ") || "none"}`,
+    ...parserGapLines,
     "",
     nextCommands.length === 1 ? "Next command:" : "Next commands:",
     ...nextCommands.map((command) => `  ${command}`),
