@@ -1,5 +1,6 @@
 export const DRIFT_CORE_VERSION = "0.1.0";
 
+export * from "./beta-surfaces.js";
 export * from "./agent-contracts.js";
 export * from "./agent-envelope.js";
 export * from "./audit.js";
