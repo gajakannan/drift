@@ -1,6 +1,6 @@
 import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type ParserGap,type ParserGapConfidenceImpact,type ParserGapKind,type ParserGapV2,type RepoRecord,type ScanCapabilityReport,type ScanFileChange,type ScanManifest } from "@drift/core";
 import { buildFactGraphArtifactFromParts,type FactGraphArtifact } from "@drift/factgraph";
-import { buildReadiness,buildSecurityPhase8ReadModel,type DriftReadinessSurface } from "@drift/query";
+import { buildParserGapSummary,buildSecurityPhase8ReadModel,buildStoredScanReadiness,type DriftReadinessSurface } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,mkdtempSync,readdirSync,rmSync,statSync,writeFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
@@ -568,16 +568,12 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
       changes: { added: [], modified: [], deleted: [] },
       parser_gaps: parserGapSummary([]),
       security_capabilities: [],
-      readiness: buildReadiness({
+      readiness: buildStoredScanReadiness({
         repo_id: repoId,
         scan_id: null,
         surface: "scan_status",
         graph_available: false,
-        graph_complete: false,
-        parser_gaps: [],
-        completeness_reasons: ["scan_missing"],
-        required_capabilities: ["scan_manifest", "fact_graph"],
-        missing_capabilities: ["scan_manifest", "fact_graph"]
+        parser_gaps: []
       }),
       capability_report: null,
       machine_contract_versions: currentMachineContractVersions(),
@@ -741,16 +737,12 @@ export function readinessForStoredScan(
     : []
 ) {
   const graphAvailable = Boolean(scanId && storage.getFactGraphArtifact(repoId, scanId));
-  return buildReadiness({
+  return buildStoredScanReadiness({
     repo_id: repoId,
     scan_id: scanId,
     surface,
     graph_available: graphAvailable,
-    graph_complete: graphAvailable,
-    parser_gaps: parserGaps,
-    completeness_reasons: graphAvailable ? [] : ["graph_missing"],
-    required_capabilities: ["fact_graph"],
-    missing_capabilities: graphAvailable ? [] : ["fact_graph"]
+    parser_gaps: parserGaps
   });
 }
 
@@ -791,16 +783,13 @@ export function parserGapSummary(gaps: Array<ParserGap | ParserGapV2>): {
   by_capability: Record<string, number>;
   by_contract_kind: Record<string, number>;
 } {
+  const summary = buildParserGapSummary(gaps);
   return {
-    total_count: gaps.length,
-    by_kind: countBy(gaps.map((gap) => gap.kind)),
-    confidence_impact: countBy(gaps.map((gap) => gap.confidence_impact)) as Record<ParserGapConfidenceImpact, number>,
-    by_capability: countBy(gaps.flatMap((gap) =>
-      "affected_capabilities" in gap ? gap.affected_capabilities : []
-    )) as Record<string, number>,
-    by_contract_kind: countBy(gaps.flatMap((gap) =>
-      "affected_contract_kinds" in gap ? gap.affected_contract_kinds : []
-    )) as Record<string, number>
+    total_count: summary.total_count,
+    by_kind: summary.by_kind,
+    confidence_impact: summary.confidence_impact as Record<ParserGapConfidenceImpact, number>,
+    by_capability: summary.by_capability,
+    by_contract_kind: summary.by_contract_kind
   };
 }
 

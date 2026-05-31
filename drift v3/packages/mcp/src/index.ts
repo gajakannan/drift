@@ -57,10 +57,12 @@ import {
   buildCanonicalRouteReadModel,
   buildFrameworkEntrypointReadModel,
   buildFindingsReadModel,
+  buildParserGapSummary,
   buildRepoContractReadModel,
   buildReadiness,
   buildSemanticCoverage,
   buildSecurityPhase8ReadModel,
+  buildStoredScanReadiness,
   classifyAgentTask,
   buildRepoMapReadModel,
   createGraphQueryService,
@@ -1277,20 +1279,12 @@ function readinessForStoredScan(
     : []
 ) {
   const graphAvailable = Boolean(scanId && storage.getFactGraphArtifact(repoId, scanId));
-  const requiredCapabilities = scanId ? ["fact_graph"] : ["fact_graph", "scan_manifest"];
-  const missingCapabilities = graphAvailable
-    ? []
-    : requiredCapabilities;
-  return buildReadiness({
+  return buildStoredScanReadiness({
     repo_id: repoId,
     scan_id: scanId,
     surface,
     graph_available: graphAvailable,
-    graph_complete: graphAvailable,
-    parser_gaps: parserGaps,
-    completeness_reasons: graphAvailable ? [] : scanId ? ["graph_missing"] : ["scan_missing", "graph_missing"],
-    required_capabilities: requiredCapabilities,
-    missing_capabilities: missingCapabilities
+    parser_gaps: parserGaps
   });
 }
 
@@ -1301,16 +1295,13 @@ function parserGapSummary(gaps: Array<ParserGap | ParserGapV2>): {
   by_capability: Record<string, number>;
   by_contract_kind: Record<string, number>;
 } {
+  const summary = buildParserGapSummary(gaps);
   return {
-    total_count: gaps.length,
-    by_kind: countBy(gaps, (gap) => gap.kind) as Record<ParserGapKind, number>,
-    confidence_impact: countBy(gaps, (gap) => gap.confidence_impact) as Record<ParserGapConfidenceImpact, number>,
-    by_capability: countBy(gaps.flatMap((gap) =>
-      "affected_capabilities" in gap ? gap.affected_capabilities : []
-    ), (capability) => capability) as Record<string, number>,
-    by_contract_kind: countBy(gaps.flatMap((gap) =>
-      "affected_contract_kinds" in gap ? gap.affected_contract_kinds : []
-    ), (contractKind) => contractKind) as Record<string, number>
+    total_count: summary.total_count,
+    by_kind: summary.by_kind as Record<ParserGapKind, number>,
+    confidence_impact: summary.confidence_impact as Record<ParserGapConfidenceImpact, number>,
+    by_capability: summary.by_capability,
+    by_contract_kind: summary.by_contract_kind
   };
 }
 
