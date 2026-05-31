@@ -1559,6 +1559,121 @@ describe("read-only MCP handlers", () => {
     ]);
   });
 
+  it("returns canonical route entrypoints in MCP repo map and security context", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertFrameworkScanData({
+      repoId: "repo_abc",
+      scanId: "scan_abc",
+      adapters: [{
+        schema_version: "drift.framework.adapter.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        adapter_version: "0.1.0",
+        package_names: ["next"],
+        entrypoint_kinds: ["api_route"],
+        supported_patterns: ["app/api/**/route.{ts,tsx,js,jsx}", "pages/api/**/*.{ts,tsx,js,jsx}"],
+        unsupported_patterns: [],
+        capabilities: []
+      }],
+      entrypoints: [{
+        schema_version: "drift.normalized_entrypoint.v1",
+        entrypoint_id: "entrypoint:next_app:apps/web/app/(admin)/api/projects/route.ts:GET",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        kind: "api_route",
+        file_path: "apps/web/app/(admin)/api/projects/route.ts",
+        handler_symbol: "GET",
+        route_pattern: "/api/projects",
+        method: "GET",
+        middleware_refs: [],
+        request_source_refs: [],
+        response_sink_refs: [],
+        data_operation_refs: [],
+        confidence_label: "high",
+        evidence_refs: ["fact:apps/web/app/(admin)/api/projects/route.ts:route_declared:GET:1-1"],
+        parser_gap_ids: []
+      }, {
+        schema_version: "drift.normalized_entrypoint.v1",
+        entrypoint_id: "entrypoint:next_pages:src/pages/api/projects/[projectId].ts:default",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_pages",
+        kind: "api_route",
+        file_path: "src/pages/api/projects/[projectId].ts",
+        handler_symbol: "default",
+        route_pattern: "/api/projects/:projectId",
+        method: "default",
+        middleware_refs: [],
+        request_source_refs: [],
+        response_sink_refs: [],
+        data_operation_refs: [],
+        confidence_label: "high",
+        evidence_refs: ["fact:src/pages/api/projects/[projectId].ts:route_declared:default:1-1"],
+        parser_gap_ids: []
+      }],
+      parserGaps: [],
+      capabilities: []
+    });
+    storage.close();
+
+    const handlers = createReadOnlyMcpHandlers({ databasePath });
+    const repoMap = handlers.get_repo_map({ repo_id: "repo_abc" } as never) as {
+      routes: Array<{
+        route_id: string;
+        normalized_entrypoint_id?: string;
+        path: string | null;
+        method: string | null;
+        source?: string;
+      }>;
+    };
+    const securityContext = handlers.get_security_context({ repo_id: "repo_abc" } as never) as {
+      routes: Array<{
+        route_id: string;
+        normalized_entrypoint_id?: string;
+        path: string | null;
+        method: string | null;
+        source?: string;
+      }>;
+      redactions: {
+        request_payloads_included: boolean;
+        secret_values_included: boolean;
+        actor_identity_included: boolean;
+      };
+    };
+
+    const expectedRoutes = [
+      expect.objectContaining({
+        route_id: "route:apps/web/app/(admin)/api/projects/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/(admin)/api/projects/route.ts:GET",
+        path: "/api/projects",
+        method: "GET",
+        source: "normalized_entrypoint"
+      }),
+      expect.objectContaining({
+        route_id: "route:src/pages/api/projects/[projectId].ts:default",
+        normalized_entrypoint_id: "entrypoint:next_pages:src/pages/api/projects/[projectId].ts:default",
+        path: "/api/projects/:projectId",
+        method: "default",
+        source: "normalized_entrypoint"
+      })
+    ];
+    expect(repoMap.routes).toEqual(expect.arrayContaining(expectedRoutes));
+    expect(securityContext.routes).toEqual(expect.arrayContaining(expectedRoutes));
+    expect(securityContext.redactions).toMatchObject({
+      request_payloads_included: false,
+      secret_values_included: false,
+      actor_identity_included: false
+    });
+    expect(JSON.stringify(securityContext)).not.toContain("request.json()");
+    expect(JSON.stringify(securityContext)).not.toContain("process.env");
+    expect(JSON.stringify(securityContext)).not.toContain("local-user");
+  });
+
   it("exposes required-check execution proof through read-only MCP", async () => {
     const databasePath = await seedMcpDatabase();
     const command = "node -e \"process.stdout.write('ok')\"";
@@ -1869,7 +1984,7 @@ describe("read-only MCP handlers", () => {
     expect(JSON.stringify(securityContext)).not.toContain("session=secret");
   });
 
-  it("normalizes grouped app api route ids in MCP security context fallbacks", async () => {
+  it("marks grouped app api raw fact security context fallbacks explicitly", async () => {
     const databasePath = await seedMcpDatabase();
     const storage = openDriftStorage({ databasePath });
     storage.migrate();
@@ -1903,14 +2018,20 @@ describe("read-only MCP handlers", () => {
     const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
       repo_id: "repo_abc"
     } as never) as {
-      routes: Array<{ route_id: string; file_path: string; path: string; method: string }>;
+      canonical_route_fallback: { used: boolean; reason: string | null };
+      routes: Array<{ route_id: string; file_path: string; path: string | null; method: string; source?: string }>;
     };
 
+    expect(securityContext.canonical_route_fallback).toEqual({
+      used: true,
+      reason: "normalized_entrypoints_missing"
+    });
     expect(securityContext.routes).toContainEqual(expect.objectContaining({
       route_id: "route:apps/web/app/(admin)/api/projects/route.ts:GET",
       file_path: "apps/web/app/(admin)/api/projects/route.ts",
-      path: "/api/projects",
-      method: "GET"
+      path: null,
+      method: "GET",
+      source: "legacy_fact_fallback"
     }));
   });
 
