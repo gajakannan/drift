@@ -97,8 +97,8 @@ export interface BuildSecurityPhase8ReadModelInput {
     route_id: string;
     normalized_entrypoint_id?: string;
     file_path: string;
-    path?: string;
-    method?: string;
+    path?: string | null;
+    method?: string | null;
     source?: CanonicalRouteSource;
     freshness?: CanonicalRouteFreshness;
     file_role?: string;

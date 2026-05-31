@@ -10440,6 +10440,102 @@ schema_version: 27,
     ]);
   });
 
+  it("repo map uses canonical route entrypoints", async () => {
+    const { databasePath, repoId } = await seedStartedDoctorState("drift-repo-map-canonical-routes-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const scanId = storage.listScanManifests(repoId)
+      .find((scan) => scan.status === "completed" && !scan.id.startsWith("scan_baseline_"))!.id;
+    storage.upsertFrameworkScanData({
+      repoId,
+      scanId,
+      adapters: [{
+        schema_version: "drift.framework.adapter.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        adapter_version: "0.1.0",
+        package_names: ["next"],
+        entrypoint_kinds: ["api_route"],
+        supported_patterns: ["app/api/**/route.{ts,tsx,js,jsx}", "pages/api/**/*.{ts,tsx,js,jsx}"],
+        unsupported_patterns: [],
+        capabilities: []
+      }],
+      entrypoints: [{
+        schema_version: "drift.normalized_entrypoint.v1",
+        entrypoint_id: "entrypoint:next_app:apps/web/app/(admin)/api/projects/route.ts:GET",
+        repo_id: repoId,
+        scan_id: scanId,
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        kind: "api_route",
+        file_path: "apps/web/app/(admin)/api/projects/route.ts",
+        handler_symbol: "GET",
+        route_pattern: "/api/projects",
+        method: "GET",
+        middleware_refs: [],
+        request_source_refs: [],
+        response_sink_refs: [],
+        data_operation_refs: [],
+        confidence_label: "high",
+        evidence_refs: ["fact:apps/web/app/(admin)/api/projects/route.ts:route_declared:GET:1-1"],
+        parser_gap_ids: []
+      }, {
+        schema_version: "drift.normalized_entrypoint.v1",
+        entrypoint_id: "entrypoint:next_pages:src/pages/api/projects/[projectId].ts:default",
+        repo_id: repoId,
+        scan_id: scanId,
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_pages",
+        kind: "api_route",
+        file_path: "src/pages/api/projects/[projectId].ts",
+        handler_symbol: "default",
+        route_pattern: "/api/projects/:projectId",
+        method: "default",
+        middleware_refs: [],
+        request_source_refs: [],
+        response_sink_refs: [],
+        data_operation_refs: [],
+        confidence_label: "high",
+        evidence_refs: ["fact:src/pages/api/projects/[projectId].ts:route_declared:default:1-1"],
+        parser_gap_ids: []
+      }],
+      parserGaps: [],
+      capabilities: []
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "repo", "map",
+      "--repo", repoId,
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.routes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        route_id: "route:apps/web/app/(admin)/api/projects/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/(admin)/api/projects/route.ts:GET",
+        path: "/api/projects",
+        method: "GET",
+        source: "normalized_entrypoint"
+      }),
+      expect.objectContaining({
+        route_id: "route:src/pages/api/projects/[projectId].ts:default",
+        normalized_entrypoint_id: "entrypoint:next_pages:src/pages/api/projects/[projectId].ts:default",
+        path: "/api/projects/:projectId",
+        method: "default",
+        source: "normalized_entrypoint"
+      })
+    ]));
+    expect(payload.routes).toEqual(expect.not.arrayContaining([
+      expect.objectContaining({
+        route_id: "route:src/pages/api/projects/[projectId].ts:unknown"
+      })
+    ]));
+  });
+
   it("filters repo map output by role and repo-relative path", async () => {
     const { databasePath, repoId } = await seedStartedDoctorState("drift-repo-map-filter-");
 
