@@ -226,6 +226,25 @@ fn security_phase5_scope_filtering_and_blocking_are_engine_owned() {
         }),
         "admin/helper files must be out of Phase 5 route scope: {payload:#?}"
     );
+    let proofs = payload["security_boundary_proofs"]
+        .as_array()
+        .expect("proofs");
+    assert!(
+        proofs.iter().any(|proof| {
+            proof["route"]["route_id"] == "route:app/api/users/route.ts:GET"
+                && proof["route"]["normalized_entrypoint_id"]
+                    == "entrypoint:next_app:app/api/users/route.ts:GET"
+        }),
+        "{payload:#?}"
+    );
+    assert!(
+        proofs.iter().any(|proof| {
+            proof["route"]["route_id"] == "route:app/api/secrets/route.ts:GET"
+                && proof["route"]["normalized_entrypoint_id"]
+                    == "entrypoint:next_app:app/api/secrets/route.ts:GET"
+        }),
+        "{payload:#?}"
+    );
 }
 
 #[test]

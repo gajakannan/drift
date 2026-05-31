@@ -54,6 +54,10 @@ fn check_repo_blocks_phase6_ssrf_with_trusted_proof() {
         payload["security_boundary_proofs"][0]["result"]["proof_status"],
         "missing_proof"
     );
+    assert_eq!(
+        payload["security_boundary_proofs"][0]["route"]["normalized_entrypoint_id"],
+        "entrypoint:next_app:app/api/proxy/route.ts:GET"
+    );
 }
 
 fn run_phase6_fixture(name: &str, file_path: &str, source: &str, convention: Value) -> Value {
