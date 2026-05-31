@@ -58,7 +58,7 @@ Current beta proof state:
 8. A beta demo from dirty state is not beta-grade.
 9. Scanner skip rules, context egress denied globs, and support/export redaction are separate controls. Rust skip behavior is the production scanner guarantee; policy denied globs are output controls; TypeScript fallback is degraded and cannot be claimed equivalent for secret-like handling.
 10. The SQLite DB, backups, audit output, repo map metadata, and support/debug artifacts are sensitive local repo metadata even when they do not contain source text.
-11. CLI `--json` and MCP results expose top-level versioned `response_schema` names on beta-used surfaces; typed response schema definitions are still the missing production boundary.
+11. CLI `--json` and MCP results expose top-level versioned `response_schema` names on beta-used surfaces; `start` and `doctor` now have typed beta response schemas, while the remaining production boundary is typed schemas for every public CLI/MCP result.
 12. Every production refusal or failure needs a stable code, surface, severity, retry guidance, user action, and recovery command.
 13. Public beta/release claims require a generated proof artifact, not a hand-written checklist.
 
@@ -112,7 +112,7 @@ Current mismatch:
 | Governance/Audit | canonical-beta | mutation governance, `--confirm`, audit hash chain | Audit events do not carry explicit before/after object hashes. |
 | Backup/Restore | canonical-defined | backup manifests, create/verify/restore commands/tests | Beta only needs this if included in the demo/release claim. |
 | Release/Beta | canonical-beta | `verify:ci`, `beta:proof`, generated beta fixture proof, strict release proof beta input | Final release readiness is proven after packaged npm tarballs and engine checksums exist. |
-| Agent-Facing Response Schema | canonical-beta | Demo-used CLI/MCP outputs expose `response_schema`; beta proof verifies full schema-stable parity | CLI payloads and MCP tool returns are still typed loosely as `unknown`. |
+| Agent-Facing Response Schema | canonical-beta | Beta-used CLI/MCP outputs expose `response_schema`; `start`/`doctor` use typed beta schemas; beta proof verifies full schema-stable parity | CLI payloads and MCP tool returns are still typed loosely as `unknown` outside locked beta surfaces. |
 | Transport Boundary | canonical-defined | CLI router, MCP JSON-RPC handlers, shared `@drift/query` graph read models, full beta CLI/MCP parity hash | MCP still has refactor debt, but beta-used transport outputs are schema-tagged and parity-gated. |
 | Release Proof Artifact | canonical-beta | `scripts/generate-release-proof.mjs`, `scripts/run-beta-proof.mjs`, strict beta proof file ingestion, final workflow `--require-complete` proof | Full release readiness is proven in the release workflow after tarballs and engine checksum artifacts exist. |
 | CI/Gate | canonical-beta | `pnpm verify:ci`, `pnpm beta:proof`, CI workflow, engine release workflow | Release artifact completeness is proven in release workflow, not normal PR CI. |
@@ -605,6 +605,8 @@ Current evidence:
 - `verify:ci` script exists in `package.json`.
 - Source `verify:ci` includes release matrix validation and `pnpm beta:proof` in `package.json`.
 - `scripts/run-beta-proof.mjs` generates a fixture proof with repo id, scan id, repo contract id, good-route pass, bad-route block, finding evidence completeness, CLI/MCP parity hash, and audit head hash.
+- `scripts/run-beta-proof.mjs` also proves `start --json` and `doctor --json` expose stable schemas, machine contract versions, engine provenance, and V1 scope.
+- The beta proof includes `test/fixtures/next-real-repo-chadlike`, which guards the real-repo direct-data signal: auth/session/payment wrappers and Prisma runtime error imports must not become forbidden direct-data imports; the accepted convention must forbid only `~/lib/server/db`; all baseline finding evidence must retain `fact_ids`.
 - `scripts/generate-release-proof.mjs --beta-proof-file <path> --require-beta-proof` consumes the beta proof artifact.
 - Test fixture matrix exists in current working tree under `test/fixtures/*` and `test/e2e/fixture-matrix.test.ts:34`.
 - Golden lifecycle exists in `test/e2e/golden.test.ts:23`.
@@ -614,7 +616,7 @@ Remaining production gaps:
 
 - Dogfood state is no longer the beta proof anchor; it can still be refreshed after the fixture loop stays green.
 - MCP/CLI response builders still duplicate some logic, but `pnpm beta:proof` now compares full schema-stable CLI/MCP payloads for scan status, repo map, preflight, contract, conventions, findings, audit, and allowed context.
-- Public CLI/MCP response schemas have top-level version strings, but typed response-schema definitions are still missing.
+- Public CLI/MCP response schemas have top-level version strings; `start` and `doctor` now have typed beta schemas, while full typed schemas for every CLI/MCP result remain production work.
 - Release tarballs and engine checksum artifacts are proven by the release workflow's final proof job, not by normal local PR CI.
 
 Beta status: `canonical-beta`.
@@ -631,8 +633,21 @@ Current evidence:
 
 - CLI output normalizes `unknown | CommandPayload` in `packages/cli/src/app/output.ts:13`.
 - `CommandPayload.payload` is `unknown` in `packages/cli/src/app/command-types.ts:14`.
+- `packages/core/src/beta-surfaces.ts` defines typed beta schemas for `drift.start.result.v1` and `drift.doctor.result.v1`.
+- `packages/cli/src/domain/beta-surfaces.ts` validates `start --json` and `doctor --json` before output.
 - MCP handler return values are typed as `unknown` in `packages/mcp/src/types.ts:16`.
 - MCP tools define argument schemas in `packages/mcp/src/tools.ts:3`, but response schemas are not first-class.
+
+Beta-used CLI surfaces expose stable response schemas:
+
+- `drift.start.result.v1`
+- `drift.doctor.result.v1`
+- `drift.scan.status.v1`
+- `drift.task.preflight.v1`
+- `drift.repo.map.v1`
+- `drift.check.result.v1`
+
+`start` and `doctor` also include `machine_contract_versions`, engine provenance, and `v1_scope`.
 
 Required invariants:
 
@@ -643,7 +658,7 @@ Required invariants:
 
 Gaps:
 
-- Current agent-facing payloads are too loosely typed to support a serious public API promise.
+- Agent-facing payloads outside the locked beta surfaces are still too loosely typed to support a broad public API promise.
 - There is no generated response-schema index for CLI/MCP parity.
 
 Status: `canonical-beta`.
