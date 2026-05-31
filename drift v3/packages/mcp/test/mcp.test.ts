@@ -1629,7 +1629,18 @@ describe("read-only MCP handlers", () => {
         path: string | null;
         method: string | null;
         source?: string;
+        freshness?: string;
       }>;
+      route_source_summary: {
+        normalized_entrypoint: number;
+        security_proof: number;
+        legacy_fact_fallback: number;
+      };
+      canonical_route_fallback: { used: boolean; reason: string | null };
+      proof_freshness: string;
+      redactions: {
+        snippets_included: boolean;
+      };
     };
     const securityContext = handlers.get_security_context({ repo_id: "repo_abc" } as never) as {
       routes: Array<{
@@ -1638,8 +1649,17 @@ describe("read-only MCP handlers", () => {
         path: string | null;
         method: string | null;
         source?: string;
+        freshness?: string;
       }>;
+      route_source_summary: {
+        normalized_entrypoint: number;
+        security_proof: number;
+        legacy_fact_fallback: number;
+      };
+      canonical_route_fallback: { used: boolean; reason: string | null };
+      proof_freshness: string;
       redactions: {
+        snippets_included: boolean;
         request_payloads_included: boolean;
         secret_values_included: boolean;
         actor_identity_included: boolean;
@@ -1652,19 +1672,37 @@ describe("read-only MCP handlers", () => {
         normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/(admin)/api/projects/route.ts:GET",
         path: "/api/projects",
         method: "GET",
-        source: "normalized_entrypoint"
+        source: "normalized_entrypoint",
+        freshness: "fresh"
       }),
       expect.objectContaining({
         route_id: "route:src/pages/api/projects/[projectId].ts:default",
         normalized_entrypoint_id: "entrypoint:next_pages:src/pages/api/projects/[projectId].ts:default",
         path: "/api/projects/:projectId",
         method: "default",
-        source: "normalized_entrypoint"
+        source: "normalized_entrypoint",
+        freshness: "fresh"
       })
     ];
     expect(repoMap.routes).toEqual(expect.arrayContaining(expectedRoutes));
+    expect(repoMap.route_source_summary).toEqual({
+      normalized_entrypoint: 2,
+      security_proof: 0,
+      legacy_fact_fallback: 0
+    });
+    expect(repoMap.canonical_route_fallback).toEqual({ used: false, reason: null });
+    expect(repoMap.proof_freshness).toBe("none");
+    expect(repoMap.redactions.snippets_included).toBe(false);
     expect(securityContext.routes).toEqual(expect.arrayContaining(expectedRoutes));
+    expect(securityContext.route_source_summary).toEqual({
+      normalized_entrypoint: 2,
+      security_proof: 0,
+      legacy_fact_fallback: 0
+    });
+    expect(securityContext.canonical_route_fallback).toEqual({ used: false, reason: null });
+    expect(securityContext.proof_freshness).toBe("none");
     expect(securityContext.redactions).toMatchObject({
+      snippets_included: false,
       request_payloads_included: false,
       secret_values_included: false,
       actor_identity_included: false
@@ -2015,13 +2053,31 @@ describe("read-only MCP handlers", () => {
     }]);
     storage.close();
 
-    const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
+    const handlers = createReadOnlyMcpHandlers({ databasePath });
+    const repoMap = handlers.get_repo_map({
+      repo_id: "repo_abc"
+    } as never) as {
+      canonical_route_fallback: { used: boolean; reason: string | null };
+      routes: Array<{ route_id: string; file_path: string; path: string | null; method: string; source?: string }>;
+    };
+    const securityContext = handlers.get_security_context({
       repo_id: "repo_abc"
     } as never) as {
       canonical_route_fallback: { used: boolean; reason: string | null };
       routes: Array<{ route_id: string; file_path: string; path: string | null; method: string; source?: string }>;
     };
 
+    expect(repoMap.canonical_route_fallback).toEqual({
+      used: true,
+      reason: "normalized_entrypoints_missing"
+    });
+    expect(repoMap.routes).toContainEqual(expect.objectContaining({
+      route_id: "route:apps/web/app/api/users/route.ts:GET",
+      file_path: "apps/web/app/api/users/route.ts",
+      path: null,
+      method: "GET",
+      source: "legacy_fact_fallback"
+    }));
     expect(securityContext.canonical_route_fallback).toEqual({
       used: true,
       reason: "normalized_entrypoints_missing"
@@ -2299,7 +2355,16 @@ describe("read-only MCP handlers", () => {
     const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
       repo_id: "repo_abc"
     } as never) as {
-      current_proof_status: Array<{ route_id: string; proof_status: string; enforcement_result: string }>;
+      current_proof_status: Array<{
+        route_id: string;
+        file_path: string;
+        path: string | null;
+        method: string | null;
+        proof_status: string;
+        enforcement_result: string;
+        source?: string;
+        freshness?: string;
+      }>;
       changed_route_security: Array<{
         route_id: string;
         file_path: string;
@@ -2308,12 +2373,16 @@ describe("read-only MCP handlers", () => {
       }>;
     };
 
-    expect(securityContext.current_proof_status).toEqual([{
+    expect(securityContext.current_proof_status).toEqual([expect.objectContaining({
       route_id: "route:apps/web/app/api/users/route.ts:GET",
       file_path: "apps/web/app/api/users/route.ts",
+      path: null,
+      method: "GET",
       proof_status: "missing_proof",
-      enforcement_result: "block"
-    }]);
+      enforcement_result: "block",
+      source: "security_proof",
+      freshness: "fresh"
+    })]);
     expect(securityContext.changed_route_security).toEqual([expect.objectContaining({
       route_id: "route:apps/web/app/api/users/route.ts:GET",
       file_path: "apps/web/app/api/users/route.ts",
