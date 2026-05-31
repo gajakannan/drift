@@ -416,9 +416,10 @@ fn infer_candidates_keeps_auth_payment_and_prisma_runtime_out_of_direct_data_acc
         .iter()
         .map(|value| value.as_str().expect("fact id"))
         .collect::<Vec<_>>();
-    assert!(fact_ids.contains(
-        &"fact:import_used:app/api/auth/login/github/callback/route.ts:prisma:7-7"
-    ));
+    assert!(
+        fact_ids
+            .contains(&"fact:import_used:app/api/auth/login/github/callback/route.ts:prisma:7-7")
+    );
     assert!(fact_ids.contains(&"graph_fact_prisma"));
 }
 
@@ -559,7 +560,10 @@ fn infer_candidates_uses_graph_only_client_data_access_modules() {
         direct["matcher"]["forbidden_imports"],
         json!(["@/lib/client"])
     );
-    assert_eq!(direct["evidence_refs"][0]["fact_ids"], json!(["graph_fact_client"]));
+    assert_eq!(
+        direct["evidence_refs"][0]["fact_ids"],
+        json!(["graph_fact_client"])
+    );
 }
 
 #[test]
@@ -709,7 +713,10 @@ fn infer_candidates_merges_duplicate_raw_and_graph_evidence_fact_ids() {
     assert_eq!(refs.len(), 1, "{direct:#?}");
     assert_eq!(
         refs[0]["fact_ids"],
-        json!(["fact:import_used:app/api/users/route.ts:db:1-1", "graph_fact_db"])
+        json!([
+            "fact:import_used:app/api/users/route.ts:db:1-1",
+            "graph_fact_db"
+        ])
     );
 }
 
