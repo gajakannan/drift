@@ -2551,6 +2551,72 @@ describe("read-only MCP handlers", () => {
     ]);
   });
 
+  it("MCP preflight derives semantic coverage from scan capability vocabulary", async () => {
+    const { databasePath, repoId } = await seedMcpNoContractDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertFactGraphArtifact(buildFactGraphArtifactFromParts({
+      repo: {
+        repo_id: repoId,
+        scan_id: "scan_no_contract",
+        root_hash: "repo-no-contract-fp",
+        branch: "unknown",
+        commit: "abc123",
+        dirty: false
+      },
+      snapshots: storage.listFileSnapshots(repoId, "scan_no_contract"),
+      nodes: [],
+      edges: [],
+      evidence: [],
+      createdAt: "2026-05-10T00:00:08.000Z"
+    }));
+    storage.upsertScanCapabilityReport({
+      schema_version: "drift.scan_capability_report.v1",
+      repo_id: repoId,
+      scan_id: "scan_no_contract",
+      engine_source: "rust",
+      engine_version: null,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      certified_capabilities: ["fact_graph", "syntax_facts", "file_discovery", "ts.route_flow.v1"],
+      required_capabilities: ["fact_graph", "syntax_facts", "file_discovery", "unknown_capability"],
+      missing_capabilities: [],
+      completeness: [],
+      parser_gap_count: 0,
+      parser_gap_kinds: {},
+      fallback_used: false,
+      enforcement_degraded: false,
+      created_at: "2026-05-10T00:00:45.000Z"
+    });
+    storage.close();
+
+    const preflight = createReadOnlyMcpHandlers({ databasePath }).get_task_preflight({
+      repo_id: repoId,
+      task: "change users api route",
+      path: "apps/web/app/api/users/route.ts",
+      now: "2026-05-10T00:01:00.000Z"
+    }) as {
+      semantic_coverage: Record<string, unknown>;
+    };
+
+    expect(preflight.semantic_coverage).toMatchObject({
+      required_capabilities: [
+        "ts.file_discovery.v1",
+        "ts.route_flow.v1",
+        "ts.syntax_facts.v1",
+        "unknown_capability"
+      ],
+      complete_capabilities: [
+        "ts.file_discovery.v1",
+        "ts.route_flow.v1",
+        "ts.syntax_facts.v1"
+      ],
+      missing_capabilities: ["unknown_capability"],
+      unsupported_capabilities: ["unknown_capability"],
+      decision: "refuse"
+    });
+  });
+
   it("returns MCP repo map before a contract exists using the default local policy", async () => {
     const { databasePath, repoId } = await seedMcpNoContractDatabase();
     const repoMap = createReadOnlyMcpHandlers({ databasePath }).get_repo_map({

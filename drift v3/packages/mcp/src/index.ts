@@ -60,7 +60,7 @@ import {
   buildParserGapSummary,
   buildRepoContractReadModel,
   buildReadiness,
-  buildSemanticCoverage,
+  buildSemanticCoverageFromCapabilityReport,
   buildSecurityPhase8ReadModel,
   buildStoredScanReadiness,
   classifyAgentTask,
@@ -280,14 +280,12 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         required_capabilities: ["ts.route_flow.v1"],
         missing_capabilities: graphContext.available ? [] : ["fact_graph"]
       });
-      const semanticCoverage = buildSemanticCoverage({
+      const semanticCoverage = buildSemanticCoverageFromCapabilityReport({
         repo_id: requestedRepoId,
         scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
         scope: "preflight",
         scope_id: requestedPath ?? requestedTask,
-        required_capabilities: ["ts.route_flow.v1"],
-        certified_capabilities: scanStatus.capability_report?.certified_capabilities ?? [],
-        missing_capabilities: readiness.missing_capabilities,
+        capability_report: scanStatus.capability_report,
         readiness,
         parser_gaps: allParserGaps,
         generated_at: generatedAt

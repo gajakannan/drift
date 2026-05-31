@@ -16,6 +16,7 @@ import {
   buildRepoMapReadModel,
   buildRepoTopology,
   buildSemanticCoverage,
+  buildSemanticCoverageFromCapabilityReport,
   buildStoredScanReadiness,
   buildSymbolIdentity,
   classifyAgentTask,
@@ -1585,6 +1586,56 @@ describe("GraphQueryService", () => {
       decision: "refuse",
       reasons: ["parser_gap_blocks_enforcement", "parser_gaps_present"]
     });
+  });
+
+  it("builds semantic coverage from mixed scan capability vocabulary and fails closed on unknown requirements", () => {
+    const readiness = buildReadiness({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      surface: "prepare",
+      graph_available: true,
+      graph_complete: true,
+      parser_gaps: [],
+      completeness_reasons: [],
+      required_capabilities: ["ts.route_flow.v1"],
+      missing_capabilities: []
+    });
+
+    const coverage = buildSemanticCoverageFromCapabilityReport({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      scope: "preflight",
+      scope_id: "task_users_route",
+      capability_report: {
+        certified_capabilities: ["fact_graph", "syntax_facts", "file_discovery", "ts.route_flow.v1"],
+        required_capabilities: ["fact_graph", "syntax_facts", "file_discovery", "unknown_capability"],
+        missing_capabilities: []
+      },
+      readiness,
+      parser_gaps: [],
+      generated_at: "2026-05-28T00:00:00.000Z"
+    });
+
+    expect(coverage).toMatchObject({
+      required_capabilities: [
+        "ts.file_discovery.v1",
+        "ts.route_flow.v1",
+        "ts.syntax_facts.v1",
+        "unknown_capability"
+      ],
+      complete_capabilities: [
+        "ts.file_discovery.v1",
+        "ts.route_flow.v1",
+        "ts.syntax_facts.v1"
+      ],
+      missing_capabilities: ["unknown_capability"],
+      unsupported_capabilities: ["unknown_capability"],
+      decision: "refuse"
+    });
+    expect(coverage.reasons).toEqual(expect.arrayContaining([
+      "missing_capability:unknown_capability",
+      "unsupported_capability:unknown_capability"
+    ]));
   });
 
   it("allows blocking readiness when graph and parser evidence are complete", () => {

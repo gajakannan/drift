@@ -9999,6 +9999,60 @@ schema_version: 27,
     ]);
   });
 
+  it("prepare derives semantic coverage from scan capability vocabulary", async () => {
+    const { databasePath, repoId } = await seedScannedNoContractState("drift-prepare-semantic-coverage-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const scan = storage.listScanManifests(repoId)
+      .find((entry) => entry.status === "completed")!;
+    storage.upsertScanCapabilityReport({
+      schema_version: "drift.scan_capability_report.v1",
+      repo_id: repoId,
+      scan_id: scan.id,
+      engine_source: "rust",
+      engine_version: null,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      certified_capabilities: ["fact_graph", "syntax_facts", "file_discovery", "ts.route_flow.v1"],
+      required_capabilities: ["fact_graph", "syntax_facts", "file_discovery", "unknown_capability"],
+      missing_capabilities: [],
+      completeness: [],
+      parser_gap_count: 0,
+      parser_gap_kinds: {},
+      fallback_used: false,
+      enforcement_degraded: false,
+      created_at: "2026-05-10T00:00:45.000Z"
+    });
+    storage.close();
+
+    const prepared = await runCli([
+      "--db", databasePath,
+      "prepare",
+      "change users api route",
+      "--repo", repoId,
+      "--now", "2026-05-10T00:01:00.000Z",
+      "--json"
+    ]);
+
+    expect(prepared.exitCode).toBe(0);
+    expect(JSON.parse(prepared.stdout).semantic_coverage).toMatchObject({
+      required_capabilities: [
+        "ts.file_discovery.v1",
+        "ts.route_flow.v1",
+        "ts.syntax_facts.v1",
+        "unknown_capability"
+      ],
+      complete_capabilities: [
+        "ts.file_discovery.v1",
+        "ts.route_flow.v1",
+        "ts.syntax_facts.v1"
+      ],
+      missing_capabilities: ["unknown_capability"],
+      unsupported_capabilities: ["unknown_capability"],
+      decision: "refuse"
+    });
+  });
+
   it("includes graph-backed route flow and reachable data access in prepare", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-prepare-graph-context-"));
     tempDirs.push(dir);
