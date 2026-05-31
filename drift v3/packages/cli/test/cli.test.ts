@@ -455,6 +455,107 @@ async function seedStartedDoctorState(prefix = "drift-doctor-started-"): Promise
   };
 }
 
+const crossSurfaceExpectedRouteContracts = [
+  {
+    route_id: "route:apps/web/app/(admin)/api/projects/route.ts:GET",
+    normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/(admin)/api/projects/route.ts:GET",
+    path: "/api/projects",
+    method: "GET"
+  },
+  {
+    route_id: "route:apps/web/src/app/api/users/[id]/route.ts:GET",
+    normalized_entrypoint_id: "entrypoint:next_app:apps/web/src/app/api/users/[id]/route.ts:GET",
+    path: "/api/users/:id",
+    method: "GET"
+  },
+  {
+    route_id: "route:src/pages/api/projects/[projectId].ts:default",
+    normalized_entrypoint_id: "entrypoint:next_pages:src/pages/api/projects/[projectId].ts:default",
+    path: "/api/projects/:projectId",
+    method: "default"
+  }
+];
+
+function routeContractProjection(routes: Array<{
+  route_id: string;
+  normalized_entrypoint_id?: string;
+  path: string | null;
+  method: string | null;
+}>): Array<{
+  route_id: string;
+  normalized_entrypoint_id: string | undefined;
+  path: string | null;
+  method: string | null;
+}> {
+  return routes
+    .map((route) => ({
+      route_id: route.route_id,
+      normalized_entrypoint_id: route.normalized_entrypoint_id,
+      path: route.path,
+      method: route.method
+    }))
+    .sort((left, right) => left.route_id.localeCompare(right.route_id));
+}
+
+async function seedCrossSurfaceCanonicalRouteState(prefix = "drift-cross-surface-routes-"): Promise<{
+  databasePath: string;
+  repoId: string;
+  repoRoot: string;
+  stateRoot: string;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  const repoRoot = join(dir, "repo");
+  const stateRoot = join(dir, "state");
+  await mkdir(join(repoRoot, "apps/web/app/(admin)/api/projects"), { recursive: true });
+  await mkdir(join(repoRoot, "apps/web/src/app/api/users/[id]"), { recursive: true });
+  await mkdir(join(repoRoot, "src/pages/api/projects"), { recursive: true });
+  await writeFile(
+    join(repoRoot, "apps/web/app/(admin)/api/projects/route.ts"),
+    "export async function GET() { return Response.json({ projects: [] }); }\n"
+  );
+  await writeFile(
+    join(repoRoot, "apps/web/src/app/api/users/[id]/route.ts"),
+    "export async function GET() { return Response.json({ user: null }); }\n"
+  );
+  await writeFile(
+    join(repoRoot, "src/pages/api/projects/[projectId].ts"),
+    [
+      "export default function handler(_req, res) {",
+      "  res.status(200).json({ project: null });",
+      "}",
+      ""
+    ].join("\n")
+  );
+  await writeFile(
+    join(repoRoot, "middleware.ts"),
+    [
+      "import { NextResponse } from \"next/server\";",
+      "export function middleware() {",
+      "  return NextResponse.next();",
+      "}",
+      ""
+    ].join("\n")
+  );
+
+  const scanned = await runCli([
+    "scan",
+    "--repo-root", repoRoot,
+    "--state-root", stateRoot,
+    "--now", "2026-05-31T00:00:00.000Z",
+    "--json"
+  ]);
+  expect(scanned.stderr).toBe("");
+  expect(scanned.exitCode).toBe(0);
+  const payload = JSON.parse(scanned.stdout);
+  return {
+    databasePath: payload.database_path,
+    repoId: payload.repo.id,
+    repoRoot,
+    stateRoot
+  };
+}
+
 async function seedScannedNoContractState(prefix = "drift-no-contract-"): Promise<{
   databasePath: string;
   repoId: string;
@@ -1565,6 +1666,44 @@ supported_sqlite_schema_version: 27,
         method: "GET"
       })
     ]));
+  });
+
+  it("proves cross-surface canonical route parity for CLI route contracts", async () => {
+    const { databasePath, repoId } = await seedCrossSurfaceCanonicalRouteState();
+
+    const repoMap = await runCli([
+      "--db", databasePath,
+      "repo", "map",
+      "--repo", repoId,
+      "--json"
+    ]);
+    const scanStatus = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", repoId,
+      "--json"
+    ]);
+
+    expect(repoMap.stderr).toBe("");
+    expect(repoMap.exitCode).toBe(0);
+    expect(scanStatus.stderr).toBe("");
+    expect(scanStatus.exitCode).toBe(0);
+    const repoMapPayload = JSON.parse(repoMap.stdout);
+    const scanStatusPayload = JSON.parse(scanStatus.stdout);
+    expect(routeContractProjection(repoMapPayload.routes)).toEqual(crossSurfaceExpectedRouteContracts);
+    expect(repoMapPayload.routes.every((route: { source?: string }) =>
+      route.source === "normalized_entrypoint"
+    )).toBe(true);
+    expect(scanStatusPayload.readiness).toMatchObject({
+      parser_gap_count: 0,
+      missing_capabilities: []
+    });
+    expect(scanStatusPayload.capability_report).toMatchObject({
+      fallback_used: false,
+      enforcement_degraded: false,
+      parser_gap_count: 0,
+      missing_capabilities: []
+    });
   });
 
   it("reports parser gap summaries in scan status", async () => {

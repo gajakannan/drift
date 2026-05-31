@@ -244,6 +244,140 @@ async function seedMcpDatabase(): Promise<string> {
   return databasePath;
 }
 
+const crossSurfaceExpectedRouteContracts = [
+  {
+    route_id: "route:apps/web/app/(admin)/api/projects/route.ts:GET",
+    normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/(admin)/api/projects/route.ts:GET",
+    path: "/api/projects",
+    method: "GET"
+  },
+  {
+    route_id: "route:apps/web/src/app/api/users/[id]/route.ts:GET",
+    normalized_entrypoint_id: "entrypoint:next_app:apps/web/src/app/api/users/[id]/route.ts:GET",
+    path: "/api/users/:id",
+    method: "GET"
+  },
+  {
+    route_id: "route:src/pages/api/projects/[projectId].ts:default",
+    normalized_entrypoint_id: "entrypoint:next_pages:src/pages/api/projects/[projectId].ts:default",
+    path: "/api/projects/:projectId",
+    method: "default"
+  }
+];
+
+function routeContractProjection(routes: Array<{
+  route_id: string;
+  normalized_entrypoint_id?: string;
+  path: string | null;
+  method: string | null;
+}>): Array<{
+  route_id: string;
+  normalized_entrypoint_id: string | undefined;
+  path: string | null;
+  method: string | null;
+}> {
+  return routes
+    .map((route) => ({
+      route_id: route.route_id,
+      normalized_entrypoint_id: route.normalized_entrypoint_id,
+      path: route.path,
+      method: route.method
+    }))
+    .sort((left, right) => left.route_id.localeCompare(right.route_id));
+}
+
+function readinessCapabilitySummary(payload: {
+  readiness?: unknown;
+  capability_report?: {
+    certified_capabilities?: unknown;
+    required_capabilities?: unknown;
+    missing_capabilities?: unknown;
+    completeness?: unknown;
+    parser_gap_count?: unknown;
+    parser_gap_kinds?: unknown;
+    fallback_used?: unknown;
+    enforcement_degraded?: unknown;
+  };
+  security_capabilities?: unknown;
+}): {
+  readiness?: unknown;
+  capability_report: unknown;
+  security_capabilities?: unknown;
+} {
+  return {
+    readiness: payload.readiness,
+    capability_report: payload.capability_report
+      ? {
+          certified_capabilities: payload.capability_report.certified_capabilities,
+          required_capabilities: payload.capability_report.required_capabilities,
+          missing_capabilities: payload.capability_report.missing_capabilities,
+          completeness: payload.capability_report.completeness,
+          parser_gap_count: payload.capability_report.parser_gap_count,
+          parser_gap_kinds: payload.capability_report.parser_gap_kinds,
+          fallback_used: payload.capability_report.fallback_used,
+          enforcement_degraded: payload.capability_report.enforcement_degraded
+        }
+      : null,
+    security_capabilities: payload.security_capabilities
+  };
+}
+
+async function seedCrossSurfaceCanonicalRouteState(prefix = "drift-mcp-cross-surface-routes-"): Promise<{
+  databasePath: string;
+  repoId: string;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  const repoRoot = join(dir, "repo");
+  const stateRoot = join(dir, "state");
+  await mkdir(join(repoRoot, "apps/web/app/(admin)/api/projects"), { recursive: true });
+  await mkdir(join(repoRoot, "apps/web/src/app/api/users/[id]"), { recursive: true });
+  await mkdir(join(repoRoot, "src/pages/api/projects"), { recursive: true });
+  await writeFile(
+    join(repoRoot, "apps/web/app/(admin)/api/projects/route.ts"),
+    "export async function GET() { return Response.json({ projects: [] }); }\n"
+  );
+  await writeFile(
+    join(repoRoot, "apps/web/src/app/api/users/[id]/route.ts"),
+    "export async function GET() { return Response.json({ user: null }); }\n"
+  );
+  await writeFile(
+    join(repoRoot, "src/pages/api/projects/[projectId].ts"),
+    [
+      "export default function handler(_req, res) {",
+      "  res.status(200).json({ project: null });",
+      "}",
+      ""
+    ].join("\n")
+  );
+  await writeFile(
+    join(repoRoot, "middleware.ts"),
+    [
+      "import { NextResponse } from \"next/server\";",
+      "export function middleware() {",
+      "  return NextResponse.next();",
+      "}",
+      ""
+    ].join("\n")
+  );
+
+  const scanned = await runCli([
+    "start",
+    "--repo-root", repoRoot,
+    "--state-root", stateRoot,
+    "--accept-defaults",
+    "--now", "2026-05-31T00:00:00.000Z",
+    "--json"
+  ]);
+  expect(scanned.stderr).toBe("");
+  expect(scanned.exitCode).toBe(0);
+  const payload = JSON.parse(scanned.stdout);
+  return {
+    databasePath: payload.state.database_path,
+    repoId: payload.repo.id
+  };
+}
+
 function deleteAppliedMigration(databasePath: string, migrationId: string): void {
   const storage = openDriftStorage({ databasePath });
   const raw = storage as unknown as {
@@ -1754,6 +1888,92 @@ describe("read-only MCP handlers", () => {
     expect(JSON.stringify(securityContext)).not.toContain("request.json()");
     expect(JSON.stringify(securityContext)).not.toContain("process.env");
     expect(JSON.stringify(securityContext)).not.toContain("local-user");
+  });
+
+  it("proves cross-surface canonical route parity for CLI and MCP route contracts", async () => {
+    const { databasePath, repoId } = await seedCrossSurfaceCanonicalRouteState();
+    const handlers = createReadOnlyMcpHandlers({ databasePath });
+    const cliRepoMap = await runCli([
+      "--db", databasePath,
+      "repo", "map",
+      "--repo", repoId,
+      "--json"
+    ]);
+    const cliScanStatus = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", repoId,
+      "--json"
+    ]);
+
+    expect(cliRepoMap.stderr).toBe("");
+    expect(cliRepoMap.exitCode).toBe(0);
+    expect(cliScanStatus.stderr).toBe("");
+    expect(cliScanStatus.exitCode).toBe(0);
+    const cliRepoMapPayload = JSON.parse(cliRepoMap.stdout);
+    const cliScanStatusPayload = JSON.parse(cliScanStatus.stdout);
+    const mcpRepoMap = handlers.get_repo_map({ repo_id: repoId } as never) as {
+      routes: Array<{
+        route_id: string;
+        normalized_entrypoint_id?: string;
+        path: string | null;
+        method: string | null;
+        source?: string;
+      }>;
+      route_source_summary: {
+        normalized_entrypoint: number;
+        security_proof: number;
+        legacy_fact_fallback: number;
+      };
+      canonical_route_fallback: { used: boolean; reason: string | null };
+    };
+    const securityContext = handlers.get_security_context({ repo_id: repoId } as never) as {
+      routes: Array<{
+        route_id: string;
+        normalized_entrypoint_id?: string;
+        path: string | null;
+        method: string | null;
+        source?: string;
+      }>;
+      route_source_summary: {
+        normalized_entrypoint: number;
+        security_proof: number;
+        legacy_fact_fallback: number;
+      };
+      canonical_route_fallback: { used: boolean; reason: string | null };
+      redactions: {
+        snippets_included: boolean;
+        source_content_included?: boolean;
+        request_payloads_included: boolean;
+        secret_values_included: boolean;
+        actor_identity_included: boolean;
+      };
+    };
+    const mcpScanStatus = handlers.get_scan_status({ repo_id: repoId });
+
+    const cliRouteContracts = routeContractProjection(cliRepoMapPayload.routes);
+    expect(cliRouteContracts).toEqual(crossSurfaceExpectedRouteContracts);
+    expect(routeContractProjection(mcpRepoMap.routes)).toEqual(cliRouteContracts);
+    expect(routeContractProjection(securityContext.routes)).toEqual(cliRouteContracts);
+    expect(mcpRepoMap.route_source_summary).toEqual({
+      normalized_entrypoint: 3,
+      security_proof: 0,
+      legacy_fact_fallback: 0
+    });
+    expect(securityContext.route_source_summary).toEqual(mcpRepoMap.route_source_summary);
+    expect(mcpRepoMap.canonical_route_fallback).toEqual({ used: false, reason: null });
+    expect(securityContext.canonical_route_fallback).toEqual({ used: false, reason: null });
+    expect(mcpRepoMap.routes.every((route) => route.source === "normalized_entrypoint")).toBe(true);
+    expect(securityContext.routes.every((route) => route.source === "normalized_entrypoint")).toBe(true);
+    expect(readinessCapabilitySummary(mcpScanStatus)).toEqual(
+      readinessCapabilitySummary(cliScanStatusPayload)
+    );
+    expect(securityContext.redactions).toMatchObject({
+      snippets_included: false,
+      request_payloads_included: false,
+      secret_values_included: false,
+      actor_identity_included: false
+    });
   });
 
   it("exposes required-check execution proof through read-only MCP", async () => {
