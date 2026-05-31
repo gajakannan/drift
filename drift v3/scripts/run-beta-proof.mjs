@@ -718,12 +718,30 @@ function canonicalRouteProofFor({ databasePath, repoId, scanId, parity, security
     const cliRouteHash = sha256(canonicalJson(cliRoutes));
     const mcpRouteHash = sha256(canonicalJson(mcpRoutes));
     const allProductRoutes = [...cliRoutes, ...mcpRoutes, ...securityContextRoutes];
-    const expectedRouteIds = new Set(expectedEntrypoints.map((entrypoint) =>
-      `route:${entrypoint.file_path}:${entrypoint.method}`
-    ));
-    const productRoutesById = new Map(allProductRoutes.map((route) => [route.route_id, route]));
-    const expectedProductRoutesPresent = [...expectedRouteIds].every((routeId) =>
-      productRoutesById.get(routeId)?.normalized_entrypoint_id
+    const expectedProductRoutes = expectedEntrypoints.map((entrypoint) => {
+      const expected = {
+        route_id: `route:${entrypoint.file_path}:${entrypoint.method}`,
+        path: entrypoint.route_pattern,
+        method: entrypoint.method,
+        normalized_entrypoint_id: entrypoint.entrypoint_id
+      };
+      return {
+        ...expected,
+        cli_repo_map: productRouteMatches(expected, routeById(cliRoutes, expected.route_id)),
+        mcp_repo_map: productRouteMatches(expected, routeById(mcpRoutes, expected.route_id)),
+        mcp_security_context: productRouteMatches(expected, routeById(securityContextRoutes, expected.route_id))
+      };
+    });
+    const productSurfaceScanIds = {
+      cli_repo_map: productSurfaceScanId(parity.bundle.repo_map.cli),
+      mcp_repo_map: productSurfaceScanId(parity.bundle.repo_map.mcp),
+      mcp_security_context: securityContext.scan_id ?? null
+    };
+    const expectedProductRoutesPresent = expectedProductRoutes.every((route) =>
+      route.cli_repo_map && route.mcp_repo_map && route.mcp_security_context
+    );
+    const productSurfaceScanIdsMatch = Object.values(productSurfaceScanIds).every((productScanId) =>
+      productScanId === scanId
     );
     const routeFallbackAbsent = allProductRoutes.every((route) => route.source !== "legacy_fact_fallback") &&
       securityContext.canonical_route_fallback?.used === false &&
@@ -731,10 +749,12 @@ function canonicalRouteProofFor({ databasePath, repoId, scanId, parity, security
 
     return {
       expected_entrypoints: expectedEntrypoints,
+      expected_product_routes: expectedProductRoutes,
       normalized_entrypoint_count: entrypoints.length,
       cli_route_hash: cliRouteHash,
       mcp_route_hash: mcpRouteHash,
       security_context_route_count: securityContextRoutes.length,
+      product_surface_scan_ids: productSurfaceScanIds,
       repo_map_route_freshness: [...new Set([...cliRoutes, ...mcpRoutes].map((route) => route.freshness))].sort(),
       security_context_proof_freshness: securityContext.proof_freshness ?? null,
       canonical_routes_verified: expectedEntrypoints.every((entrypoint) =>
@@ -758,11 +778,26 @@ function canonicalRouteProofFor({ databasePath, repoId, scanId, parity, security
           route.normalized_entrypoint_id.length > 0
         ),
       canonical_proof_freshness_verified: freshnessIsUsable(securityContext.proof_freshness) &&
+        productSurfaceScanIdsMatch &&
         allProductRoutes.every((route) => route.freshness !== "stale")
     };
   } finally {
     storage.close();
   }
+}
+
+function routeById(routes, routeId) {
+  return routes.find((route) => route.route_id === routeId) ?? null;
+}
+
+function productRouteMatches(expected, actual) {
+  return actual?.path === expected.path &&
+    actual?.method === expected.method &&
+    actual?.normalized_entrypoint_id === expected.normalized_entrypoint_id;
+}
+
+function productSurfaceScanId(payload) {
+  return payload.latest_scan?.id ?? payload.scan_status?.latest_scan?.id ?? null;
 }
 
 function canonicalRouteProjection(routes) {
