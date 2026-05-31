@@ -712,14 +712,16 @@ describe("security boundary proof read model", () => {
         file_path: "apps/web/app/api/users/route.ts",
         path: "/api/users",
         method: "GET",
-        source: "normalized_entrypoint"
+        source: "normalized_entrypoint",
+        freshness: "stale"
       }, {
         route_id: "route:apps/web/app/api/admin/route.ts:GET",
         normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/admin/route.ts:GET",
         file_path: "apps/web/app/api/admin/route.ts",
         path: "/api/admin",
         method: "GET",
-        source: "normalized_entrypoint"
+        source: "normalized_entrypoint",
+        freshness: "stale"
       }]
     });
 
@@ -733,6 +735,7 @@ describe("security boundary proof read model", () => {
         path: "/api/admin",
         method: "GET",
         source: "normalized_entrypoint",
+        freshness: "stale",
         security: expect.objectContaining({ proof_status: "unknown" })
       }),
       expect.objectContaining({
@@ -741,6 +744,7 @@ describe("security boundary proof read model", () => {
         path: "/api/users",
         method: "GET",
         source: "normalized_entrypoint",
+        freshness: "stale",
         security: expect.objectContaining({ proof_status: "proven" })
       })
     ]);
@@ -751,11 +755,24 @@ describe("security boundary proof read model", () => {
         path: "/api/users",
         method: "GET",
         source: "normalized_entrypoint",
+        freshness: "stale",
         current_proof_status: "proven",
         current_proof_status_detail: expect.objectContaining({
           proof_status: "proven",
-          source: "normalized_entrypoint"
+          source: "normalized_entrypoint",
+          freshness: "stale"
         })
+      })
+    ]));
+    expect(model.changed_route_security).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        route_id: "route:apps/web/app/api/admin/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/admin/route.ts:GET",
+        path: "/api/admin",
+        method: "GET",
+        source: "normalized_entrypoint",
+        freshness: "stale",
+        current_proof_status: "unknown"
       })
     ]));
     expect(model.required_proofs[0]).toMatchObject({
@@ -763,14 +780,23 @@ describe("security boundary proof read model", () => {
       normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/users/route.ts:GET",
       path: "/api/users",
       method: "GET",
-      source: "normalized_entrypoint"
+      source: "normalized_entrypoint",
+      freshness: "stale"
     });
     expect(model.current_proof_status).toEqual(expect.arrayContaining([
       expect.objectContaining({
         route_id: "route:apps/web/app/api/users/route.ts:GET",
         normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/users/route.ts:GET",
         proof_status: "proven",
-        source: "normalized_entrypoint"
+        source: "normalized_entrypoint",
+        freshness: "stale"
+      }),
+      expect.objectContaining({
+        route_id: "route:apps/web/app/api/admin/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/admin/route.ts:GET",
+        proof_status: "unknown",
+        source: "normalized_entrypoint",
+        freshness: "stale"
       })
     ]));
   });
