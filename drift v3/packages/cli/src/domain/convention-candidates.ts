@@ -1,4 +1,4 @@
-import { API_ROUTE_SCOPE_GLOBS,DRIFT_CONTRACT_SCHEMA_VERSION,type AcceptedConvention,type ConventionCandidate,type ConventionStatus,type EnforcementMode,type EvidenceRef,type FactRecord,type RepoContract,type Severity } from "@drift/core";
+import { API_ROUTE_SCOPE_GLOBS,DRIFT_CONTRACT_SCHEMA_VERSION,type AcceptedConvention,type ConventionCandidate,type ConventionStatus,type EnforcementMode,type EvidenceRef,type FactRecord,type RejectedInference,type RepoContract,type Severity } from "@drift/core";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { join } from "node:path";
 import { fileLooksLikeDataAccess,resolveImportTarget } from "../engine/import-resolution.js";
@@ -82,6 +82,7 @@ export function acceptConventionCandidate(
     rationale: candidate.rationale,
     scope: candidate.scope,
     matcher: candidate.matcher,
+    requires: candidate.requires,
     severity,
     enforcement_mode: mode,
     enforcement_capability: candidate.enforcement_capability,
@@ -197,6 +198,63 @@ export function acceptDefaultCandidate(
   ).accepted;
 }
 
+export function candidateEvidenceFingerprint(candidate: ConventionCandidate): string {
+  return candidate.evidence_fingerprint ?? hashStable(JSON.stringify({
+    id: candidate.id,
+    kind: candidate.kind,
+    matcher: candidate.matcher,
+    evidence: candidate.evidence_refs.map((ref) => ({
+      id: ref.id,
+      file_path: ref.file_path,
+      start_line: ref.start_line ?? null,
+      end_line: ref.end_line ?? null,
+      symbol: ref.symbol ?? null,
+      fact_ids: ref.fact_ids,
+      file_hash: ref.file_hash
+    }))
+  }));
+}
+
+export function rejectedInferenceForCandidate(
+  candidate: ConventionCandidate,
+  input: { reason: string; rejectedBy: string; rejectedAt: string }
+): RejectedInference {
+  return {
+    candidate_id: candidate.id,
+    evidence_fingerprint: candidateEvidenceFingerprint(candidate),
+    matcher_fingerprint: candidate.matcher_fingerprint,
+    scope_fingerprint: candidate.scope_fingerprint,
+    reason: input.reason,
+    rejected_by: input.rejectedBy,
+    rejected_at: input.rejectedAt
+  };
+}
+
+export function candidateMatchesRejectedInference(
+  candidate: ConventionCandidate,
+  rejection: RejectedInference
+): boolean {
+  return rejection.candidate_id === candidate.id &&
+    (!rejection.evidence_fingerprint ||
+      rejection.evidence_fingerprint === candidateEvidenceFingerprint(candidate));
+}
+
+export function filterRejectedConventionCandidates(
+  storage: SqliteDriftStorage,
+  repoId: string,
+  candidates: ConventionCandidate[]
+): ConventionCandidate[] {
+  const contractRejections = storage.getRepoContract(repoId)?.rejected_inferences ?? [];
+  return candidates.filter((candidate) => {
+    if (contractRejections.some((rejection) => candidateMatchesRejectedInference(candidate, rejection))) {
+      return false;
+    }
+    const existing = storage.getConventionCandidate(candidate.id);
+    return !(existing?.status === "rejected" &&
+      candidateEvidenceFingerprint(existing) === candidateEvidenceFingerprint(candidate));
+  });
+}
+
 export function conventionCandidateSummary(
   allCandidates: ConventionCandidate[],
   filteredCandidates: ConventionCandidate[],
@@ -237,6 +295,8 @@ export function conventionCandidateReviewItem(candidate: ConventionCandidate): {
   evidence_ref_count: number;
   counterexample_ref_count: number;
   first_evidence: Pick<EvidenceRef, "file_path" | "start_line" | "import_source" | "symbol"> | null;
+  reason_not_blocking: ConventionCandidate["reason_not_blocking"] | null;
+  evidence_fingerprint: string | null;
 } {
   const firstEvidence = candidate.evidence_refs[0] ?? null;
   return {
@@ -256,6 +316,8 @@ export function conventionCandidateReviewItem(candidate: ConventionCandidate): {
     heuristic_id: candidate.scoring.heuristic_id,
     evidence_ref_count: candidate.evidence_refs.length,
     counterexample_ref_count: candidate.counterexample_refs.length,
+    reason_not_blocking: candidate.reason_not_blocking ?? null,
+    evidence_fingerprint: candidate.evidence_fingerprint ?? null,
     first_evidence: firstEvidence
       ? {
           file_path: firstEvidence.file_path,
@@ -273,7 +335,7 @@ export function conventionCandidateListNextCommands(
 ): string[] {
   const candidate = candidates[0];
   if (!candidate) {
-    return [`drift scan --repo ${repoId} --json`];
+    return [`drift scan status --repo ${repoId} --json`];
   }
   return [
     `drift conventions show ${candidate.id} --repo ${repoId} --json`,
@@ -359,6 +421,15 @@ export function inferConventionCandidates(input: {
       kind: "supporting",
       facts: dataImports
     });
+    const dataMatcher = {
+      kind: "api_route_no_direct_data_access" as const,
+      forbidden_imports: forbiddenImports,
+      applies_to_file_roles: ["api_route" as const]
+    };
+    const dataScope = {
+      path_globs: [...API_ROUTE_SCOPE_GLOBS],
+      file_roles: ["api_route" as const]
+    };
     candidates.push({
       id: `candidate_${hashStable(`${input.repoId}:api_route_no_direct_data_access:${forbiddenImports.join(",")}`).slice(0, 16)}`,
       repo_id: input.repoId,
@@ -366,17 +437,11 @@ export function inferConventionCandidates(input: {
       kind: "api_route_no_direct_data_access",
       statement: "API routes should not import data-access clients directly.",
       rationale: "Detected API route imports that look like database/data-access clients.",
-      scope: {
-        path_globs: [...API_ROUTE_SCOPE_GLOBS],
-        file_roles: ["api_route"]
-      },
-      matcher: {
-        kind: "api_route_no_direct_data_access",
-        forbidden_imports: forbiddenImports,
-        applies_to_file_roles: ["api_route"]
-      },
+      scope: dataScope,
+      matcher: dataMatcher,
+      requires: { forbidden_imports: forbiddenImports },
       suggested_severity: "error",
-      suggested_enforcement_mode: "block",
+      suggested_enforcement_mode: "warn",
       enforcement_capability: "deterministic_check",
       confidence_label: "high",
       scoring: {
@@ -388,6 +453,11 @@ export function inferConventionCandidates(input: {
       },
       evidence_refs: dataEvidence,
       counterexample_refs: [],
+      matcher_fingerprint: hashStable(JSON.stringify(dataMatcher)),
+      scope_fingerprint: hashStable(JSON.stringify(dataScope)),
+      evidence_fingerprint: hashStable(JSON.stringify(dataEvidence)),
+      required_capabilities: ["syntax_facts", "import_resolution", "route_detection"],
+      reason_not_blocking: "candidate_not_accepted",
       status: "candidate",
       created_at: input.now
     });
@@ -407,6 +477,17 @@ export function inferConventionCandidates(input: {
       kind: "counterexample",
       facts: dataImports
     });
+    const serviceMatcher = {
+      kind: "api_route_requires_service_delegation" as const,
+      allowed_delegate_imports: delegateImports.length > 0
+        ? delegateImports
+        : ["**/services/**", "**/server/**", "**/data-access/**"],
+      applies_to_file_roles: ["api_route" as const]
+    };
+    const serviceScope = {
+      path_globs: [...API_ROUTE_SCOPE_GLOBS],
+      file_roles: ["api_route" as const]
+    };
     candidates.push({
       id: `candidate_${hashStable(`${input.repoId}:api_route_requires_service_delegation:${delegateImports.join(",") || "default"}`).slice(0, 16)}`,
       repo_id: input.repoId,
@@ -416,17 +497,8 @@ export function inferConventionCandidates(input: {
       rationale: serviceImports.length > 0
         ? "Detected API route imports from service modules."
         : "Detected direct data-access imports; service delegation should be reviewed before enforcement.",
-      scope: {
-        path_globs: [...API_ROUTE_SCOPE_GLOBS],
-        file_roles: ["api_route"]
-      },
-      matcher: {
-        kind: "api_route_requires_service_delegation",
-        allowed_delegate_imports: delegateImports.length > 0
-          ? delegateImports
-          : ["**/services/**", "**/server/**", "**/data-access/**"],
-        applies_to_file_roles: ["api_route"]
-      },
+      scope: serviceScope,
+      matcher: serviceMatcher,
       suggested_severity: "warning",
       suggested_enforcement_mode: "warn",
       enforcement_capability: "heuristic_check",
@@ -440,6 +512,11 @@ export function inferConventionCandidates(input: {
       },
       evidence_refs: serviceEvidence,
       counterexample_refs: dataCounterexamples,
+      matcher_fingerprint: hashStable(JSON.stringify(serviceMatcher)),
+      scope_fingerprint: hashStable(JSON.stringify(serviceScope)),
+      evidence_fingerprint: hashStable(JSON.stringify(serviceEvidence)),
+      required_capabilities: ["syntax_facts", "import_resolution", "graph_stream"],
+      reason_not_blocking: "candidate_not_accepted",
       status: "candidate",
       created_at: input.now
     });

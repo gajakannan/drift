@@ -14,6 +14,7 @@ import {
   buildRepoContractReadModel,
   buildRepoMapReadModel,
   buildRepoTopology,
+  buildSemanticCoverage,
   buildSymbolIdentity,
   classifyAgentTask,
   classifyDataOperationRisk,
@@ -1422,6 +1423,97 @@ describe("GraphQueryService", () => {
       reasons: ["parser_gaps_present"],
       required_capabilities: ["route_flow_graph"],
       missing_capabilities: []
+    });
+  });
+
+  it("refuses readiness when parser gap v2 blocks enforcement", () => {
+    const readiness = buildReadiness({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      surface: "check",
+      graph_available: true,
+      graph_complete: true,
+      parser_gaps: [{
+        schema_version: "drift.parser_gap.v2",
+        parser_gap_id: "parser_gap_dynamic_route",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        kind: "dynamic_import_unresolved",
+        file_path: "apps/web/app/api/users/route.ts",
+        start_line: 4,
+        end_line: 4,
+        confidence_impact: "blocks_enforcement",
+        message: "Dynamic import target is not statically resolvable.",
+        affected_capabilities: ["ts.dynamic_imports.v1", "ts.route_flow.v1"],
+        affected_contract_kinds: ["api_route_no_direct_data_access"],
+        suggested_action: "rewrite_static",
+        evidence_refs: ["diagnostic_dynamic_import"]
+      }],
+      completeness_reasons: [],
+      required_capabilities: ["route_flow_graph"],
+      missing_capabilities: []
+    });
+
+    expect(readiness).toMatchObject({
+      parser_gap_count: 1,
+      parser_gaps_by_kind: { dynamic_import_unresolved: 1 },
+      confidence: 0.4,
+      decision: "refuse",
+      reasons: ["parser_gap_blocks_enforcement", "parser_gaps_present"]
+    });
+  });
+
+  it("builds semantic coverage from readiness and parser gap v2 capability impact", () => {
+    const parserGap = {
+      schema_version: "drift.parser_gap.v2" as const,
+      parser_gap_id: "parser_gap_dynamic_route",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "dynamic_import_unresolved" as const,
+      file_path: "apps/web/app/api/users/route.ts",
+      start_line: 4,
+      end_line: 4,
+      confidence_impact: "blocks_enforcement" as const,
+      message: "Dynamic import target is not statically resolvable.",
+      affected_capabilities: ["ts.dynamic_imports.v1"],
+      affected_contract_kinds: ["api_route_no_direct_data_access" as const],
+      suggested_action: "rewrite_static" as const,
+      evidence_refs: ["diagnostic_dynamic_import"]
+    };
+    const readiness = buildReadiness({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      surface: "prepare",
+      graph_available: true,
+      graph_complete: true,
+      parser_gaps: [parserGap],
+      completeness_reasons: [],
+      required_capabilities: ["ts.route_flow.v1", "ts.dynamic_imports.v1"],
+      missing_capabilities: []
+    });
+
+    const coverage = buildSemanticCoverage({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      scope: "preflight",
+      scope_id: "task_users_route",
+      required_capabilities: ["ts.route_flow.v1", "ts.dynamic_imports.v1"],
+      certified_capabilities: ["ts.route_flow.v1"],
+      missing_capabilities: [],
+      readiness,
+      parser_gaps: [parserGap],
+      generated_at: "2026-05-28T00:00:00.000Z"
+    });
+
+    expect(coverage).toMatchObject({
+      schema_version: "drift.semantic_coverage.v1",
+      scope: "preflight",
+      complete_capabilities: ["ts.route_flow.v1"],
+      partial_capabilities: ["ts.dynamic_imports.v1"],
+      parser_gap_ids: ["parser_gap_dynamic_route"],
+      confidence: 0.4,
+      decision: "refuse",
+      reasons: ["parser_gap_blocks_enforcement", "parser_gaps_present"]
     });
   });
 

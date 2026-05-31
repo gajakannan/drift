@@ -182,6 +182,7 @@ describe("release hygiene", () => {
       machine_contract_versions_verified: true,
       finding_evidence_confidence_verified: true,
       required_check_execution_proof_verified: true,
+      semantic_beta_proof_verified: true,
       contract_parity_verified: true,
       mcp_cli_parity_verified: true,
       audit_verified: true
@@ -196,6 +197,12 @@ describe("release hygiene", () => {
     });
     expect(betaProof.evidence.machine_contract_versions).toMatchObject({
       schema_version: "drift.machine_contract_versions.v1"
+    });
+    expect(betaProof.evidence.semantic_beta_proof).toMatchObject({
+      schema_version: "drift.semantic_beta_proof.v1",
+      semantic_capability_contracts_verified: true,
+      partial_beta_required_count: 0,
+      unsupported_beta_required_count: 0
     });
     expect(betaProof.evidence.finding_evidence_confidence).toMatchObject({
       confidence_kind: "deterministic",

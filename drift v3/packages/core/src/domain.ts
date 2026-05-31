@@ -4,6 +4,13 @@ export type ConventionKind =
   | "api_route_requires_auth_helper"
   | "middleware_must_cover_routes"
   | "api_route_requires_request_validation"
+  | "api_route_forbids_untrusted_ssrf"
+  | "api_route_forbids_raw_sql_without_params"
+  | "api_route_cors_must_match_policy"
+  | "api_route_requires_csrf_for_mutation"
+  | "api_route_requires_rate_limit"
+  | "api_route_forbids_sensitive_response_fields"
+  | "api_route_forbids_secret_exposure"
   | "session_object_must_come_from_trusted_helper"
   | "api_route_requires_authorization"
   | "api_route_requires_tenant_scope"
@@ -87,6 +94,13 @@ export interface ConventionMatcher {
   required_calls?: string[];
   allowed_delegate_imports?: string[];
   applies_to_file_roles?: FileRole[];
+  file_roles?: FileRole[];
+  path_globs?: string[];
+  route_paths?: string[];
+  methods?: string[];
+  protection_kinds?: string[];
+  middleware_ids?: string[];
+  matcher_fact_ids?: string[];
 }
 
 export type EnforcementCapability =
@@ -271,7 +285,17 @@ export type FactKind =
   | "tenant_guard_called"
   | "authorization_guard_called"
   | "request_validation_called"
-  | "validated_input_used";
+  | "validated_input_used"
+  | "outbound_request_called"
+  | "raw_sql_called"
+  | "parameterized_sql_used"
+  | "cors_policy_declared"
+  | "csrf_guard_called"
+  | "rate_limit_guard_called"
+  | "sensitive_field_declared"
+  | "response_emits_field"
+  | "serializer_called"
+  | "secret_read";
 
 export type FactEvidenceLevel = "path" | "text" | "ast" | "graph" | "heuristic";
 export type FactResolutionStatus = "resolved" | "unresolved" | "partial" | "unsupported";
@@ -337,6 +361,48 @@ export interface ParserGap {
   created_at: string;
 }
 
+export type ParserGapKindV2 =
+  | "unresolved_import"
+  | "unresolved_import_symbol"
+  | "unsupported_namespace_import_symbol"
+  | "unresolved_symbol"
+  | "unknown_file_role"
+  | "mixed_file_role"
+  | "unsupported_framework_pattern"
+  | "dynamic_import_unresolved"
+  | "computed_call_unresolved"
+  | "chained_call_partial"
+  | "decorator_route_unresolved"
+  | "di_container_unresolved"
+  | "wrapper_alias_unresolved"
+  | "type_only_boundary_ignored"
+  | "framework_magic_detected";
+
+export type ParserGapSuggestedAction =
+  | "add_fixture"
+  | "accept_advisory"
+  | "rewrite_static"
+  | "configure_adapter"
+  | "defer";
+
+export interface ParserGapV2 {
+  schema_version: "drift.parser_gap.v2";
+  parser_gap_id: string;
+  repo_id: string;
+  scan_id: string;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  kind: ParserGapKindV2;
+  message: string;
+  source_text_hash?: string;
+  affected_capabilities: string[];
+  affected_contract_kinds: ConventionKind[];
+  confidence_impact: ParserGapConfidenceImpact;
+  suggested_action: ParserGapSuggestedAction;
+  evidence_refs: string[];
+}
+
 export type ScanCapabilityReportScope =
   | "repo"
   | "changed-files"
@@ -369,6 +435,362 @@ export interface ScanCapabilityReport {
   fallback_used: boolean;
   enforcement_degraded: boolean;
   created_at: string;
+}
+
+export type SemanticCapabilityCertification =
+  | "certified_deterministic"
+  | "certified_heuristic"
+  | "experimental"
+  | "unsupported";
+
+export type SemanticCapabilitySupport =
+  | "supported"
+  | "partial"
+  | "unsupported"
+  | "deferred";
+
+export type SemanticCapabilityEvidenceClass =
+  | "path"
+  | "text"
+  | "ast"
+  | "graph"
+  | "type_checker"
+  | "heuristic"
+  | "unsupported_pattern";
+
+export type SemanticCapabilityOwner =
+  | "rust_engine"
+  | "core_schema"
+  | "query"
+  | "cli"
+  | "mcp"
+  | "proof";
+
+export interface SemanticCapabilityContract {
+  schema_version: "drift.semantic_capability.v1";
+  capability_id: string;
+  display_name: string;
+  language: "typescript" | "javascript" | "tsx" | "jsx";
+  support: SemanticCapabilitySupport;
+  certification: SemanticCapabilityCertification;
+  can_block: boolean;
+  evidence_classes: SemanticCapabilityEvidenceClass[];
+  emitted_fact_kinds: string[];
+  emitted_node_kinds: string[];
+  emitted_edge_kinds: string[];
+  parser_gap_kinds: string[];
+  fixture_suites: string[];
+  required_for_beta_claims: string[];
+  owner: SemanticCapabilityOwner;
+}
+
+export interface ConventionRuleCapabilityReference {
+  rule_id: string;
+  requires_capabilities: string[];
+}
+
+export interface ConventionRuleCapabilityValidationResult {
+  valid: boolean;
+  missing_capabilities: string[];
+}
+
+export type SemanticCoverageScope =
+  | "scan"
+  | "file"
+  | "route_flow"
+  | "check"
+  | "preflight"
+  | "repo_map"
+  | "mcp";
+
+export type SemanticCoverageDecision =
+  | "blocking_allowed"
+  | "advisory_only"
+  | "refuse";
+
+export interface SemanticCoverageContract {
+  schema_version: "drift.semantic_coverage.v1";
+  repo_id: string;
+  scan_id: string;
+  scope: SemanticCoverageScope;
+  scope_id: string;
+  required_capabilities: string[];
+  complete_capabilities: string[];
+  partial_capabilities: string[];
+  missing_capabilities: string[];
+  unsupported_capabilities: string[];
+  parser_gap_ids: string[];
+  unsupported_pattern_ids: string[];
+  confidence: number;
+  decision: SemanticCoverageDecision;
+  reasons: string[];
+  generated_at: string;
+}
+
+export type ArchitectureRole = CanonicalRole;
+
+export type ArchitectureEdgePolicy =
+  | "allowed"
+  | "forbidden"
+  | "expected"
+  | "allowed_with_risk"
+  | "ignored"
+  | "advisory_only";
+
+export type ArchitectureEdgeKind =
+  | "imports"
+  | "calls"
+  | "contains"
+  | "returns"
+  | "uses_data";
+
+export interface ArchitectureContractV1 {
+  schema_version: "drift.architecture.v1";
+  architecture_id: string;
+  repo_id: string;
+  version: string;
+  source: "default" | "imported" | "elected";
+  roles: Array<{
+    role: ArchitectureRole;
+    description: string;
+    detection: "path" | "ast" | "import_graph" | "accepted_convention" | "manual";
+    confidence_required_for_blocking: "high";
+  }>;
+  edge_policies: Array<{
+    from_role: ArchitectureRole;
+    to_role: ArchitectureRole;
+    edge_kind: ArchitectureEdgeKind;
+    policy: ArchitectureEdgePolicy;
+    required_capabilities: string[];
+  }>;
+}
+
+export interface ConventionRuleContract {
+  schema_version: "drift.convention_rule.v2";
+  rule_id: string;
+  rule_version: string;
+  convention_kind: ConventionKind;
+  statement: string;
+  applies_to: {
+    path_globs?: string[];
+    file_roles?: ArchitectureRole[];
+    entrypoint_kinds?: string[];
+    methods?: string[];
+  };
+  requires_capabilities: string[];
+  architecture_contract_id: string;
+  matcher: Record<string, unknown>;
+  can_block_when: {
+    convention_status: "active";
+    coverage_decision: "blocking_allowed";
+    capability_certification: "certified_deterministic";
+  };
+  advisory_when: string[];
+  refuse_when: string[];
+}
+
+export type ConventionElectionState =
+  | "detected"
+  | "candidate"
+  | "promoted"
+  | "accepted"
+  | "active"
+  | "rejected"
+  | "deprecated"
+  | "superseded"
+  | "conflicted"
+  | "disabled"
+  | "expired";
+
+export type ConventionElectionDecision =
+  | "create_candidate"
+  | "promote"
+  | "accept"
+  | "activate"
+  | "reject"
+  | "disable"
+  | "deprecate"
+  | "supersede"
+  | "mark_conflicted"
+  | "expire";
+
+export interface ConventionElectionContractV2 {
+  schema_version: "drift.convention_election.v2";
+  election_id: string;
+  repo_id: string;
+  candidate_id?: string;
+  convention_id?: string;
+  previous_state: ConventionElectionState | null;
+  next_state: ConventionElectionState;
+  decision: ConventionElectionDecision;
+  human_actor?: string;
+  automated_actor?: "drift_engine" | "cli_import" | "policy_import";
+  reason: string;
+  evidence_refs: string[];
+  counterexample_refs: string[];
+  required_capabilities: string[];
+  semantic_coverage_id?: string;
+  architecture_contract_id: string;
+  convention_rule_id: string;
+  contract_fingerprint_before?: string;
+  contract_fingerprint_after?: string;
+  audit_event_id: string;
+  can_block: boolean;
+  blocked_reason?: string;
+  created_at: string;
+}
+
+export type ModuleSpecifierKind = "relative" | "absolute_alias" | "package" | "workspace_package" | "node_builtin" | "dynamic" | "commonjs";
+export type ModuleResolutionStatus = "resolved" | "unresolved" | "external" | "unsupported" | "partial";
+export type ModuleImportKind = "static_import" | "export_from" | "require" | "dynamic_import" | "type_only";
+export type ModuleResolverStrategy = "relative_extensions" | "index_file" | "tsconfig_paths" | "jsconfig_paths" | "package_exports" | "workspace_package" | "node_builtin" | "unsupported_dynamic";
+
+export interface ModuleResolutionRecord {
+  schema_version: "drift.module_resolution.v1";
+  resolution_id: string;
+  repo_id: string;
+  scan_id: string;
+  importer_file: string;
+  source: string;
+  specifier_kind: ModuleSpecifierKind;
+  import_kind: ModuleImportKind;
+  resolved_file_path?: string;
+  resolved_package_name?: string;
+  status: ModuleResolutionStatus;
+  resolver_strategy: ModuleResolverStrategy;
+  evidence_ref: string;
+  parser_gap_id?: string;
+}
+
+export interface SymbolIdentityV2 {
+  schema_version: "drift.symbol_identity.v2";
+  symbol_id: string;
+  repo_id: string;
+  scan_id: string;
+  canonical_name: string;
+  declaration_file: string;
+  declaration_span: SourceSpan;
+  symbol_kind: "function" | "class" | "const" | "let" | "var" | "type" | "interface" | "namespace" | "default_export" | "unknown";
+  export_kind: "named" | "default" | "namespace" | "re_export" | "local";
+  aliases: Array<{
+    local_name: string;
+    imported_name?: string;
+    importer_file: string;
+    import_source: string;
+    resolution_id: string;
+  }>;
+  re_export_chain: string[];
+  reference_count: number;
+  confidence: "high" | "medium" | "low";
+  resolution_status: FactResolutionStatus;
+  parser_gap_ids: string[];
+}
+
+export type CallExpressionShape = "identifier" | "member" | "optional_member" | "chained" | "computed_member" | "call_result" | "new_expression" | "decorator" | "unknown";
+
+export interface CallResolutionRecord {
+  schema_version: "drift.call_resolution.v1";
+  call_id: string;
+  repo_id: string;
+  scan_id: string;
+  file_path: string;
+  span: SourceSpan;
+  callee_text: string;
+  receiver_text?: string;
+  root_identifier?: string;
+  shape: CallExpressionShape;
+  resolved_symbol_id?: string;
+  resolved_import_id?: string;
+  resolution_status: FactResolutionStatus;
+  confidence: "high" | "medium" | "low";
+  parser_gap_id?: string;
+}
+
+export interface DataOperationRecordV2 {
+  schema_version: "drift.data_operation.v2";
+  operation_id: string;
+  repo_id: string;
+  scan_id: string;
+  file_path: string;
+  call_id: string;
+  operation_family: "database" | "cache" | "queue" | "http" | "filesystem" | "secret" | "payment" | "email" | "analytics" | "unknown";
+  operation_kind: "read" | "create" | "update" | "delete" | "upsert" | "execute" | "publish" | "send" | "unknown";
+  receiver_root: string;
+  receiver_path: string[];
+  store_name?: string;
+  tenant_sensitive: boolean;
+  mutation: boolean;
+  confidence: "high" | "medium" | "low";
+  evidence_ref: string;
+  parser_gap_ids: string[];
+}
+
+export interface FrameworkAdapterContractV2 {
+  schema_version: "drift.framework_adapter.v2";
+  adapter_id: string;
+  framework: "next" | "express" | "nest" | "fastify" | "remix" | "unknown";
+  version_range?: string;
+  certification: "certified_deterministic" | "certified_heuristic" | "experimental";
+  route_patterns_supported: string[];
+  unsupported_patterns: string[];
+  emitted_entrypoint_kinds: string[];
+  emitted_capabilities: string[];
+  parser_gap_kinds: string[];
+  fixture_suites: string[];
+  can_block: boolean;
+}
+
+export interface AgentPreflightSemanticEnvelope {
+  schema_version: "drift.agent_preflight_semantic.v1";
+  repo_id: string;
+  scan_id: string | null;
+  task: string;
+  decision: "safe_to_edit" | "run_scan_first" | "blocked_by_policy" | "blocked_by_stale_graph" | "context_truncated" | "advisory_only" | "refuse";
+  semantic_coverage: SemanticCoverageContract;
+  parser_gaps: ParserGapV2[];
+  affected_files: string[];
+  affected_symbols: string[];
+  affected_routes: string[];
+  affected_data_operations: string[];
+  required_checks: string[];
+  safe_commands: string[];
+  source_content_included: boolean;
+  graph_context_included: boolean;
+}
+
+export interface SemanticCheckProof {
+  schema_version: "drift.semantic_check_proof.v1";
+  check_id: string;
+  repo_id: string;
+  scan_id: string;
+  repo_contract_id: string;
+  convention_id: string;
+  convention_rule_id: string;
+  semantic_coverage_id: string;
+  architecture_contract_id: string;
+  required_capabilities: string[];
+  coverage_decision: "blocking_allowed";
+  parser_gap_ids: string[];
+  graph_edge_ids: string[];
+  graph_node_ids: string[];
+  evidence_refs: string[];
+  result: "pass" | "block";
+}
+
+export interface SemanticBetaProof {
+  schema_version: "drift.semantic_beta_proof.v1";
+  commit_sha: string;
+  semantic_capability_contracts_verified: boolean;
+  architecture_contract_verified: boolean;
+  convention_election_contract_verified: boolean;
+  repo_contract_materialization_verified: boolean;
+  cli_mcp_semantic_parity_verified: boolean;
+  unsupported_pattern_visibility_verified: boolean;
+  blocking_safety_verified: boolean;
+  claim_gate_verified: boolean;
+  partial_beta_required_count: number;
+  unsupported_beta_required_count: number;
+  evidence: Record<string, unknown>;
 }
 
 export interface MachineContractVersions {
@@ -622,6 +1044,7 @@ export interface ConventionCandidate {
   rationale?: string;
   scope: ConventionScope;
   matcher: ConventionMatcher;
+  requires?: Record<string, unknown>;
   suggested_severity: Severity;
   suggested_enforcement_mode: EnforcementMode;
   enforcement_capability: EnforcementCapability;
@@ -629,6 +1052,12 @@ export interface ConventionCandidate {
   scoring: ConventionScore;
   evidence_refs: EvidenceRef[];
   counterexample_refs: EvidenceRef[];
+  matcher_fingerprint?: string;
+  scope_fingerprint?: string;
+  graph_fingerprint?: string;
+  evidence_fingerprint?: string;
+  required_capabilities?: string[];
+  reason_not_blocking?: "candidate_not_accepted" | "candidate_incomplete" | "candidate_heuristic";
   status: ConventionStatus;
   created_at: string;
 }
@@ -656,6 +1085,9 @@ export interface AcceptedConvention {
 
 export interface RejectedInference {
   candidate_id: string;
+  evidence_fingerprint?: string;
+  matcher_fingerprint?: string;
+  scope_fingerprint?: string;
   reason: string;
   rejected_by: string;
   rejected_at: string;
@@ -1148,6 +1580,17 @@ export interface RepoContract {
   required_checks: RequiredCheck[];
   context_egress: ContextEgressPolicy;
   agent_permissions: AgentPermission[];
+  semantic_capability_contract_version?: "drift.semantic_capability.v1";
+  architecture_contract_id?: string;
+  architecture_contract_fingerprint?: string;
+  active_convention_rule_ids?: string[];
+  active_semantic_capability_ids?: string[];
+  beta_claim_profile?: "narrow_route_layering" | "security_boundary" | "custom_internal";
+  enforcement_policy?: {
+    block_on_parser_gaps: false;
+    refuse_on_required_capability_missing: true;
+    advisory_on_heuristic_capability: true;
+  };
 }
 
 export interface PolicyDecision {

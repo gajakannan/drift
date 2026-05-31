@@ -30,7 +30,10 @@ export { evaluateRoleEdge } from "./role-ontology.js";
 export { scoreHelperSimilarity } from "./helper-similarity.js";
 export { buildRepoTopology } from "./repo-topology.js";
 export { buildReadiness } from "./readiness.js";
-export { buildSecurityBoundaryProofReadModel } from "./security-boundary-proof.js";
+export { buildSemanticCoverage } from "./semantic-coverage.js";
+export { buildSecurityBoundaryProofReadModel, buildSecurityPhase8ReadModel } from "./security-boundary-proof.js";
+export { buildSecurityArchitectureAudit } from "./security-architecture-audit.js";
+export { buildFrameworkEntrypointReadModel } from "./framework-entrypoints.js";
 export type { BuildEntrypointFlowProofInput } from "./flow-proof.js";
 export type { BuildChangeImpactInput, ChangeImpactRouteFlow } from "./change-impact.js";
 export type { ClassifyDataOperationRiskInput } from "./data-operation-risk.js";
@@ -40,6 +43,7 @@ export type {
   DriftReadinessDecision,
   DriftReadinessSurface
 } from "./readiness.js";
+export type { BuildSemanticCoverageInput } from "./semantic-coverage.js";
 export type {
   BuildLayerArchitectureProofInput,
   LayerArchitectureObservedEdge,
@@ -51,9 +55,22 @@ export type { BuildSymbolIdentityInput } from "./symbol-identity.js";
 export type { RelevantTestsSelection, SelectRelevantTestsInput } from "./test-intelligence.js";
 export type {
   BuildSecurityBoundaryProofReadModelInput,
+  BuildSecurityPhase8ReadModelInput,
   SecurityBoundaryProofReadModel,
-  SecurityBoundaryProofRouteSummary
+  SecurityBoundaryProofRouteSummary,
+  SecurityCapabilitySummary,
+  SecurityPhase8Route
 } from "./security-boundary-proof.js";
+export type {
+  BuildSecurityArchitectureAuditInput,
+  SecurityArchitectureAudit,
+  SecurityArchitectureAuditArea,
+  SecurityArchitectureAuditAreaKey,
+  SecurityArchitectureAuditPattern,
+  SecurityArchitectureProofTruth,
+  SecurityArchitectureSemanticRole
+} from "./security-architecture-audit.js";
+export type { BuildFrameworkEntrypointReadModelInput } from "./framework-entrypoints.js";
 
 export interface GraphRepoMapFile {
   path: string;

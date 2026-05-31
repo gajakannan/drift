@@ -14,7 +14,7 @@ const root = process.cwd();
 
 ensureBuiltRuntime();
 
-const [{ runCli }, { createReadOnlyMcpHandlers }, { openDriftStorage }, { createContractParityLedger }] = await Promise.all([
+const [{ runCli }, { createReadOnlyMcpHandlers }, { openDriftStorage }, { BUILTIN_SEMANTIC_CAPABILITIES, createContractParityLedger }] = await Promise.all([
   import(pathToFileURL(resolve("packages/cli/dist/index.js")).href),
   import(pathToFileURL(resolve("packages/mcp/dist/index.js")).href),
   import(pathToFileURL(resolve("packages/storage/dist/index.js")).href),
@@ -35,6 +35,7 @@ try {
   ]);
   const databasePath = started.state.database_path;
   const repoId = started.repo.id;
+  promoteDirectDataAccessConventionToBlock({ databasePath, repoId });
 
   const requiredCheckCommand = "node -e \"process.stdout.write('ok')\"";
   addRequiredProofContract({
@@ -195,6 +196,52 @@ try {
         execution.status === "passed"
       )
   );
+  const semanticCapabilities = Array.from(BUILTIN_SEMANTIC_CAPABILITIES ?? []);
+  const betaRequiredSemanticCapabilities = semanticCapabilities.filter((capability) =>
+    capability.required_for_beta_claims?.includes("narrow_route_layering")
+  );
+  const semanticBetaProof = {
+    schema_version: "drift.semantic_beta_proof.v1",
+    commit_sha: gitOutput(root, ["rev-parse", "HEAD"]) || "unknown",
+    semantic_capability_contracts_verified: betaRequiredSemanticCapabilities.length > 0 &&
+      betaRequiredSemanticCapabilities.every((capability) =>
+        capability.schema_version === "drift.semantic_capability.v1" &&
+        capability.certification === "certified_deterministic" &&
+        capability.can_block === true &&
+        capability.fixture_suites.length > 0
+      ),
+    architecture_contract_verified: contractParity.contracts?.some((row) =>
+      row.name === "LayerArchitectureContract" &&
+      row.confidence === "complete"
+    ) === true,
+    convention_election_contract_verified: contractParity.contracts?.some((row) =>
+      row.name === "ConventionElectionContract" &&
+      row.confidence === "complete"
+    ) === true,
+    repo_contract_materialization_verified: Boolean(contract.contract?.id),
+    cli_mcp_semantic_parity_verified: parity.verified,
+    unsupported_pattern_visibility_verified: semanticCapabilities.some((capability) =>
+      capability.support === "deferred" &&
+      capability.parser_gap_kinds.length > 0
+    ),
+    blocking_safety_verified: capabilityReportVerified && findingEvidenceComplete,
+    claim_gate_verified: contractParityVerified,
+    partial_beta_required_count: betaRequiredSemanticCapabilities.filter((capability) =>
+      capability.support !== "supported" ||
+      capability.certification !== "certified_deterministic" ||
+      capability.can_block !== true
+    ).length,
+    unsupported_beta_required_count: betaRequiredSemanticCapabilities.filter((capability) =>
+      capability.support === "unsupported" ||
+      capability.certification === "unsupported"
+    ).length,
+    evidence: {
+      beta_required_capabilities: betaRequiredSemanticCapabilities.map((capability) => capability.capability_id),
+      deferred_capabilities: semanticCapabilities
+        .filter((capability) => capability.support === "deferred" || capability.certification === "unsupported")
+        .map((capability) => capability.capability_id)
+    }
+  };
 
   const betaProof = {
     verify_ci_status: process.env.DRIFT_VERIFY_CI_STATUS ?? null,
@@ -224,6 +271,16 @@ try {
     machine_contract_versions_verified: machineContractVersionsVerified,
     finding_evidence_confidence_verified: findingEvidenceConfidenceVerified,
     required_check_execution_proof_verified: requiredCheckExecutionProofVerified,
+    semantic_beta_proof_verified: semanticBetaProof.semantic_capability_contracts_verified &&
+      semanticBetaProof.architecture_contract_verified &&
+      semanticBetaProof.convention_election_contract_verified &&
+      semanticBetaProof.repo_contract_materialization_verified &&
+      semanticBetaProof.cli_mcp_semantic_parity_verified &&
+      semanticBetaProof.unsupported_pattern_visibility_verified &&
+      semanticBetaProof.blocking_safety_verified &&
+      semanticBetaProof.claim_gate_verified &&
+      semanticBetaProof.partial_beta_required_count === 0 &&
+      semanticBetaProof.unsupported_beta_required_count === 0,
     contract_parity_verified: contractParityVerified,
     mcp_cli_parity_hash: parity.hash,
     mcp_cli_parity_verified: parity.verified,
@@ -271,6 +328,7 @@ try {
         argv: requiredCheckExecution.execution?.argv ?? [],
         mcp_summary: mcpRequiredCheckExecutions.summary ?? null
       },
+      semantic_beta_proof: semanticBetaProof,
       contract_parity: contractParity,
       mcp_cli_parity: parity.bundle,
       audit_verification: audit.verification
@@ -312,6 +370,34 @@ async function createFixture(dir) {
     ""
   ].join("\n"));
   return { repoRoot, stateRoot };
+}
+
+function promoteDirectDataAccessConventionToBlock({ databasePath, repoId }) {
+  const storage = openDriftStorage({ databasePath });
+  try {
+    const contract = storage.getRepoContract(repoId);
+    if (!contract) {
+      throw new Error(`No repo contract exists for ${repoId}.`);
+    }
+    const conventions = storage.listAcceptedConventions(repoId).map((convention) =>
+      convention.kind === "api_route_no_direct_data_access"
+        ? { ...convention, enforcement_mode: "block" }
+        : convention
+    );
+    for (const convention of conventions) {
+      storage.upsertAcceptedConvention(repoId, convention);
+    }
+    storage.upsertRepoContract({
+      ...contract,
+      conventions: conventions.map((convention) =>
+        convention.kind === "api_route_no_direct_data_access"
+          ? { ...convention, enforcement_mode: "block" }
+          : convention
+      )
+    });
+  } finally {
+    storage.close();
+  }
 }
 
 function addRequiredProofContract({ databasePath, repoId, command }) {
@@ -537,7 +623,49 @@ function responseSchemasVerified(bundle) {
 }
 
 function stablePayloadForParity(payload) {
-  return stripParityVolatileFields(payload);
+  return stripParityVolatileFields(normalizeParityPayload(payload));
+}
+
+function normalizeParityPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+  if (payload.response_schema !== "drift.findings.list.v1") {
+    return payload;
+  }
+  return {
+    ...payload,
+    review_items: Array.isArray(payload.review_items)
+      ? payload.review_items.map((item) => ({
+          ...item,
+          first_evidence: item.first_evidence
+            ? {
+                file_path: item.first_evidence.file_path,
+                start_line: item.first_evidence.start_line ?? null
+              }
+            : null
+        }))
+      : payload.review_items,
+    findings: Array.isArray(payload.findings)
+      ? payload.findings.map((finding) => ({
+          finding_id: finding.finding_id ?? finding.id,
+          convention_id: finding.convention_id,
+          title: finding.title,
+          severity: finding.severity,
+          lifecycle: finding.lifecycle ?? finding.status,
+          diff_status: finding.diff_status,
+          enforcement_result: finding.enforcement_result,
+          file_refs: finding.file_refs ?? (Array.isArray(finding.evidence_refs)
+            ? finding.evidence_refs.map((ref) => ({
+                file_path: ref.file_path,
+                ...(ref.start_line ? { start_line: ref.start_line } : {}),
+                ...(ref.end_line ? { end_line: ref.end_line } : {}),
+                redaction_state: ref.start_line || ref.end_line ? "line_only" : "metadata_only"
+              }))
+            : [])
+        }))
+      : payload.findings
+  };
 }
 
 function stripParityVolatileFields(value) {
@@ -577,6 +705,7 @@ function assertBetaProof(proof) {
     "machine_contract_versions_verified",
     "finding_evidence_confidence_verified",
     "required_check_execution_proof_verified",
+    "semantic_beta_proof_verified",
     "contract_parity_verified",
     "mcp_cli_parity_verified",
     "audit_verified"
@@ -632,6 +761,14 @@ function valueFlag(name) {
     throw new Error(`${name} requires a value.`);
   }
   return value;
+}
+
+function gitOutput(cwd, args) {
+  try {
+    return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
 }
 
 function canonicalJson(value) {

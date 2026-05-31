@@ -40,8 +40,9 @@ export function validateContract(storage: SqliteDriftStorage, parsed: ParsedArgs
     throw new Error(`Policy denied contract validate: ${policy.reason}`);
   }
   RepoContractSchema.parse(contract);
+  const validationReasons = contractValidationReasons(contract);
   const payload = {
-    valid: true,
+    valid: validationReasons.length === 0,
     repo_id: repoId,
     policy,
     governance: preflightGovernance(),
@@ -50,9 +51,14 @@ export function validateContract(storage: SqliteDriftStorage, parsed: ParsedArgs
     schema_version: contract.contract_schema_version,
     supported_schema_version: DRIFT_CONTRACT_SCHEMA_VERSION,
     convention_count: contract.conventions.length,
-    agent_contract_count: contract.agent_contracts?.length ?? 0
+    agent_contract_count: contract.agent_contracts?.length ?? 0,
+    compatibility: {
+      compatible: validationReasons.length === 0,
+      reasons: validationReasons
+    }
   };
   return {
+    exitCode: validationReasons.length === 0 ? 0 : 1,
     payload: parsed.flags.has("json") ? payload : formatContractValidationText(payload)
   };
 }
@@ -202,7 +208,8 @@ export function importContractDryRun(
     !safeCommandsUnique ? "duplicate_safe_commands" : undefined,
     !riskyAreaIdsUnique ? "duplicate_risky_area_ids" : undefined,
     !deniedGlobsUnique ? "duplicate_denied_globs" : undefined,
-    !rejectedInferencesUnique ? "duplicate_rejected_inferences" : undefined
+    !rejectedInferencesUnique ? "duplicate_rejected_inferences" : undefined,
+    ...contractValidationReasons(contract)
   ].filter((reason): reason is string => Boolean(reason));
   const compatibility = {
     compatible: compatibilityReasons.length === 0,
@@ -543,6 +550,39 @@ export function removeContractWaiver(
   return {
     payload: parsed.flags.has("json") ? payload : formatContractWaiverRemoveText(payload)
   };
+}
+
+function contractValidationReasons(contract: RepoContract): string[] {
+  const reasons = new Set<string>();
+  for (const convention of contract.conventions) {
+    if (
+      convention.enforcement_mode === "block" &&
+      convention.enforcement_capability !== "deterministic_check"
+    ) {
+      reasons.add("blocking_non_deterministic_convention");
+    }
+    if (
+      convention.enforcement_mode === "block" &&
+      convention.kind === "api_route_forbids_sensitive_response_fields" &&
+      candidateSensitiveFields(convention.requires).length > 0
+    ) {
+      reasons.add("candidate_sensitive_fields_blocking");
+    }
+  }
+  return [...reasons].sort();
+}
+
+function candidateSensitiveFields(requires: Record<string, unknown> | undefined): unknown[] {
+  const fields = requires?.sensitive_response_fields;
+  if (!Array.isArray(fields)) {
+    return [];
+  }
+  return fields.filter((field) =>
+    typeof field === "object" &&
+    field !== null &&
+    "source" in field &&
+    (field as { source?: unknown }).source === "candidate"
+  );
 }
 
 function approvedFileHashForPath(

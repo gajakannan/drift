@@ -11,11 +11,11 @@ import type {
   ParserGap,
   ParserGapConfidenceImpact,
   ParserGapKind,
+  ParserGapV2,
   PolicyDecision,
   RepoContract,
   RepoRecord,
   RequiredCheckExecution,
-  ScanCapabilityReport,
   ScanFileChange,
   ScanManifest,
   Severity
@@ -31,7 +31,8 @@ import {
   createDriftCapabilities,
   expandApiRouteScopeGlobs,
   isNextApiRoutePath,
-  matchesPolicyGlob
+  matchesPolicyGlob,
+  nextApiRouteIdentity
 } from "@drift/core";
 import {
   DRIFT_CONTRACT_SCHEMA_VERSION,
@@ -53,9 +54,12 @@ import {
 import { FACTGRAPH_SCHEMA_VERSION } from "@drift/factgraph";
 import {
   buildChangeImpact,
+  buildFrameworkEntrypointReadModel,
   buildFindingsReadModel,
   buildRepoContractReadModel,
   buildReadiness,
+  buildSemanticCoverage,
+  buildSecurityPhase8ReadModel,
   classifyAgentTask,
   buildRepoMapReadModel,
   createGraphQueryService,
@@ -65,7 +69,8 @@ import {
   repoMapRiskyAreaIds,
   selectRelevantTests,
   type ChangeImpactRouteFlow,
-  type DriftReadinessSurface
+  type DriftReadinessSurface,
+  type RepoMapFile
 } from "@drift/query";
 import { MIGRATIONS, openDriftStorage } from "@drift/storage";
 import { execFileSync } from "node:child_process";
@@ -162,10 +167,18 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       });
     }),
 
-    get_security_context: ({ repo_id }) => withStorage(options, (storage) => {
+    get_security_context: ({ repo_id, path, changed_files, check_id }) => withStorage(options, (storage) => {
       const requestedRepoId = requiredMcpString(repo_id, "repo_id");
+      const requestedPath = path ? requiredRepoRelativeMcpPath(path) : undefined;
+      const requestedChangedFiles = Array.isArray(changed_files)
+        ? changed_files.map((filePath) => requiredRepoRelativeMcpPath(filePath))
+        : undefined;
       const { contract } = requiredAuthorizedMcpContract(storage, requestedRepoId, "mcp");
-      return buildSecurityContextPayload(storage, requestedRepoId, contract);
+      return buildSecurityContextPayload(storage, requestedRepoId, contract, {
+        path: requestedPath,
+        changed_files: requestedChangedFiles,
+        check_id: check_id ? requiredMcpString(check_id, "check_id") : undefined
+      });
     }),
 
     get_task_preflight: ({ repo_id, task, path, require_fresh, now }) => withStorage(options, (storage) => {
@@ -248,16 +261,32 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
       const parserGaps = scanStatus.latest_scan
         ? storage.listParserGaps(requestedRepoId, scanStatus.latest_scan.id)
         : [];
+      const parserGapV2 = scanStatus.latest_scan
+        ? storage.listParserGapV2(requestedRepoId, scanStatus.latest_scan.id)
+        : [];
+      const allParserGaps = [...parserGaps, ...parserGapV2];
       const readiness = buildReadiness({
         repo_id: requestedRepoId,
         scan_id: scanStatus.latest_scan?.id ?? null,
         surface: "prepare",
         graph_available: graphContext.available,
         graph_complete: graphContext.completeness?.complete ?? false,
-        parser_gaps: parserGaps,
+        parser_gaps: allParserGaps,
         completeness_reasons: graphContext.completeness?.reasons ?? graphContext.diagnostics,
-        required_capabilities: ["route_flow_graph"],
+        required_capabilities: ["ts.route_flow.v1"],
         missing_capabilities: graphContext.available ? [] : ["fact_graph"]
+      });
+      const semanticCoverage = buildSemanticCoverage({
+        repo_id: requestedRepoId,
+        scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
+        scope: "preflight",
+        scope_id: requestedPath ?? requestedTask,
+        required_capabilities: ["ts.route_flow.v1"],
+        certified_capabilities: scanStatus.capability_report?.certified_capabilities ?? [],
+        missing_capabilities: readiness.missing_capabilities,
+        readiness,
+        parser_gaps: allParserGaps,
+        generated_at: generatedAt
       });
       const contextPolicy = createContextPolicyMatrix(contract, policy);
       const taskPreflightPacket = AgentPreflightPacketV2Schema.parse({
@@ -268,7 +297,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         repo_map_summary: {
           relevant_file_count: relevantFiles.length,
           route_flow_count: graphContext.route_flows.length,
-          parser_gap_count: parserGaps.length
+          parser_gap_count: allParserGaps.length
         },
         accepted_conventions: activeConventions.map(preflightConvention),
         relevant_files: relevantFiles,
@@ -300,6 +329,7 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         }),
         policy,
         readiness,
+        semantic_coverage: semanticCoverage,
         contract: {
           id: contractReady ? contract.id : null,
           schema_version: contract.contract_schema_version,
@@ -433,8 +463,16 @@ export function createReadOnlyMcpHandlers(options: DriftMcpOptions): DriftMcpHan
         freshness_requirement: freshnessRequirement(Boolean(require_fresh), scanStatus),
         summary: readModel.summary,
         pagination: readModel.pagination,
-        review_items: readModel.review_items,
-        findings: readModel.findings
+        review_items: readModel.review_items.map((item) => ({
+          ...item,
+          first_evidence: item.first_evidence
+            ? {
+                file_path: item.first_evidence.file_path,
+                start_line: item.first_evidence.start_line ?? null
+              }
+            : null
+        })),
+        findings: readModel.findings.map(sanitizedMcpFinding)
       };
     }),
 
@@ -1104,10 +1142,33 @@ function scanStatusPayload(
   const snapshots = latestScan ? storage.listFileSnapshots(repoId, latestScan.id) : [];
   const scanFileChanges = latestScan ? storage.listScanFileChanges(repoId, latestScan.id) : [];
   const parserGaps = latestScan ? storage.listParserGaps(repoId, latestScan.id) : [];
+  const parserGapV2 = latestScan ? storage.listParserGapV2(repoId, latestScan.id) : [];
+  const allParserGaps = [...parserGaps, ...parserGapV2];
   const capabilityReport = latestScan
     ? storage.getScanCapabilityReport(repoId, latestScan.id) ?? null
     : null;
-  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "scan_status", parserGaps);
+  const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "scan_status", allParserGaps);
+  const proofRuns = latestScan
+    ? storage.listSecurityBoundaryProofRuns({
+        repo_id: repoId,
+        scan_id: latestScan.id,
+        latest_only: true
+      })
+    : [];
+  const securityReadModel = latestScan
+    ? buildSecurityPhase8ReadModel({
+        repo_id: repoId,
+        scan_id: latestScan.id,
+        check_id: proofRuns[0]?.check_id ?? null,
+        proofs: proofRuns.map((run) => run.proof),
+        findings: storage.listFindings(repoId).map((finding) => ({
+          finding_id: finding.id,
+          title: finding.title,
+          lifecycle: finding.status
+        })),
+        accepted_conventions: storage.getRepoContract(repoId)?.conventions ?? []
+      })
+    : null;
   const repoRootMissing = !existsSync(repo.root_path);
   const currentBranch = repoRootMissing
     ? "unknown"
@@ -1164,10 +1225,13 @@ function scanStatusPayload(
     stale,
     invalidation_reasons: invalidationReasons,
     changes,
-    parser_gaps: parserGapSummary(parserGaps),
+    parser_gaps: parserGapSummary(allParserGaps),
     readiness,
     capability_report: capabilityReport,
-    security_capabilities: securityCapabilitySummary(capabilityReport),
+    security_capabilities: proofRuns.length > 0 ||
+      (securityReadModel?.repo_security_contracts.length ?? 0) > 0
+      ? securityReadModel?.security_capabilities ?? []
+      : [],
     machine_contract_versions: currentMachineContractVersions(latestScan?.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands
@@ -1206,7 +1270,9 @@ function readinessForStoredScan(
   repoId: string,
   scanId: string | null,
   surface: DriftReadinessSurface,
-  parserGaps: ParserGap[] = scanId ? storage.listParserGaps(repoId, scanId) : []
+  parserGaps: Array<ParserGap | ParserGapV2> = scanId
+    ? [...storage.listParserGaps(repoId, scanId), ...storage.listParserGapV2(repoId, scanId)]
+    : []
 ) {
   const graphAvailable = Boolean(scanId && storage.getFactGraphArtifact(repoId, scanId));
   const requiredCapabilities = scanId ? ["fact_graph"] : ["fact_graph", "scan_manifest"];
@@ -1226,65 +1292,23 @@ function readinessForStoredScan(
   });
 }
 
-function parserGapSummary(gaps: ParserGap[]): {
+function parserGapSummary(gaps: Array<ParserGap | ParserGapV2>): {
   total_count: number;
   by_kind: Record<ParserGapKind, number>;
   confidence_impact: Record<ParserGapConfidenceImpact, number>;
+  by_capability: Record<string, number>;
+  by_contract_kind: Record<string, number>;
 } {
   return {
     total_count: gaps.length,
     by_kind: countBy(gaps, (gap) => gap.kind) as Record<ParserGapKind, number>,
-    confidence_impact: countBy(gaps, (gap) => gap.confidence_impact) as Record<ParserGapConfidenceImpact, number>
-  };
-}
-
-function securityCapabilitySummary(capabilityReport: ScanCapabilityReport | null | undefined) {
-  const certified = new Set(capabilityReport?.certified_capabilities ?? []);
-  const required = new Set(capabilityReport?.required_capabilities ?? []);
-  const missing = new Set(capabilityReport?.missing_capabilities ?? []);
-  const completenessByRule = new Map((capabilityReport?.completeness ?? [])
-    .map((entry) => [entry.rule_id, entry]));
-  const middlewareCompleteness = completenessByRule.get("middleware_must_cover_routes");
-  const requestValidationCompleteness = completenessByRule.get("api_route_requires_request_validation");
-  const sessionTrustCompleteness = completenessByRule.get("session_object_must_come_from_trusted_helper");
-  const authorizationCompleteness = completenessByRule.get("api_route_requires_authorization");
-  const tenantScopeCompleteness = completenessByRule.get("api_route_requires_tenant_scope");
-  return {
-    middleware_coverage: {
-      certified: certified.has("middleware_coverage"),
-      required: required.has("middleware_coverage"),
-      missing: missing.has("middleware_coverage"),
-      can_block: Boolean(middlewareCompleteness?.can_block),
-      complete: Boolean(middlewareCompleteness?.complete)
-    },
-    request_validation: {
-      certified: certified.has("request_validation_facts"),
-      required: required.has("request_validation_facts"),
-      missing: missing.has("request_validation_facts"),
-      can_block: Boolean(requestValidationCompleteness?.can_block),
-      complete: Boolean(requestValidationCompleteness?.complete)
-    },
-    session_trust: {
-      certified: certified.has("session_trust"),
-      required: required.has("session_trust"),
-      missing: missing.has("session_trust"),
-      can_block: Boolean(sessionTrustCompleteness?.can_block),
-      complete: Boolean(sessionTrustCompleteness?.complete)
-    },
-    authorization: {
-      certified: certified.has("authorization"),
-      required: required.has("authorization"),
-      missing: missing.has("authorization"),
-      can_block: Boolean(authorizationCompleteness?.can_block),
-      complete: Boolean(authorizationCompleteness?.complete)
-    },
-    tenant_scope: {
-      certified: certified.has("tenant_scope"),
-      required: required.has("tenant_scope"),
-      missing: missing.has("tenant_scope"),
-      can_block: Boolean(tenantScopeCompleteness?.can_block),
-      complete: Boolean(tenantScopeCompleteness?.complete)
-    }
+    confidence_impact: countBy(gaps, (gap) => gap.confidence_impact) as Record<ParserGapConfidenceImpact, number>,
+    by_capability: countBy(gaps.flatMap((gap) =>
+      "affected_capabilities" in gap ? gap.affected_capabilities : []
+    ), (capability) => capability) as Record<string, number>,
+    by_contract_kind: countBy(gaps.flatMap((gap) =>
+      "affected_contract_kinds" in gap ? gap.affected_contract_kinds : []
+    ), (contractKind) => contractKind) as Record<string, number>
   };
 }
 
@@ -1522,6 +1546,15 @@ function repoMapPayload(
   const facts = latestScan ? storage.listFacts(latestScan.id) : [];
   const findings = storage.listFindings(repoId);
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
+  const frameworkEntryPoints = latestScan
+    ? buildFrameworkEntrypointReadModel({
+        repo_id: repoId,
+        scan_id: latestScan.id,
+        entrypoints: storage.listNormalizedEntrypoints(repoId, latestScan.id),
+        parser_gaps: storage.listFrameworkParserGaps(repoId, latestScan.id),
+        capabilities: storage.listFrameworkCapabilities(repoId, latestScan.id)
+      })
+    : null;
   const offset = options.offset ?? 0;
   const readModel = buildRepoMapReadModel({
     repoId,
@@ -1540,6 +1573,31 @@ function repoMapPayload(
   const scanStatus = scanStatusPayload(storage, repoId);
   assertFreshScanIfRequired(repoId, scanStatus, Boolean(options.requireFresh));
   const readiness = readinessForStoredScan(storage, repoId, latestScan?.id ?? null, "repo_map");
+  const proofRuns = latestScan
+    ? storage.listLatestSecurityBoundaryProofRunsForRepo({
+        repo_id: repoId,
+        file_path: options.path
+      })
+    : [];
+  const fallbackProofs = proofRuns.length === 0 && latestScan
+    ? storage.listSecurityBoundaryProofs(repoId, latestScan.id)
+        .filter((proof) => !options.path || proof.route.file_path === options.path)
+    : [];
+  const proofs = proofRuns.length > 0 ? proofRuns.map((run) => run.proof) : fallbackProofs;
+  const phase8Security = buildSecurityPhase8ReadModel({
+    repo_id: repoId,
+    scan_id: proofRuns[0]?.scan_id ?? latestScan?.id ?? null,
+    check_id: proofRuns[0]?.check_id ?? null,
+    proofs,
+    findings: findings.map((finding) => ({
+      finding_id: finding.id,
+      title: finding.title,
+      lifecycle: finding.status
+    })),
+    accepted_conventions: contract.conventions,
+    changed_files: options.path ? [options.path] : undefined,
+    known_routes: knownPhase8Routes(readModel.all_files)
+  });
   return {
     response_schema: "drift.repo.map.v1",
     repo_id: repoId,
@@ -1565,6 +1623,8 @@ function repoMapPayload(
     impact_summary: readModel.impact_summary,
     topology: readModel.topology,
     pagination: readModel.pagination,
+    routes: phase8Security.routes,
+    framework_entrypoints: frameworkEntryPoints,
     freshness_requirement: freshnessRequirement(Boolean(options.requireFresh), scanStatus),
     files: readModel.listed_files,
     redactions: {
@@ -1579,6 +1639,28 @@ function repoMapPayload(
       `drift scan status --repo ${repoId} --json`
     ]
   };
+}
+
+function knownPhase8Routes(files: RepoMapFile[]) {
+  return files
+    .filter((file) => file.roles.includes("api_route"))
+    .flatMap((file) => {
+      const methods = file.exported_symbols.filter((symbol) =>
+        ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(symbol)
+      );
+      const routePath = routePathForFile(file.path);
+      return (methods.length > 0 ? methods : ["unknown"]).map((method) => ({
+        route_id: `route:${file.path}:${method}`,
+        file_path: file.path,
+        path: routePath,
+        method,
+        file_role: "api_route"
+      }));
+    });
+}
+
+function routePathForFile(filePath: string): string | undefined {
+  return nextApiRouteIdentity(filePath)?.route_path;
 }
 
 function orderAcceptedConventionsForReview(conventions: AcceptedConvention[]): AcceptedConvention[] {
@@ -2583,6 +2665,24 @@ function validatePolicySurface(surface: PolicyDecision["surface"]): PolicyDecisi
     return surface;
   }
   throw new Error("surface must be cli-preflight, cli-check, mcp, contract-export, artifact, log, or ui.");
+}
+
+function sanitizedMcpFinding(finding: Finding) {
+  return {
+    finding_id: finding.id,
+    convention_id: finding.convention_id,
+    title: finding.title,
+    severity: finding.severity,
+    lifecycle: finding.status,
+    diff_status: finding.diff_status,
+    enforcement_result: finding.enforcement_result,
+    file_refs: finding.evidence_refs.map((ref) => ({
+      file_path: ref.file_path,
+      ...(ref.start_line ? { start_line: ref.start_line } : {}),
+      ...(ref.end_line ? { end_line: ref.end_line } : {}),
+      redaction_state: ref.start_line || ref.end_line ? "line_only" : "metadata_only"
+    }))
+  };
 }
 
 function countBy<T, K extends string>(

@@ -1,6 +1,6 @@
-import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type ParserGap,type ParserGapConfidenceImpact,type ParserGapKind,type RepoRecord,type ScanCapabilityReport,type ScanFileChange,type ScanManifest } from "@drift/core";
+import { type AuditChainVerification,type ConventionCandidate,DRIFT_RESOLVER_VERSION,DRIFT_RULE_ENGINE_VERSION,DRIFT_SCANNER_VERSION,DRIFT_TYPESCRIPT_ADAPTER_VERSION,type FileSnapshot,type ParserGap,type ParserGapConfidenceImpact,type ParserGapKind,type ParserGapV2,type RepoRecord,type ScanCapabilityReport,type ScanFileChange,type ScanManifest } from "@drift/core";
 import { buildFactGraphArtifactFromParts,type FactGraphArtifact } from "@drift/factgraph";
-import { buildReadiness,type DriftReadinessSurface } from "@drift/query";
+import { buildReadiness,buildSecurityPhase8ReadModel,type DriftReadinessSurface } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { existsSync,mkdtempSync,readdirSync,rmSync,statSync,writeFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
@@ -12,7 +12,7 @@ import { buildFactGraphArtifact } from "../engine/fact-graph.js";
 import { walkIndexableFiles } from "../engine/ts-fallback-scanner.js";
 import { fileContentHash } from "../io/file-hash.js";
 import { gitOutput } from "../io/git.js";
-import { inferConventionCandidates } from "./convention-candidates.js";
+import { filterRejectedConventionCandidates,inferConventionCandidates } from "./convention-candidates.js";
 import { auditEvent,preflightGovernance } from "./governance.js";
 import { hashStable,scanFingerprint } from "./identifiers.js";
 import { repoRecordForRoot } from "./repo-paths.js";
@@ -64,7 +64,7 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
   const actor = input.actor;
   const repo = repoRecordForRoot(repoRoot, now);
   storage.upsertRepo(repo);
-  const previousScan = storage.listScanManifests(repo.id).find((scan) => scan.status === "completed");
+  const previousScan = latestIndexedScan(storage.listScanManifests(repo.id));
 
   const scanId = `scan_${hashStable(`${repo.id}:${now}`).slice(0, 16)}`;
   let reuseManifest: { path: string; dir: string; blocked_reasons: string[] } | null = null;
@@ -95,7 +95,7 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
       repoRoot,
       reuseManifestPath: reuseManifest?.path
     });
-    const candidates = scanData.engineSource === "rust"
+    const inferredCandidates = scanData.engineSource === "rust"
       ? await inferConventionCandidatesFromEngine({
           repoId: repo.id,
           scanId,
@@ -109,6 +109,7 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
           facts: scanData.facts,
           now
         });
+    const candidates = filterRejectedConventionCandidates(storage, repo.id, inferredCandidates);
     const scan: ScanManifest = {
       id: scanId,
       repo_id: repo.id,
@@ -218,6 +219,14 @@ export async function runScanRepo(storage: SqliteDriftStorage, input: ScanRepoIn
       storage.upsertScanFileChanges(scanFileChanges);
       storage.upsertFacts(scanData.facts);
       storage.upsertParserGaps(parserGaps);
+      storage.upsertFrameworkScanData({
+        repoId: repo.id,
+        scanId,
+        adapters: scanData.framework_adapters,
+        entrypoints: scanData.normalized_entrypoints,
+        parserGaps: scanData.framework_parser_gaps,
+        capabilities: scanData.framework_capabilities
+      });
       storage.upsertScanCapabilityReport(capabilityReport);
       storage.upsertFactGraphArtifact(graphArtifact);
       for (const candidate of candidates) {
@@ -558,6 +567,7 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
       invalidation_reasons: ["scan_missing"],
       changes: { added: [], modified: [], deleted: [] },
       parser_gaps: parserGapSummary([]),
+      security_capabilities: [],
       readiness: buildReadiness({
         repo_id: repoId,
         scan_id: null,
@@ -601,8 +611,36 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
   const sourceChangeCount = changes.added.length + changes.modified.length + changes.deleted.length;
   const nextCommands = scanStatusNextCommands(repoId, repo.root_path, stale);
   const parserGaps = storage.listParserGaps(repoId, latestScan.id);
-  const readiness = readinessForStoredScan(storage, repoId, latestScan.id, "scan_status", parserGaps);
+  const parserGapV2 = storage.listParserGapV2(repoId, latestScan.id);
+  const allParserGaps = [...parserGaps, ...parserGapV2];
+  const readiness = readinessForStoredScan(storage, repoId, latestScan.id, "scan_status", allParserGaps);
   const capabilityReport = storage.getScanCapabilityReport(repoId, latestScan.id) ?? null;
+  const proofRuns = storage.listLatestSecurityBoundaryProofRunsForRepo({
+    repo_id: repoId
+  });
+  const fallbackProofs = proofRuns.length === 0
+    ? storage.listSecurityBoundaryProofs(repoId, latestScan.id)
+    : [];
+  const proofs = proofRuns.length > 0 ? proofRuns.map((run) => run.proof) : fallbackProofs;
+  const proofSourceCheckId = proofRuns[0]?.check_id ?? null;
+  const proofSourceScanId = proofRuns[0]?.scan_id ?? latestScan.id;
+  const legacyScanProofRuns = storage.listSecurityBoundaryProofRuns({
+    repo_id: repoId,
+    scan_id: latestScan.id,
+    latest_only: true
+  });
+  const securityReadModel = buildSecurityPhase8ReadModel({
+    repo_id: repoId,
+    scan_id: proofSourceScanId,
+    check_id: proofSourceCheckId,
+    proofs,
+    findings: storage.listFindings(repoId).map((finding) => ({
+      finding_id: finding.id,
+      title: finding.title,
+      lifecycle: finding.status
+    })),
+    accepted_conventions: storage.getRepoContract(repoId)?.conventions ?? []
+  });
   const payload = {
     response_schema: "drift.scan.status.v1",
     repo_id: repoId,
@@ -628,10 +666,14 @@ export function scanStatusPayload(storage: SqliteDriftStorage, repoId: string) {
     stale,
     invalidation_reasons: invalidationReasons,
     changes,
-    parser_gaps: parserGapSummary(parserGaps),
+    parser_gaps: parserGapSummary(allParserGaps),
     readiness,
     capability_report: capabilityReport,
-    security_capabilities: securityCapabilitySummary(capabilityReport),
+    security_capabilities: proofs.length > 0 ||
+      legacyScanProofRuns.length > 0 ||
+      securityReadModel.repo_security_contracts.length > 0
+      ? securityReadModel.security_capabilities
+      : [],
     machine_contract_versions: currentMachineContractVersions(latestScan.adapter_versions),
     next_command: nextCommands[0],
     next_commands: nextCommands
@@ -694,7 +736,9 @@ export function readinessForStoredScan(
   repoId: string,
   scanId: string | null,
   surface: DriftReadinessSurface,
-  parserGaps: ParserGap[] = scanId ? storage.listParserGaps(repoId, scanId) : []
+  parserGaps: Array<ParserGap | ParserGapV2> = scanId
+    ? [...storage.listParserGaps(repoId, scanId), ...storage.listParserGapV2(repoId, scanId)]
+    : []
 ) {
   const graphAvailable = Boolean(scanId && storage.getFactGraphArtifact(repoId, scanId));
   return buildReadiness({
@@ -740,15 +784,23 @@ export function parserGapsFromDiagnostics(input: {
     .filter((gap): gap is ParserGap => Boolean(gap));
 }
 
-export function parserGapSummary(gaps: ParserGap[]): {
+export function parserGapSummary(gaps: Array<ParserGap | ParserGapV2>): {
   total_count: number;
-  by_kind: Record<ParserGapKind, number>;
+  by_kind: Record<string, number>;
   confidence_impact: Record<ParserGapConfidenceImpact, number>;
+  by_capability: Record<string, number>;
+  by_contract_kind: Record<string, number>;
 } {
   return {
     total_count: gaps.length,
-    by_kind: countBy(gaps.map((gap) => gap.kind)) as Record<ParserGapKind, number>,
-    confidence_impact: countBy(gaps.map((gap) => gap.confidence_impact)) as Record<ParserGapConfidenceImpact, number>
+    by_kind: countBy(gaps.map((gap) => gap.kind)),
+    confidence_impact: countBy(gaps.map((gap) => gap.confidence_impact)) as Record<ParserGapConfidenceImpact, number>,
+    by_capability: countBy(gaps.flatMap((gap) =>
+      "affected_capabilities" in gap ? gap.affected_capabilities : []
+    )) as Record<string, number>,
+    by_contract_kind: countBy(gaps.flatMap((gap) =>
+      "affected_contract_kinds" in gap ? gap.affected_contract_kinds : []
+    )) as Record<string, number>
   };
 }
 
@@ -813,6 +865,8 @@ function parserGapKindForDiagnostic(code: string): ParserGapKind | null {
     case "unsupported_namespace_import_symbol":
       return "unsupported_framework_pattern";
     case "typescript_fallback_used":
+    case "broken_symlink":
+    case "symlink_target_unreadable":
     case "file_too_large":
     case "unsupported_dynamic_middleware_matcher":
       return "partial_parse";

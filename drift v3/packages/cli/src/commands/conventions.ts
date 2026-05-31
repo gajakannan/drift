@@ -5,7 +5,7 @@ import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { actorFlag,hasAnyFlag,optionalConventionKindFlag,optionalConventionStatusFlag,optionalEnforcementCapabilityFlag,optionalEnforcementModeFlag,optionalNonEmptyFlag,optionalNonNegativeIntegerFlag,optionalPositiveIntegerFlag,optionalSeverityFlag,requiredFlag,requiredNonEmptyFlag,stringFlag } from "../args/flag-readers.js";
 import { assertCandidateRepoMatchesParsed,resolveRepoId } from "../args/repo-flags.js";
 import { contractSummary,materializeRepoContract } from "../domain/contract-materialization.js";
-import { acceptConventionCandidate,conventionCandidateEditNextCommands,conventionCandidateListNextCommands,conventionCandidateReviewItem,conventionCandidateShowNextCommands,conventionCandidateSummary,exceptionNextCommands,rejectedConventionNextCommands } from "../domain/convention-candidates.js";
+import { acceptConventionCandidate,conventionCandidateEditNextCommands,conventionCandidateListNextCommands,conventionCandidateReviewItem,conventionCandidateShowNextCommands,conventionCandidateSummary,exceptionNextCommands,rejectedConventionNextCommands,rejectedInferenceForCandidate } from "../domain/convention-candidates.js";
 import { auditEvent,mutationGovernance,preflightGovernance } from "../domain/governance.js";
 import { exceptionIdForConvention,hashStable } from "../domain/identifiers.js";
 import { orderConventionCandidatesForReview,paginateConventionCandidates,paginationSummary } from "../domain/pagination.js";
@@ -181,17 +181,46 @@ export function rejectCandidate(
 
   const rejected = { ...candidate, status: "rejected" as const };
 
-  storage.upsertConventionCandidate(rejected);
-  storage.appendAuditEvent(auditEvent({
-    id: `audit_event_reject_${candidate.id}_${now}`,
-    repoId: candidate.repo_id,
-    actor,
-    action: "election_rejected",
-    targetType: "candidate",
-    targetId: candidate.id,
-    metadata: { reason },
-    createdAt: now
-  }));
+  const contractId = storage.getRepoContract(candidate.repo_id)?.id ?? `contract_${candidate.repo_id}`;
+  storage.transaction(() => {
+    storage.upsertConventionCandidate(rejected);
+    const existingContract = storage.getRepoContract(candidate.repo_id) ??
+      materializeRepoContract(storage, candidate.repo_id, contractId, now);
+    const rejection = rejectedInferenceForCandidate(candidate, {
+      reason,
+      rejectedBy: actor,
+      rejectedAt: now
+    });
+    const rejectedKey = JSON.stringify({
+      candidate_id: rejection.candidate_id,
+      evidence_fingerprint: rejection.evidence_fingerprint ?? null
+    });
+    const nextRejected = [
+      ...existingContract.rejected_inferences.filter((entry) => JSON.stringify({
+        candidate_id: entry.candidate_id,
+        evidence_fingerprint: entry.evidence_fingerprint ?? null
+      }) !== rejectedKey),
+      rejection
+    ];
+    storage.upsertRepoContract({
+      ...existingContract,
+      rejected_inferences: nextRejected,
+      updated_at: now
+    });
+    storage.appendAuditEvent(auditEvent({
+      id: `audit_event_reject_${candidate.id}_${now}`,
+      repoId: candidate.repo_id,
+      actor,
+      action: "election_rejected",
+      targetType: "candidate",
+      targetId: candidate.id,
+      metadata: {
+        reason,
+        evidence_fingerprint: rejection.evidence_fingerprint ?? null
+      },
+      createdAt: now
+    }));
+  });
 
   return {
     candidate: rejected,

@@ -8,15 +8,16 @@ use std::{
 
 mod candidate_command;
 mod check_command;
+mod frameworks;
 mod protocol;
 
 use candidate_command::infer_candidates;
 use check_command::check_repo;
 use drift_engine::{
     Fact, FactKind, dynamic_middleware_matcher_line, extract_security_facts,
-    extract_typescript_facts, next_routes::next_api_route_identity, should_index_path,
-    static_middleware_coverage,
+    extract_typescript_facts, should_index_path, static_middleware_coverage,
 };
+use frameworks::{EndpointShape, collect_framework_scan_data, endpoint_shape};
 use protocol::*;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -33,6 +34,12 @@ struct ScanFilesResult {
 struct ReuseIndex {
     facts_by_file: BTreeMap<String, Vec<EngineFact>>,
     snapshots_by_file: BTreeMap<String, ScannedFile>,
+}
+
+#[derive(Default)]
+struct FileDiscoveryResult {
+    files: Vec<PathBuf>,
+    diagnostics: Vec<EngineDiagnostic>,
 }
 
 fn main() {
@@ -142,22 +149,23 @@ fn scan_repo(
     reuse_manifest_path: Option<&Path>,
 ) -> Result<ScanRepoOutput, Box<dyn std::error::Error>> {
     let started = Instant::now();
-    let mut files = Vec::new();
     let ignore = IgnoreMatcher::from_repo(repo_root);
-    collect_indexable_files(repo_root, repo_root, &mut files, &ignore)?;
+    let discovery = collect_indexable_files(repo_root, &ignore)?;
+    let mut files = discovery.files;
     files.sort();
     let mut resolver = build_resolver_context(repo_root, &files);
     let reuse_index = load_reuse_index(reuse_manifest_path)?;
 
     let mut scanned_files = Vec::new();
     let mut facts = Vec::new();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = discovery.diagnostics;
     let mut graph_node_count = 0_usize;
     let mut graph_edge_count = 0_usize;
     let scanned = scan_files(repo_root, &files, &mut diagnostics, reuse_index.as_ref())?;
     let files_reused = scanned.files_reused;
     let mut scanned = scanned;
     add_middleware_coverage_facts(&mut scanned.scanned);
+    let framework_scan_data = collect_framework_scan_data(&repo_id, &scan_id, &scanned.scanned);
     resolver.exported_symbols = exported_symbols_by_file(&scanned.scanned);
     for (file, file_facts) in scanned.scanned {
         let graph = graph_for_file(&repo_id, &scan_id, &file, &file_facts, &resolver);
@@ -189,6 +197,10 @@ fn scan_repo(
         adapter_versions: adapter_versions(),
         file_snapshots: scanned_files,
         facts,
+        framework_adapters: framework_scan_data.adapters,
+        normalized_entrypoints: framework_scan_data.entrypoints,
+        framework_parser_gaps: framework_scan_data.parser_gaps,
+        framework_capabilities: framework_scan_data.capabilities,
         diagnostics,
         stats,
         completeness: repo_completeness(),
@@ -213,9 +225,9 @@ fn stream_scan_repo(
         },
     )?;
 
-    let mut files = Vec::new();
     let ignore = IgnoreMatcher::from_repo(repo_root);
-    collect_indexable_files(repo_root, repo_root, &mut files, &ignore)?;
+    let discovery = collect_indexable_files(repo_root, &ignore)?;
+    let mut files = discovery.files;
     files.sort();
     let mut resolver = build_resolver_context(repo_root, &files);
     let reuse_index = load_reuse_index(reuse_manifest_path)?;
@@ -226,7 +238,7 @@ fn stream_scan_repo(
     let mut graph_nodes_emitted = 0_usize;
     let mut graph_edges_emitted = 0_usize;
     let mut diagnostics_emitted = 0_usize;
-    let mut scan_diagnostics = Vec::new();
+    let mut scan_diagnostics = discovery.diagnostics;
     let mut scanned = scan_files(
         repo_root,
         &files,
@@ -234,6 +246,7 @@ fn stream_scan_repo(
         reuse_index.as_ref(),
     )?;
     add_middleware_coverage_facts(&mut scanned.scanned);
+    let framework_scan_data = collect_framework_scan_data(&repo_id, &scan_id, &scanned.scanned);
     files_skipped += scan_diagnostics.len();
     if !scan_diagnostics.is_empty() {
         diagnostics_emitted += scan_diagnostics.len();
@@ -246,6 +259,42 @@ fn stream_scan_repo(
         )?;
     }
     resolver.exported_symbols = exported_symbols_by_file(&scanned.scanned);
+    if !framework_scan_data.adapters.is_empty() {
+        write_event(
+            &mut stdout,
+            &ScanStreamEvent::FrameworkAdapterBatch {
+                schema_version: ENGINE_STREAM_EVENT_SCHEMA_VERSION,
+                framework_adapters: framework_scan_data.adapters,
+            },
+        )?;
+    }
+    if !framework_scan_data.entrypoints.is_empty() {
+        write_event(
+            &mut stdout,
+            &ScanStreamEvent::NormalizedEntrypointBatch {
+                schema_version: ENGINE_STREAM_EVENT_SCHEMA_VERSION,
+                normalized_entrypoints: framework_scan_data.entrypoints,
+            },
+        )?;
+    }
+    if !framework_scan_data.parser_gaps.is_empty() {
+        write_event(
+            &mut stdout,
+            &ScanStreamEvent::FrameworkParserGapBatch {
+                schema_version: ENGINE_STREAM_EVENT_SCHEMA_VERSION,
+                framework_parser_gaps: framework_scan_data.parser_gaps,
+            },
+        )?;
+    }
+    if !framework_scan_data.capabilities.is_empty() {
+        write_event(
+            &mut stdout,
+            &ScanStreamEvent::FrameworkCapabilityBatch {
+                schema_version: ENGINE_STREAM_EVENT_SCHEMA_VERSION,
+                framework_capabilities: framework_scan_data.capabilities,
+            },
+        )?;
+    }
     let files_reused = scanned.files_reused;
     for (file, facts) in scanned.scanned {
         if !reused_file(&file, reuse_index.as_ref()) {
@@ -571,17 +620,23 @@ fn reused_file(file: &ScannedFile, reuse: Option<&ReuseIndex>) -> bool {
 
 fn collect_indexable_files(
     repo_root: &Path,
+    ignore: &IgnoreMatcher,
+) -> io::Result<FileDiscoveryResult> {
+    let mut result = FileDiscoveryResult::default();
+    collect_indexable_files_in_dir(repo_root, repo_root, &mut result, ignore)?;
+    Ok(result)
+}
+
+fn collect_indexable_files_in_dir(
+    repo_root: &Path,
     dir: &Path,
-    files: &mut Vec<PathBuf>,
+    result: &mut FileDiscoveryResult,
     ignore: &IgnoreMatcher,
 ) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
-            continue;
-        }
         let relative = path.strip_prefix(repo_root).unwrap_or(&path);
         if ignore.is_ignored(relative) {
             continue;
@@ -589,11 +644,31 @@ fn collect_indexable_files(
         if !should_index_path(relative) {
             continue;
         }
+        if file_type.is_symlink() {
+            if let Err(error) = fs::metadata(&path) {
+                let code = if error.kind() == io::ErrorKind::NotFound {
+                    "broken_symlink"
+                } else {
+                    "symlink_target_unreadable"
+                };
+                result.diagnostics.push(EngineDiagnostic {
+                    severity: "warning".to_string(),
+                    code: code.to_string(),
+                    message: format!(
+                        "Skipped symlink {} because its target could not be read: {}",
+                        normalize_path(relative),
+                        error
+                    ),
+                    file_path: Some(normalize_path(relative)),
+                });
+            }
+            continue;
+        }
 
         if file_type.is_dir() {
-            collect_indexable_files(repo_root, &path, files, ignore)?;
+            collect_indexable_files_in_dir(repo_root, &path, result, ignore)?;
         } else if file_type.is_file() && is_typescript_path(&path) {
-            files.push(relative.to_path_buf());
+            result.files.push(relative.to_path_buf());
         }
     }
     Ok(())
@@ -745,6 +820,16 @@ fn fact_kind(kind: FactKind) -> &'static str {
         FactKind::AuthorizationGuardCalled => "authorization_guard_called",
         FactKind::RequestValidationCalled => "request_validation_called",
         FactKind::ValidatedInputUsed => "validated_input_used",
+        FactKind::OutboundRequestCalled => "outbound_request_called",
+        FactKind::RawSqlCalled => "raw_sql_called",
+        FactKind::ParameterizedSqlUsed => "parameterized_sql_used",
+        FactKind::CsrfGuardCalled => "csrf_guard_called",
+        FactKind::RateLimitGuardCalled => "rate_limit_guard_called",
+        FactKind::CorsPolicyDeclared => "cors_policy_declared",
+        FactKind::SensitiveFieldDeclared => "sensitive_field_declared",
+        FactKind::ResponseEmitsField => "response_emits_field",
+        FactKind::SerializerCalled => "serializer_called",
+        FactKind::SecretRead => "secret_read",
     }
 }
 
@@ -1476,12 +1561,6 @@ fn optional_receiver_metadata(
     metadata
 }
 
-struct EndpointShape {
-    pattern: String,
-    framework_role: &'static str,
-    dynamic_params: Vec<String>,
-}
-
 fn endpoint_metadata(
     method: (String, serde_json::Value),
     file_path: (String, serde_json::Value),
@@ -1498,25 +1577,6 @@ fn endpoint_metadata(
 
 fn receiver_root(receiver: &str) -> &str {
     receiver.split('.').next().unwrap_or(receiver)
-}
-
-fn endpoint_shape(file_path: &str, method: &str) -> Option<EndpointShape> {
-    let normalized = file_path.replace('\\', "/");
-    if let Some(identity) = next_api_route_identity(&normalized) {
-        return Some(EndpointShape {
-            pattern: identity.route_pattern,
-            framework_role: if identity.framework == "next_pages_api" {
-                "next_pages_api"
-            } else {
-                "next_app_route"
-            },
-            dynamic_params: identity.dynamic_params,
-        });
-    }
-    if method.is_empty() {
-        return None;
-    }
-    None
 }
 
 fn data_operation_parts<'a>(

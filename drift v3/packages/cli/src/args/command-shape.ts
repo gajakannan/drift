@@ -23,6 +23,9 @@ export function unknownCommandError(parsed: ParsedArgs): string | null {
   if (group === "repo") {
     return exact(["map"]);
   }
+  if (group === "security") {
+    return exact(["audit"]);
+  }
   if (group === "checks") {
     return exact(["list", "run"]);
   }
@@ -37,6 +40,9 @@ export function unknownCommandError(parsed: ParsedArgs): string | null {
       return null;
     }
     return command === "exception" && maybeId === "add" ? null : message;
+  }
+  if (group === "candidates") {
+    return [undefined, "show", "accept", "reject"].includes(command) ? null : message;
   }
   if (group === "contract") {
     if (command === "waivers" && maybeId === "list") {
@@ -104,6 +110,10 @@ export function validateCommandShape(parsed: ParsedArgs): void {
     exact("repo map", 2);
     return;
   }
+  if (group === "security" && command === "audit") {
+    exact("security audit", 2);
+    return;
+  }
   if (group === "checks" && (command === "list" || command === "run")) {
     exact(`checks ${command}`, 2);
     return;
@@ -122,6 +132,10 @@ export function validateCommandShape(parsed: ParsedArgs): void {
       return;
     }
     exact(`conventions ${command}`, command === "list" || command === "accepted" ? 2 : 3);
+    return;
+  }
+  if (group === "candidates") {
+    exact("candidates", command === undefined ? 1 : 3);
     return;
   }
   if (group === "contract") {

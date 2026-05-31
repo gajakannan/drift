@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -23,6 +23,60 @@ function factQuality(scanId: string) {
     resolution_status: "resolved" as const,
     staleness_status: "fresh" as const,
     last_seen_scan_id: scanId
+  };
+}
+
+function phase8SecurityProof(overrides: Record<string, unknown> = {}) {
+  return {
+    proof_id: "proof_route_users_get_auth",
+    proof_version: "security-boundary-proof/v1",
+    route: {
+      route_id: "route_users_get",
+      file_path: "apps/web/app/api/users/route.ts",
+      file_role: "api_route",
+      endpoint: { path: "/api/users", method: "GET", framework: "next" }
+    },
+    contracts: [{
+      contract_id: "security_auth",
+      kind: "api_route_requires_auth_helper",
+      enforcement_mode: "block",
+      capability: "deterministic_check",
+      matched: true
+    }],
+    capability_status: [{
+      name: "control_flow_guard_dominance",
+      status: "complete",
+      can_block: true,
+      parser_gap_ids: [],
+      missing_proof_ids: []
+    }],
+    auth: {
+      required: true,
+      proven: true,
+      proof_kind: "handler_guard",
+      trusted_guard_calls: [{
+        fact_id: "fact_auth_guard",
+        guard_id: "guard_require_user",
+        symbol: "requireUser",
+        start_line: 2,
+        end_line: 2
+      }],
+      dominated_sinks: [{
+        sink_id: "sink_response",
+        sink_kind: "response",
+        edge_id: "edge_guard_response"
+      }],
+      undominated_sinks: []
+    },
+    missing_proof: [],
+    parser_gaps: [],
+    result: {
+      proof_status: "proven",
+      enforcement_result: "pass",
+      can_block: true,
+      finding_ids: []
+    },
+    ...overrides
   };
 }
 
@@ -51,6 +105,7 @@ async function seedDatabase(): Promise<string> {
       forbidden_imports: ["@/lib/prisma"],
       applies_to_file_roles: ["api_route"]
     },
+    requires: { forbidden_imports: ["@/lib/prisma"] },
     suggested_severity: "error",
     suggested_enforcement_mode: "block",
     enforcement_capability: "deterministic_check",
@@ -64,6 +119,12 @@ async function seedDatabase(): Promise<string> {
     },
     evidence_refs: [],
     counterexample_refs: [],
+    matcher_fingerprint: "matcher_fp",
+    scope_fingerprint: "scope_fp",
+    graph_fingerprint: "graph_fp",
+    evidence_fingerprint: "evidence_fp",
+    required_capabilities: ["syntax_facts", "import_resolution"],
+    reason_not_blocking: "candidate_not_accepted",
     status: "candidate",
     created_at: "2026-05-10T00:00:01.000Z"
   });
@@ -447,6 +508,27 @@ describe("drift CLI convention review", () => {
     expect(result.stderr).not.toContain("Missing --db");
   });
 
+  it("rejects repo id scans instead of silently scanning the current working directory", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-scan-repo-id-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      "export async function GET() { return Response.json({ ok: true }); }\n"
+    );
+
+    const result = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--repo", "repo_not_supported_for_scan",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--repo is not supported for drift scan");
+  });
+
   it("prints machine-readable capability metadata without requiring a database", async () => {
     const result = await runCli(["capabilities", "--json"]);
     const payload = JSON.parse(result.stdout);
@@ -455,7 +537,7 @@ describe("drift CLI convention review", () => {
     expect(payload.runtime).toMatchObject({
       cli_version: "0.1.0",
       core_version: "0.1.0",
-      supported_sqlite_schema_version: 22,
+supported_sqlite_schema_version: 27,
       storage_driver: "sqlite"
     });
     expect(payload.v1_scope).toMatchObject({
@@ -942,6 +1024,65 @@ describe("drift CLI convention review", () => {
     storage.close();
   });
 
+  it("does not re-propose a rejected candidate without new evidence", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-rejected-candidate-rescan-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      [
+        "import { prisma } from \"@/lib/prisma\";",
+        "",
+        "export async function GET() {",
+        "  return Response.json(await prisma.user.findMany());",
+        "}",
+        ""
+      ].join("\n")
+    );
+
+    const first = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:10.000Z",
+      "--json"
+    ]);
+    const firstPayload = JSON.parse(first.stdout);
+    const directCandidate = firstPayload.candidates.find(
+      (candidate: { kind: string }) => candidate.kind === "api_route_no_direct_data_access"
+    );
+    if (!directCandidate) {
+      throw new Error("expected direct data access candidate");
+    }
+
+    const rejected = await runCli([
+      "--db", firstPayload.database_path,
+      "conventions", "reject",
+      directCandidate.id,
+      "--repo", firstPayload.repo.id,
+      "--reason", "false inference",
+      "--confirm",
+      "--json"
+    ]);
+    expect(rejected.exitCode).toBe(0);
+
+    const second = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:20.000Z",
+      "--json"
+    ]);
+    const secondPayload = JSON.parse(second.stdout);
+
+    expect(second.exitCode).toBe(0);
+    expect(secondPayload.candidates.some(
+      (candidate: { id: string }) => candidate.id === directCandidate.id
+    )).toBe(false);
+  });
+
   it("rejects scan repo roots that are files", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-scan-file-root-"));
     tempDirs.push(dir);
@@ -1160,11 +1301,18 @@ describe("drift CLI convention review", () => {
     expect(payload.candidates).toEqual([]);
     expect(payload.accepted).toBeUndefined();
     expect(payload.onboarding).toMatchObject({
-      status: "needs_more_signal",
+      status: "ready",
       accepted_default: false,
+      contract_ready: true,
       candidate_count: 0
     });
 
+    const contract = await runCli([
+      "--db", payload.database_path,
+      "contract", "show",
+      "--repo", payload.repo.id,
+      "--json"
+    ]);
     const mapped = await runCli([
       "--db", payload.database_path,
       "repo", "map",
@@ -1186,7 +1334,18 @@ describe("drift CLI convention review", () => {
       "--confirm",
       "--json"
     ]);
+    const checked = await runCli([
+      "--db", payload.database_path,
+      "check",
+      "--repo", payload.repo.id,
+      "--scope", "full",
+      "--json"
+    ]);
 
+    expect(contract.exitCode).toBe(0);
+    expect(JSON.parse(contract.stdout)).toMatchObject({
+      summary: { convention_count: 0 }
+    });
     expect(mapped.exitCode).toBe(0);
     expect(JSON.parse(mapped.stdout)).toMatchObject({
       policy: { allowed: true, surface: "cli-preflight" },
@@ -1202,6 +1361,13 @@ describe("drift CLI convention review", () => {
     expect(JSON.parse(backup.stdout)).toMatchObject({
       policy: { allowed: true, surface: "artifact" },
       manifest: { repo_id: payload.repo.id }
+    });
+    expect(checked.exitCode).toBe(0);
+    expect(JSON.parse(checked.stdout)).toMatchObject({
+      summary: {
+        findings_count: 0,
+        blocking_count: 0
+      }
     });
   });
 
@@ -1362,6 +1528,45 @@ describe("drift CLI convention review", () => {
     storage.close();
   });
 
+  it("maps Next.js API route paths inside route groups", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-route-groups-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/(ee)/api/admin/analytics"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/(ee)/api/admin/analytics/route.ts"),
+      "export async function GET() { return Response.json({ ok: true }); }\n"
+    );
+
+    const scan = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:10.000Z",
+      "--json"
+    ]);
+    expect(scan.exitCode).toBe(0);
+    const scanPayload = JSON.parse(scan.stdout);
+
+    const mapped = await runCli([
+      "--db", scanPayload.database_path,
+      "repo", "map",
+      "--repo", scanPayload.repo.id,
+      "--json"
+    ]);
+
+    expect(mapped.exitCode).toBe(0);
+    const payload = JSON.parse(mapped.stdout);
+    expect(payload.routes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        file_path: "apps/web/app/(ee)/api/admin/analytics/route.ts",
+        path: "/api/admin/analytics",
+        method: "GET"
+      })
+    ]));
+  });
+
   it("reports parser gap summaries in scan status", async () => {
     const { databasePath, repoId } = await seedStartedDoctorState("drift-parser-gap-status-");
     const storage = openDriftStorage({ databasePath });
@@ -1396,7 +1601,9 @@ describe("drift CLI convention review", () => {
     expect(payload.parser_gaps).toMatchObject({
       total_count: 1,
       by_kind: { unresolved_import: 1 },
-      confidence_impact: { lowers_flow: 1 }
+      confidence_impact: { lowers_flow: 1 },
+      by_capability: {},
+      by_contract_kind: {}
     });
     expect(payload.readiness).toMatchObject({
       schema_version: "drift.readiness.v1",
@@ -1407,6 +1614,60 @@ describe("drift CLI convention review", () => {
       parser_gaps_by_kind: { unresolved_import: 1 },
       decision: "advisory_only",
       reasons: ["parser_gaps_present"]
+    });
+  });
+
+  it("reports parser gap v2 summaries by capability and contract kind", async () => {
+    const { databasePath, repoId } = await seedStartedDoctorState("drift-parser-gap-v2-status-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const scanId = storage.listScanManifests(repoId)
+      .find((scan) => scan.status === "completed" && !scan.id.startsWith("scan_baseline_") && !scan.id.startsWith("scan_check_"))!.id;
+    storage.upsertParserGapV2([{
+      schema_version: "drift.parser_gap.v2",
+      parser_gap_id: "gap_dynamic_import_route_1",
+      repo_id: repoId,
+      scan_id: scanId,
+      file_path: "apps/web/app/api/users/route.ts",
+      start_line: 4,
+      end_line: 4,
+      kind: "dynamic_import_unresolved",
+      message: "Dynamic import target is not statically resolvable.",
+      affected_capabilities: ["ts.dynamic_imports.v1", "ts.route_flow.v1"],
+      affected_contract_kinds: ["api_route_no_direct_data_access"],
+      confidence_impact: "blocks_enforcement",
+      suggested_action: "rewrite_static",
+      evidence_refs: ["evidence_graph_1"]
+    }]);
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", repoId,
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.parser_gaps).toMatchObject({
+      total_count: 1,
+      by_kind: { dynamic_import_unresolved: 1 },
+      confidence_impact: { blocks_enforcement: 1 },
+      by_capability: {
+        "ts.dynamic_imports.v1": 1,
+        "ts.route_flow.v1": 1
+      },
+      by_contract_kind: {
+        api_route_no_direct_data_access: 1
+      }
+    });
+    expect(payload.readiness).toMatchObject({
+      parser_gap_count: 1,
+      parser_gaps_by_kind: { dynamic_import_unresolved: 1 },
+      confidence: 0.4,
+      decision: "refuse",
+      reasons: ["parser_gap_blocks_enforcement", "parser_gaps_present"]
     });
   });
 
@@ -2030,6 +2291,53 @@ describe("drift CLI convention review", () => {
     expect(result.stdout).toContain("drift check --diff main...HEAD");
   });
 
+  it.skipIf(process.platform === "win32")("starts when an upstream repo contains a broken symlink", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-start-broken-symlink-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      [
+        "export async function GET() {",
+        "  return Response.json({ ok: true });",
+        "}",
+        ""
+      ].join("\n")
+    );
+    const eeDir = join(repoRoot, "apps/web/app/app.dub.co/(dashboard)/[slug]/(ee)");
+    await mkdir(eeDir, { recursive: true });
+    await symlink("../../../../(ee)/LICENSE.md", join(eeDir, "LICENSE.md"));
+
+    const result = await runCli([
+      "start",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:25.000Z",
+      "--json"
+    ]);
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.summary).toMatchObject({
+      files_indexed: 1,
+      files_skipped: 1,
+      diagnostics_count: 1,
+      engine_source: "rust"
+    });
+    const storage = openDriftStorage({ databasePath: payload.state.database_path });
+    storage.migrate();
+    expect(storage.listParserGaps(payload.repo.id, payload.scan.id)).toMatchObject([
+      {
+        kind: "partial_parse",
+        file_path: "apps/web/app/app.dub.co/(dashboard)/[slug]/(ee)/LICENSE.md",
+        confidence_impact: "blocks_enforcement"
+      }
+    ]);
+    storage.close();
+  });
+
   it("starts onboarding with accept-defaults, materializes contract, and baselines existing violations", async () => {
     const dir = await mkdtemp(join(tmpdir(), "drift-start-defaults-"));
     tempDirs.push(dir);
@@ -2083,6 +2391,55 @@ describe("drift CLI convention review", () => {
     expect(storage.listFindings(repoId!)[0]?.evidence_refs[0]?.scan_id).toMatch(/^scan_/);
     expect(storage.listFindings(repoId!)[0]?.evidence_refs[0]?.file_hash).toHaveLength(64);
     storage.close();
+  });
+
+  it("reuses the real indexed scan immediately after onboarding baselines findings", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drift-start-incremental-"));
+    tempDirs.push(dir);
+    const repoRoot = join(dir, "repo");
+    const stateRoot = join(dir, "state");
+    await mkdir(join(repoRoot, "apps/web/app/api/users"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/web/app/api/users/route.ts"),
+      [
+        "import { prisma } from \"@/lib/prisma\";",
+        "export async function POST() {",
+        "  return Response.json(await prisma.user.findMany());",
+        "}",
+        ""
+      ].join("\n")
+    );
+
+    const started = await runCli([
+      "start",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--accept-defaults",
+      "--now", "2026-05-10T00:00:30.000Z",
+      "--json"
+    ]);
+    expect(started.exitCode).toBe(0);
+    const startedPayload = JSON.parse(started.stdout);
+
+    const second = await runCli([
+      "scan",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--now", "2026-05-10T00:00:40.000Z",
+      "--json"
+    ]);
+
+    expect(second.exitCode).toBe(0);
+    const secondPayload = JSON.parse(second.stdout);
+    expect(secondPayload.scan.previous_scan_id).toBe(startedPayload.scan.id);
+    expect(secondPayload.summary.incremental_plan).toMatchObject({
+      previous_scan_id: startedPayload.scan.id,
+      execution_mode: "incremental_reuse",
+      reuse_applied: true,
+      reusable_file_count: 1,
+      changed_file_count: 0,
+      blocked_reasons: []
+    });
   });
 
   it("materializes a default required check when onboarding accepts a deterministic convention", async () => {
@@ -2446,7 +2803,7 @@ describe("drift CLI convention review", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("Drift doctor");
-    expect(result.stdout).toContain("Runtime: Drift CLI 0.1.0, SQLite schema 22");
+    expect(result.stdout).toContain("Runtime: Drift CLI 0.1.0, SQLite schema 27");
     expect(result.stdout).toContain("V1 scope: local-first CLI, TypeScript API route layering");
     expect(result.stdout).toContain("TS/JS files: 1 indexable file");
     expect(result.stdout).toContain("API routes: 1 API route file");
@@ -2527,7 +2884,7 @@ describe("drift CLI convention review", () => {
       typescript_adapter_version: "0.1.0",
       rule_engine_version: "0.1.0",
       contract_schema_version: 1,
-      supported_sqlite_schema_version: 22,
+supported_sqlite_schema_version: 27,
       storage_driver: "sqlite"
     });
     expect(payload.engine).toMatchObject({
@@ -2545,7 +2902,7 @@ describe("drift CLI convention review", () => {
       deferred: ["desktop_ui", "cloud_sync", "python_adapter", "duplicate_helper_detection"]
     });
     expect(payload.state_summary).toMatchObject({
-      supported_schema_version: 22
+supported_schema_version: 27
     });
     expect(payload.state_summary).toMatchObject({
       exists: true,
@@ -2883,7 +3240,7 @@ describe("drift CLI convention review", () => {
       typescript_adapter_version: "0.1.0",
       rule_engine_version: "0.1.0",
       contract_schema_version: 1,
-      supported_sqlite_schema_version: 22,
+supported_sqlite_schema_version: 27,
       storage_driver: "sqlite"
     });
     expect(payload.engine).toMatchObject({
@@ -3121,7 +3478,7 @@ describe("drift CLI convention review", () => {
       machine_contract_versions: {
         schema_version: "drift.machine_contract_versions.v1",
         cli_version: "0.1.0",
-        storage_schema_version: 22,
+storage_schema_version: 27,
         factgraph_schema_version: "factgraph.v2"
       }
     });
@@ -3211,7 +3568,7 @@ describe("drift CLI convention review", () => {
       blocking_count: 1,
       machine_contract_versions: expect.objectContaining({
         schema_version: "drift.machine_contract_versions.v1",
-        storage_schema_version: 22
+storage_schema_version: 27
       })
     });
     expect(storage.listFindings("repo_abc")[0]?.title).toBe("API route imports data access directly");
@@ -7412,7 +7769,7 @@ describe("drift CLI convention review", () => {
     expect(payload.summary).toMatchObject({
       write_intent: true,
       artifact_exists: true,
-      schema_version: 22
+schema_version: 27
     });
     expect(payload.review_item).toMatchObject({
       id: payload.manifest.id,
@@ -7422,7 +7779,7 @@ describe("drift CLI convention review", () => {
     });
     expect(payload.manifest).toMatchObject({
       repo_id: "repo_abc",
-      schema_version: 22,
+schema_version: 27,
       created_at: "2026-05-10T00:00:04.000Z"
     });
     expect(payload.manifest.backup_path).toContain(backupDir);
@@ -7647,7 +8004,7 @@ describe("drift CLI convention review", () => {
         id: backup[0],
         repo_id: "repo_abc",
         repo_fingerprint: "repo-fp",
-        schema_version: 22,
+schema_version: 27,
         source_database_path: databasePath,
         backup_path: `/tmp/${backup[0]}.sqlite`,
         checksum_sha256: "a".repeat(64),
@@ -7699,7 +8056,7 @@ describe("drift CLI convention review", () => {
       id: "backup_valid",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 22,
+schema_version: 27,
       source_database_path: databasePath,
       backup_path: validPath,
       checksum_sha256: validChecksum,
@@ -7710,7 +8067,7 @@ describe("drift CLI convention review", () => {
       id: "backup_missing",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 22,
+schema_version: 27,
       source_database_path: databasePath,
       backup_path: join(dir, "missing.sqlite"),
       checksum_sha256: "b".repeat(64),
@@ -7721,7 +8078,7 @@ describe("drift CLI convention review", () => {
       id: "backup_mismatch",
       repo_id: "repo_abc",
       repo_fingerprint: "repo-fp",
-      schema_version: 22,
+schema_version: 27,
       source_database_path: databasePath,
       backup_path: mismatchPath,
       checksum_sha256: mismatchChecksum,
@@ -7982,7 +8339,7 @@ describe("drift CLI convention review", () => {
         surface: "artifact"
       },
       checksum_matches: true,
-      schema_version: 22
+schema_version: 27
     });
     expect(JSON.parse(verified.stdout).summary).toMatchObject({
       valid: true,
@@ -8163,7 +8520,7 @@ describe("drift CLI convention review", () => {
       valid: false,
       repo_id: "repo_abc",
       schema_supported: false,
-      schema_version: 22,
+schema_version: 27,
       unsupported_migrations: ["004_unknown_future_schema"]
     });
   });
@@ -8392,7 +8749,7 @@ describe("drift CLI convention review", () => {
       repo_id: "repo_abc",
       backup_path: backupPath,
       restored_database_path: targetDatabasePath,
-      schema_version: 22
+schema_version: 27
     });
     expect(payload.governance).toMatchObject({
       read_only: false,
@@ -8433,7 +8790,7 @@ describe("drift CLI convention review", () => {
         backup_path: backupPath,
         checksum_sha256: payload.restore.checksum_sha256,
         checksum_matches: true,
-        schema_version: 22,
+schema_version: 27,
         graph_stale: payload.restore.graph_stale,
         requires_rescan: payload.restore.requires_rescan,
         staleness_reason: payload.restore.staleness_reason
@@ -9099,7 +9456,7 @@ describe("drift CLI convention review", () => {
       relevant_file_count: 3,
       risky_area_count: 1,
       finding_count: 1,
-      blocking_finding_count: 1,
+      blocking_finding_count: 0,
       required_check_count: 1,
       safe_command_count: 0,
       baseline_active_count: 1,
@@ -9129,7 +9486,7 @@ describe("drift CLI convention review", () => {
     });
     expect(payload.conventions[0]).toMatchObject({
       kind: "api_route_no_direct_data_access",
-      enforcement_mode: "block",
+      enforcement_mode: "warn",
       enforcement_capability: "deterministic_check"
     });
     expect(payload.agent_contract_packet).toMatchObject({
@@ -9424,7 +9781,13 @@ describe("drift CLI convention review", () => {
         runtime: expect.any(Object),
         engine: expect.any(Object),
         migrations: expect.any(Object),
-        audit: expect.any(Object)
+        audit: expect.any(Object),
+        elections: {
+          candidate_count: 0,
+          accepted_count: 0,
+          rejected_count: 0,
+          rejected_inference_count: 0
+        }
       }
     });
     expect(JSON.stringify(payload)).not.toContain("Route imports prisma directly");
@@ -9962,6 +10325,29 @@ describe("drift CLI convention review", () => {
         ]),
         unknown_zones: []
       },
+      framework_entrypoints: {
+        schema_version: "drift.framework_entrypoints.read_model.v1",
+        repo_id: repoId,
+        summary: {
+          entrypoint_count: 1,
+          supported_count: 1,
+          parser_gap_count: 0
+        },
+        by_framework: [{
+          framework: "next_app",
+          adapter_id: "framework_adapter_next_v1",
+          entrypoint_count: 1,
+          capability_status: "complete",
+          can_block: true
+        }],
+        entrypoints: [expect.objectContaining({
+          framework: "next_app",
+          kind: "api_route",
+          file_path: "apps/web/app/api/users/route.ts",
+          route_pattern: "/api/users",
+          method: "GET"
+        })]
+      },
       freshness_requirement: {
         required: false,
         satisfied: true
@@ -10145,11 +10531,8 @@ describe("drift CLI convention review", () => {
 
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout);
-    expect(payload.security_capabilities.middleware_coverage).toMatchObject({
-      certified: true,
-      can_block: true,
-      missing: false
-    });
+    expect(payload.security_capabilities).toEqual([]);
+    expect(payload.capability_report.certified_capabilities).toContain("middleware_coverage");
   });
 
   it("scan status reports request_validation capability", async () => {
@@ -10193,11 +10576,8 @@ describe("drift CLI convention review", () => {
 
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout);
-    expect(payload.security_capabilities.request_validation).toMatchObject({
-      certified: true,
-      can_block: true,
-      missing: false
-    });
+    expect(payload.security_capabilities).toEqual([]);
+    expect(payload.capability_report.certified_capabilities).toContain("request_validation_facts");
   });
 
   it("scan status reports tenant authorization and session trust capabilities", async () => {
@@ -10253,22 +10633,345 @@ describe("drift CLI convention review", () => {
 
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout);
-    expect(payload.security_capabilities.session_trust).toMatchObject({
-      certified: true,
-      can_block: true,
-      missing: false
+    expect(payload.security_capabilities).toEqual([]);
+    expect(payload.capability_report.certified_capabilities).toEqual(expect.arrayContaining([
+      "session_trust",
+      "authorization",
+      "tenant_scope"
+    ]));
+  });
+
+  it("scan status reports missing security capabilities for accepted conventions without proof runs", async () => {
+    const { databasePath, repoId } = await seedStartedDoctorState("drift-scan-status-security-missing-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const existingContract = storage.getRepoContract(repoId)!;
+    storage.upsertAcceptedConvention(repoId, {
+      id: "convention_security_auth",
+      contract_id: existingContract.id,
+      kind: "api_route_requires_auth_helper",
+      statement: "API routes must use requireUser.",
+      rationale: "accepted for test",
+      scope: { path_globs: ["apps/web/app/api/**/route.ts"], file_roles: ["api_route"] },
+      matcher: {
+        kind: "api_route_requires_auth_helper",
+        required_calls: ["requireUser"],
+        applies_to_file_roles: ["api_route"]
+      },
+      requires: { auth_helpers: [{ symbol: "requireUser" }] },
+      severity: "error",
+      enforcement_mode: "block",
+      enforcement_capability: "deterministic_check",
+      exceptions: [],
+      evidence_refs: [],
+      counterexample_refs: [],
+      accepted_by: "test",
+      accepted_at: "2026-05-27T00:00:00.000Z",
+      updated_at: "2026-05-27T00:00:00.000Z"
     });
-    expect(payload.security_capabilities.authorization).toMatchObject({
-      certified: true,
-      can_block: true,
-      missing: false
+    storage.upsertRepoContract({
+      ...existingContract,
+      conventions: storage.listAcceptedConventions(repoId),
+      updated_at: "2026-05-27T00:00:00.000Z"
     });
-    expect(payload.security_capabilities.tenant_scope).toMatchObject({
-      certified: true,
-      can_block: true,
-      missing: false,
-      complete: false
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", repoId,
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.security_capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "control_flow_guard_dominance",
+        capability: "deterministic_check",
+        status: "missing",
+        can_block: true,
+        parser_gap_count: 0,
+        missing_proof_count: 0,
+        affected_files: []
+      })
+    ]));
+  });
+
+  it("scan status reports Phase 8 security capability array from proof runs", async () => {
+    const { databasePath, repoId } = await seedStartedDoctorState("drift-scan-status-phase8-");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const scanId = storage.listScanManifests(repoId)
+      .find((scan) => scan.status === "completed" && !scan.id.startsWith("scan_baseline_"))!.id;
+    storage.upsertCheckRun({
+      id: "check_phase8",
+      repo_id: repoId,
+      repo_contract_id: "contract_phase8",
+      contract_fingerprint: "contract-fp",
+      scan_id: scanId,
+      status: "pass",
+      scope: "full",
+      engine_source: "rust",
+      fallback_used: false,
+      stale_scan: false,
+      capability_complete: true,
+      findings_count: 0,
+      blocking_count: 0,
+      started_at: "2026-05-27T00:00:01.000Z",
+      completed_at: "2026-05-27T00:00:02.000Z"
     });
+    storage.upsertSecurityBoundaryProofRuns({
+      repo_id: repoId,
+      scan_id: "scan_check_phase8",
+      check_id: "check_phase8",
+      created_at: "2026-05-27T00:00:02.000Z",
+      proofs: [phase8SecurityProof()]
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", repoId,
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(Array.isArray(payload.security_capabilities)).toBe(true);
+    expect(payload.security_capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "control_flow_guard_dominance",
+        capability: "deterministic_check",
+        status: "complete",
+        can_block: true,
+        parser_gap_count: 0,
+        missing_proof_count: 0,
+        affected_files: ["apps/web/app/api/users/route.ts"]
+      })
+    ]));
+
+    const repoMap = await runCli([
+      "--db", databasePath,
+      "repo", "map",
+      "--repo", repoId,
+      "--json"
+    ]);
+    expect(repoMap.exitCode).toBe(0);
+    const repoMapPayload = JSON.parse(repoMap.stdout);
+    expect(repoMapPayload.routes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        file_path: "apps/web/app/api/users/route.ts",
+        security: expect.objectContaining({
+          proof_status: "proven"
+        })
+      })
+    ]));
+  });
+
+  it("reports proof-safe security architecture audit without leaking raw fact values", async () => {
+    const databasePath = await seedDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertScanManifest({
+      id: "scan_security_audit",
+      repo_id: "repo_abc",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 2,
+      fact_count: 8,
+      finding_count: 0,
+      started_at: "2026-05-27T00:00:00.000Z",
+      completed_at: "2026-05-27T00:00:01.000Z"
+    });
+    storage.upsertFacts([
+      {
+        id: "fact_security_audit_role",
+        repo_id: "repo_abc",
+        scan_id: "scan_security_audit",
+        kind: "file_role_detected",
+        file_path: "apps/web/app/api/apps/route.ts",
+        name: "api_route",
+        start_line: 1,
+        end_line: 1,
+        ...factQuality("scan_security_audit")
+      },
+      {
+        id: "fact_security_audit_auth",
+        repo_id: "repo_abc",
+        scan_id: "scan_security_audit",
+        kind: "symbol_called",
+        file_path: "apps/web/app/api/apps/route.ts",
+        name: "withWorkspace",
+        start_line: 4,
+        end_line: 4,
+        ...factQuality("scan_security_audit")
+      },
+      {
+        id: "fact_security_audit_parser",
+        repo_id: "repo_abc",
+        scan_id: "scan_security_audit",
+        kind: "symbol_called",
+        file_path: "apps/web/app/api/apps/route.ts",
+        name: "parseRequestBody",
+        start_line: 8,
+        end_line: 8,
+        ...factQuality("scan_security_audit")
+      },
+      {
+        id: "fact_security_audit_validator",
+        repo_id: "repo_abc",
+        scan_id: "scan_security_audit",
+        kind: "symbol_called",
+        file_path: "apps/web/app/api/apps/route.ts",
+        name: "parseAsync",
+        value: "createOAuthAppSchema",
+        start_line: 8,
+        end_line: 8,
+        ...factQuality("scan_security_audit")
+      },
+      {
+        id: "fact_security_audit_rate_error",
+        repo_id: "repo_abc",
+        scan_id: "scan_security_audit",
+        kind: "symbol_called",
+        file_path: "apps/web/app/api/public/route.ts",
+        name: "exceededLimitError",
+        start_line: 9,
+        end_line: 9,
+        ...factQuality("scan_security_audit")
+      },
+      {
+        id: "fact_security_audit_ssrf",
+        repo_id: "repo_abc",
+        scan_id: "scan_security_audit",
+        kind: "outbound_request_called",
+        file_path: "apps/web/app/api/import/route.ts",
+        name: "fetch",
+        value: JSON.stringify({
+          url_source: "request_input",
+          url_var: "url",
+          raw_url: "https://token@example.com"
+        }),
+        start_line: 12,
+        end_line: 12,
+        ...factQuality("scan_security_audit")
+      }
+    ]);
+    storage.upsertConventionCandidate({
+      id: "candidate_security_audit_body_parser",
+      repo_id: "repo_abc",
+      scan_id: "scan_security_audit",
+      kind: "api_route_requires_request_validation",
+      statement: "Uses parseRequestBody.",
+      scope: { path_globs: ["apps/web/app/api/**/route.ts"], file_roles: ["api_route"] },
+      matcher: {
+        kind: "api_route_requires_request_validation",
+        required_calls: ["parseRequestBody"]
+      },
+      requires: { validators: [{ symbol: "parseRequestBody" }] },
+      suggested_severity: "warning",
+      suggested_enforcement_mode: "warn",
+      enforcement_capability: "deterministic_check",
+      confidence_label: "medium",
+      scoring: {
+        supporting_examples_count: 2,
+        counterexamples_count: 0,
+        scope_files_count: 3,
+        coverage_ratio: 0.67,
+        heuristic_id: "test-security-audit"
+      },
+      evidence_refs: [],
+      counterexample_refs: [],
+      matcher_fingerprint: "security-audit-body-parser",
+      scope_fingerprint: "security-audit-scope",
+      graph_fingerprint: "security-audit-graph",
+      evidence_fingerprint: "security-audit-evidence",
+      required_capabilities: ["syntax_facts", "request_validation"],
+      reason_not_blocking: "candidate_not_accepted",
+      status: "candidate",
+      created_at: "2026-05-27T00:00:02.000Z"
+    });
+    storage.upsertAcceptedConvention("repo_abc", {
+      id: "convention_security_audit_auth",
+      contract_id: "contract_security_audit",
+      kind: "api_route_requires_auth_helper",
+      statement: "Use withWorkspace.",
+      scope: { path_globs: ["apps/web/app/api/**/route.ts"], file_roles: ["api_route"] },
+      matcher: {
+        kind: "api_route_requires_auth_helper",
+        required_calls: ["withWorkspace"]
+      },
+      requires: { auth_helpers: [{ symbol: "withWorkspace" }] },
+      severity: "warning",
+      enforcement_mode: "warn",
+      enforcement_capability: "deterministic_check",
+      exceptions: [],
+      evidence_refs: [],
+      counterexample_refs: [],
+      accepted_by: "test",
+      accepted_at: "2026-05-27T00:00:03.000Z",
+      updated_at: "2026-05-27T00:00:03.000Z"
+    });
+    storage.close();
+
+    const jsonResult = await runCli([
+      "--db", databasePath,
+      "security", "audit",
+      "--repo", "repo_abc",
+      "--json"
+    ]);
+    const textResult = await runCli([
+      "--db", databasePath,
+      "security", "audit",
+      "--repo", "repo_abc"
+    ]);
+
+    expect(jsonResult.stderr).toBe("");
+    expect(jsonResult.exitCode).toBe(0);
+    const payload = JSON.parse(jsonResult.stdout);
+    expect(payload.response_schema).toBe("drift.security.audit.v1");
+    expect(payload.areas.auth_boundary.patterns[0]).toMatchObject({
+      pattern: "withWorkspace",
+      accepted: true,
+      candidate_only: false
+    });
+    expect(payload.areas.request_validation.patterns).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pattern: "parseRequestBody",
+        semantic_role: "body_parser",
+        proof_truth: "candidate_only"
+      }),
+      expect.objectContaining({
+        pattern: "createOAuthAppSchema.parseAsync",
+        semantic_role: "validator"
+      })
+    ]));
+    expect(payload.areas.rate_limit.patterns).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pattern: "exceededLimitError",
+        semantic_role: "error_helper"
+      })
+    ]));
+    expect(payload.areas.ssrf.patterns[0]).toMatchObject({
+      pattern: "request_input"
+    });
+    expect(jsonResult.stdout).not.toContain("https://token@example.com");
+    expect(jsonResult.stdout).not.toContain("raw_url");
+    expect(textResult.exitCode).toBe(0);
+    expect(textResult.stdout).toContain("Drift security audit");
+    expect(textResult.stdout).toContain("Candidate-only patterns: 2");
+    expect(textResult.stdout).toContain("Priority signals:");
+    expect(textResult.stdout).toContain("Signal/noise ratio:");
+    expect(textResult.stdout).not.toContain("parseRequestBody priority:");
+    expect(textResult.stdout).not.toContain("exceededLimitError priority:");
+    expect(textResult.stdout).not.toContain("https://token@example.com");
   });
 
   it("repo map reports route middleware coverage summary", async () => {
@@ -12286,8 +12989,14 @@ describe("drift CLI convention review", () => {
     const storage = openDriftStorage({ databasePath });
     storage.migrate();
     expect(storage.getConventionCandidate("candidate_no_direct_db")?.status).toBe("accepted");
-    expect(storage.listAcceptedConventions("repo_abc")[0]?.severity).toBe("warning");
-    expect(storage.getRepoContract("repo_abc")?.conventions[0]?.enforcement_mode).toBe("warn");
+    expect(storage.listAcceptedConventions("repo_abc")[0]).toMatchObject({
+      severity: "warning",
+      requires: { forbidden_imports: ["@/lib/prisma"] }
+    });
+    expect(storage.getRepoContract("repo_abc")?.conventions[0]).toMatchObject({
+      enforcement_mode: "warn",
+      requires: { forbidden_imports: ["@/lib/prisma"] }
+    });
     expect(storage.listAuditEvents("repo_abc")[0]?.action).toBe("election_accepted");
     storage.close();
   });
@@ -12597,7 +13306,13 @@ describe("drift CLI convention review", () => {
     const storage = openDriftStorage({ databasePath });
     storage.migrate();
     expect(storage.getConventionCandidate("candidate_no_direct_db")?.status).toBe("rejected");
-    expect(storage.listAuditEvents("repo_abc")[0]?.metadata).toEqual({ reason: "false inference" });
+    expect(storage.listAuditEvents("repo_abc")[0]?.metadata).toMatchObject({ reason: "false inference" });
+    expect(storage.getRepoContract("repo_abc")?.rejected_inferences[0]).toMatchObject({
+      candidate_id: "candidate_no_direct_db",
+      evidence_fingerprint: "evidence_fp",
+      reason: "false inference",
+      rejected_by: "geoff"
+    });
     storage.close();
   });
 
@@ -12907,6 +13622,83 @@ describe("drift CLI convention review", () => {
       }
     });
     storage.close();
+  });
+
+  it("rejects contract validate when a blocking convention is not deterministic", async () => {
+    const { databasePath } = await seedAcceptedDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const contract = storage.getRepoContract("repo_abc")!;
+    storage.upsertRepoContract({
+      ...contract,
+      conventions: contract.conventions.map((convention) => ({
+        ...convention,
+        enforcement_capability: "heuristic_check"
+      }))
+    });
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "contract", "validate",
+      "--repo", "repo_abc",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      valid: false,
+      compatibility: {
+        compatible: false,
+        reasons: ["blocking_non_deterministic_convention"]
+      }
+    });
+  });
+
+  it("rejects imported blocking security contracts backed by candidate sensitive fields", async () => {
+    const { databasePath } = await seedAcceptedDatabase();
+    const dir = await mkdtemp(join(tmpdir(), "drift-contract-candidate-sensitive-"));
+    tempDirs.push(dir);
+    const contractPath = join(dir, "contract.json");
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    const contract = storage.getRepoContract("repo_abc")!;
+    await writeFile(contractPath, JSON.stringify({
+      ...contract,
+      conventions: contract.conventions.map((convention) => ({
+        ...convention,
+        kind: "api_route_forbids_sensitive_response_fields",
+        matcher: {
+          kind: "api_route_forbids_sensitive_response_fields",
+          applies_to_file_roles: ["api_route"]
+        },
+        requires: {
+          sensitive_response_fields: [{
+            field_path: "user.email",
+            classification: "pii",
+            source: "candidate"
+          }]
+        }
+      }))
+    }, null, 2));
+    storage.close();
+
+    const result = await runCli([
+      "--db", databasePath,
+      "contract", "import",
+      contractPath,
+      "--repo", "repo_abc",
+      "--dry-run",
+      "--json"
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      compatibility: {
+        compatible: false,
+        reasons: ["candidate_sensitive_fields_blocking"]
+      }
+    });
   });
 
   it("guards contract export artifact paths and overwrites", async () => {

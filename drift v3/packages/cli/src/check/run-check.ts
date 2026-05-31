@@ -491,6 +491,15 @@ export async function runCheck(storage: SqliteDriftStorage, parsed: ParsedArgs):
     started_at: now,
     completed_at: now
   });
+  if (securityBoundaryProofs.length > 0 && typeof storage.upsertSecurityBoundaryProofRuns === "function") {
+    storage.upsertSecurityBoundaryProofRuns({
+      repo_id: repoId,
+      scan_id: checkScanId,
+      check_id: checkId,
+      proofs: securityBoundaryProofs,
+      created_at: now
+    });
+  }
   const openNewCount = findings.filter((finding) => finding.status === "new").length;
   const outcome = checkOutcomeSummary(findings, {
     waivedFindingsCount,
@@ -1931,6 +1940,13 @@ async function runEngineOwnedAuthCheck(input: {
       (
         convention.kind !== "api_route_requires_auth_helper" &&
         convention.kind !== "api_route_requires_request_validation" &&
+        convention.kind !== "api_route_forbids_untrusted_ssrf" &&
+        convention.kind !== "api_route_forbids_raw_sql_without_params" &&
+        convention.kind !== "api_route_cors_must_match_policy" &&
+        convention.kind !== "api_route_requires_csrf_for_mutation" &&
+        convention.kind !== "api_route_requires_rate_limit" &&
+        convention.kind !== "api_route_forbids_sensitive_response_fields" &&
+        convention.kind !== "api_route_forbids_secret_exposure" &&
         convention.kind !== "session_object_must_come_from_trusted_helper" &&
         convention.kind !== "api_route_requires_authorization" &&
         convention.kind !== "api_route_requires_tenant_scope"
@@ -1984,15 +2000,21 @@ async function runEngineOwnedAuthCheck(input: {
         .map((fact) => fact.id);
       const preserved = preservedGovernanceStatus(input.existingFindings.get(engineFinding.fingerprint));
       const isRequestValidationFinding = engineFinding.rule_id === "api_route_requires_request_validation";
+      const isPhase6Finding = isPhase6SecurityFinding(engineFinding.rule_id);
+      const isPhase5Finding = isPhase5SecurityFinding(engineFinding.rule_id);
       const isPhase4Finding = isPhase4SecurityFinding(engineFinding.rule_id);
       const proofForFinding = result.security_boundary_proofs.find((proof) =>
         proof.result.finding_ids.includes(engineFinding.id)
       );
-      const waiver = isPhase4Finding
+      const waiver = isPhase4Finding || isPhase5Finding
         ? findContractWaiverForImport(
             evidence.file_path,
-            phase4ExpectedLayer(engineFinding.rule_id),
-            phase4ActualLayer(proofForFinding),
+            isPhase5Finding
+              ? phase5ExpectedLayer(engineFinding.rule_id)
+              : phase4ExpectedLayer(engineFinding.rule_id),
+            isPhase5Finding
+              ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
+              : phase4ActualLayer(proofForFinding),
             input.contract,
             input.now
           )
@@ -2012,8 +2034,12 @@ async function runEngineOwnedAuthCheck(input: {
             scanId: input.checkData.snapshots[0]?.scan_id ?? input.checkScanId,
             filePath: evidence.file_path,
             line: evidenceStartLine,
-            symbol: phase4ExpectedLayer(engineFinding.rule_id),
-            importSource: phase4ActualLayer(proofForFinding),
+            symbol: isPhase5Finding
+              ? phase5ExpectedLayer(engineFinding.rule_id)
+              : phase4ExpectedLayer(engineFinding.rule_id),
+            importSource: isPhase5Finding
+              ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
+              : phase4ActualLayer(proofForFinding),
             fileHash: snapshot?.content_hash ?? "",
             waiverId: waiver.id,
             now: input.now
@@ -2024,8 +2050,12 @@ async function runEngineOwnedAuthCheck(input: {
             waiver_id: waiver.id,
             convention_id: engineFinding.convention_id,
             file_path: evidence.file_path,
-            symbol: phase4ExpectedLayer(engineFinding.rule_id),
-            import_source: phase4ActualLayer(proofForFinding),
+            symbol: isPhase5Finding
+              ? phase5ExpectedLayer(engineFinding.rule_id)
+              : phase4ExpectedLayer(engineFinding.rule_id),
+            import_source: isPhase5Finding
+              ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
+              : phase4ActualLayer(proofForFinding),
             line: evidenceStartLine,
             reason: waiver.reason
           });
@@ -2058,17 +2088,29 @@ async function runEngineOwnedAuthCheck(input: {
         }],
         expected_layer: isRequestValidationFinding
           ? "request_validation"
+          : isPhase6Finding
+            ? phase6ExpectedLayer(engineFinding.rule_id)
+          : isPhase5Finding
+            ? phase5ExpectedLayer(engineFinding.rule_id)
           : isPhase4Finding
             ? phase4ExpectedLayer(engineFinding.rule_id)
             : "auth_guard",
         actual_layer: isRequestValidationFinding
           ? requestValidationActualLayer(proofForFinding)
+          : isPhase6Finding
+            ? phase6ActualLayer(proofForFinding)
+          : isPhase5Finding
+            ? phase5ActualLayer(proofForFinding, engineFinding.rule_id)
           : isPhase4Finding
             ? phase4ActualLayer(proofForFinding)
             : "missing_auth_guard",
         graph_path: [evidence.file_path],
         suggested_fix: isRequestValidationFinding
           ? "Validate request input with an accepted validator before using it at protected route sinks."
+          : isPhase6Finding
+            ? "Add accepted Phase 6 proof before SSRF, raw SQL, CORS, CSRF, or rate-limit protected sinks."
+          : isPhase5Finding
+            ? phase5SuggestedFix(engineFinding.rule_id)
           : isPhase4Finding
             ? "Add accepted session trust, authorization, and tenant-scope proof before protected route sinks."
             : "Call an accepted auth helper before route data operations or response sinks.",
@@ -2081,10 +2123,112 @@ async function runEngineOwnedAuthCheck(input: {
   return { findings, waivedFindings, waivedFindingsCount, securityBoundaryProofs };
 }
 
+function isPhase5SecurityFinding(ruleId: string): boolean {
+  return ruleId === "api_route_forbids_sensitive_response_fields" ||
+    ruleId === "api_route_forbids_secret_exposure";
+}
+
+function isPhase6SecurityFinding(ruleId: string): boolean {
+  return ruleId === "api_route_forbids_untrusted_ssrf" ||
+    ruleId === "api_route_forbids_raw_sql_without_params" ||
+    ruleId === "api_route_cors_must_match_policy" ||
+    ruleId === "api_route_requires_csrf_for_mutation" ||
+    ruleId === "api_route_requires_rate_limit";
+}
+
+function phase6ExpectedLayer(ruleId: string): string {
+  if (ruleId === "api_route_forbids_untrusted_ssrf") {
+    return "outbound_request";
+  }
+  if (ruleId === "api_route_forbids_raw_sql_without_params") {
+    return "raw_sql";
+  }
+  if (ruleId === "api_route_cors_must_match_policy") {
+    return "cors_policy";
+  }
+  if (ruleId === "api_route_requires_csrf_for_mutation") {
+    return "csrf_guard";
+  }
+  if (ruleId === "api_route_requires_rate_limit") {
+    return "rate_limit_guard";
+  }
+  return "security_boundary";
+}
+
+function phase6ActualLayer(proof: unknown): string {
+  if (!proof || typeof proof !== "object") {
+    return "missing_phase6_proof";
+  }
+  const candidate = proof as {
+    parser_gaps?: Array<{ code?: unknown }>;
+    missing_proof?: Array<{ code?: unknown }>;
+  };
+  const parserGapCode = candidate.parser_gaps?.find((gap) =>
+    typeof gap.code === "string"
+  )?.code;
+  if (typeof parserGapCode === "string") {
+    return parserGapCode;
+  }
+  const missingProofCode = candidate.missing_proof?.find((missing) =>
+    typeof missing.code === "string"
+  )?.code;
+  return typeof missingProofCode === "string" ? missingProofCode : "missing_phase6_proof";
+}
+
 function isPhase4SecurityFinding(ruleId: string): boolean {
   return ruleId === "session_object_must_come_from_trusted_helper" ||
     ruleId === "api_route_requires_authorization" ||
     ruleId === "api_route_requires_tenant_scope";
+}
+
+function phase5ExpectedLayer(ruleId: string): string {
+  return ruleId === "api_route_forbids_sensitive_response_fields"
+    ? "response_shape"
+    : "secret_exposure";
+}
+
+function phase5SuggestedFix(ruleId: string): string {
+  return ruleId === "api_route_forbids_sensitive_response_fields"
+    ? "Filter accepted sensitive response fields with an accepted serializer before responding."
+    : "Keep secret reads out of responses and accepted log sinks.";
+}
+
+function phase5ActualLayer(proof: unknown, ruleId: string): string {
+  if (!proof || typeof proof !== "object") {
+    return ruleId === "api_route_forbids_sensitive_response_fields"
+      ? "dynamic_response_shape_missing_proof"
+      : "secret_exposure_not_excluded";
+  }
+  const candidate = proof as {
+    parser_gaps?: Array<{ code?: unknown }>;
+    missing_proof?: Array<{ code?: unknown }>;
+    response_shape?: {
+      sensitive_leaks?: unknown[];
+    };
+    sinks?: {
+      secrets?: unknown[];
+    };
+  };
+  const missingProofCode = candidate.missing_proof?.find((missing) =>
+    typeof missing.code === "string"
+  )?.code;
+  if (typeof missingProofCode === "string") {
+    return missingProofCode;
+  }
+  const parserGapCode = candidate.parser_gaps?.find((gap) =>
+    typeof gap.code === "string"
+  )?.code;
+  if (typeof parserGapCode === "string") {
+    return parserGapCode;
+  }
+  if (ruleId === "api_route_forbids_sensitive_response_fields") {
+    return (candidate.response_shape?.sensitive_leaks?.length ?? 0) > 0
+      ? "sensitive_response_field_unfiltered"
+      : "dynamic_response_shape_missing_proof";
+  }
+  return (candidate.sinks?.secrets?.length ?? 0) > 0
+    ? "secret_exposure_not_excluded"
+    : "secret_exposure_not_excluded";
 }
 
 function phase4ExpectedLayer(ruleId: string): string {

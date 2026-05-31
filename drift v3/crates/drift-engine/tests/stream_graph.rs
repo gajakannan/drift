@@ -177,6 +177,72 @@ export async function GET() {
     assert!(completed["stats"]["graph_edges"].as_u64().unwrap() > 0);
 }
 
+#[cfg(unix)]
+#[test]
+fn scan_stream_reports_broken_symlinks_without_failing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let route = dir.path().join("app/api/users");
+    fs::create_dir_all(&route).expect("create route dir");
+    fs::write(
+        route.join("route.ts"),
+        r#"export async function GET() {
+  return Response.json({});
+}
+"#,
+    )
+    .expect("write route");
+    let ee_dir = dir
+        .path()
+        .join("apps/web/app/app.dub.co/(dashboard)/[slug]/(ee)");
+    fs::create_dir_all(&ee_dir).expect("create ee dir");
+    std::os::unix::fs::symlink("../../../../(ee)/LICENSE.md", ee_dir.join("LICENSE.md"))
+        .expect("create broken symlink");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_drift-engine"))
+        .args([
+            "scan-repo",
+            dir.path().to_str().expect("utf8 temp dir"),
+            "--format",
+            "jsonl",
+            "--repo-id",
+            "repo_abc",
+            "--scan-id",
+            "scan_abc",
+        ])
+        .output()
+        .expect("run drift-engine");
+    assert!(
+        output.status.success(),
+        "engine failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = String::from_utf8(output.stdout)
+        .expect("utf8 stdout")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json line"))
+        .collect::<Vec<_>>();
+    let diagnostics = events
+        .iter()
+        .filter(|event| event["event"] == "diagnostic_batch")
+        .flat_map(|event| event["diagnostics"].as_array().expect("diagnostics").iter())
+        .collect::<Vec<_>>();
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "broken_symlink"
+                && diagnostic["file_path"]
+                    == "apps/web/app/app.dub.co/(dashboard)/[slug]/(ee)/LICENSE.md"
+        }),
+        "missing broken symlink diagnostic: {diagnostics:#?}"
+    );
+    let completed = events
+        .iter()
+        .find(|event| event["event"] == "scan_completed")
+        .expect("scan_completed event");
+    assert_eq!(completed["stats"]["files_skipped"].as_u64().unwrap(), 1);
+}
+
 #[test]
 fn scan_stream_resolves_alias_workspace_index_imports_and_reports_unresolved_imports() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -558,6 +624,201 @@ fn scan_stream_emits_endpoint_shape_for_grouped_next_api_routes() {
                 && node["metadata"]["framework_role"] == "next_app_route"
         }),
         "missing grouped route endpoint shape: {nodes:#?}"
+    );
+}
+
+#[test]
+fn scan_json_emits_normalized_next_entrypoints() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let app_route = dir.path().join("src/app/api/users/[id]");
+    fs::create_dir_all(&app_route).expect("create app route dir");
+    fs::write(
+        app_route.join("route.ts"),
+        r#"export async function DELETE() {
+  return Response.json({});
+}
+"#,
+    )
+    .expect("write app route");
+    let pages_route = dir.path().join("pages/api/projects/[projectId].ts");
+    fs::create_dir_all(pages_route.parent().expect("parent")).expect("create pages api dir");
+    fs::write(
+        &pages_route,
+        r#"export default function handler() {
+  return Response.json({});
+}
+"#,
+    )
+    .expect("write pages api route");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_drift-engine"))
+        .args([
+            "scan-repo",
+            dir.path().to_str().expect("utf8 temp dir"),
+            "--repo-id",
+            "repo_framework",
+            "--scan-id",
+            "scan_framework",
+        ])
+        .output()
+        .expect("run drift-engine");
+    assert!(
+        output.status.success(),
+        "engine failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("scan json");
+    let adapters = payload["framework_adapters"]
+        .as_array()
+        .expect("framework adapters");
+    assert!(
+        adapters.iter().any(|adapter| {
+            adapter["schema_version"] == "engine.framework.adapter.v1"
+                && adapter["adapter_id"] == "framework_adapter_next_v1"
+                && adapter["framework"] == "next_app"
+        }),
+        "missing Next framework adapter: {payload:#?}"
+    );
+    let entrypoints = payload["normalized_entrypoints"]
+        .as_array()
+        .expect("normalized entrypoints");
+    assert!(
+        entrypoints.iter().any(|entrypoint| {
+            entrypoint["schema_version"] == "engine.normalized_entrypoint.v1"
+                && entrypoint["entrypoint_id"]
+                    == "entrypoint:next_app:src/app/api/users/[id]/route.ts:DELETE"
+                && entrypoint["adapter_id"] == "framework_adapter_next_v1"
+                && entrypoint["framework"] == "next_app"
+                && entrypoint["kind"] == "api_route"
+                && entrypoint["route_pattern"] == "/api/users/:id"
+                && entrypoint["method"] == "DELETE"
+                && entrypoint["parser_gap_ids"] == serde_json::json!([])
+        }),
+        "missing normalized app route entrypoint: {entrypoints:#?}"
+    );
+    assert!(
+        entrypoints.iter().any(|entrypoint| {
+            entrypoint["entrypoint_id"]
+                == "entrypoint:next_pages:pages/api/projects/[projectId].ts:default"
+                && entrypoint["framework"] == "next_pages"
+                && entrypoint["route_pattern"] == "/api/projects/:projectId"
+                && entrypoint["method"] == "default"
+        }),
+        "missing normalized pages route entrypoint: {entrypoints:#?}"
+    );
+    let capabilities = payload["framework_capabilities"]
+        .as_array()
+        .expect("framework capabilities");
+    assert!(
+        capabilities.iter().any(|capability| {
+            capability["schema_version"] == "engine.framework.capability.v1"
+                && capability["adapter_id"] == "framework_adapter_next_v1"
+                && capability["capability"] == "entrypoint_discovery"
+                && capability["status"] == "complete"
+                && capability["can_block"] == true
+        }),
+        "missing framework capability: {capabilities:#?}"
+    );
+}
+
+#[test]
+fn scan_stream_emits_normalized_next_entrypoint_batches() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let app_route = dir.path().join("src/app/api/users/[id]");
+    fs::create_dir_all(&app_route).expect("create app route dir");
+    fs::write(
+        app_route.join("route.ts"),
+        r#"export async function DELETE() {
+  return Response.json({});
+}
+"#,
+    )
+    .expect("write app route");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_drift-engine"))
+        .args([
+            "scan-repo",
+            dir.path().to_str().expect("utf8 temp dir"),
+            "--format",
+            "jsonl",
+            "--repo-id",
+            "repo_framework_stream",
+            "--scan-id",
+            "scan_framework_stream",
+        ])
+        .output()
+        .expect("run drift-engine");
+    assert!(
+        output.status.success(),
+        "engine failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = String::from_utf8(output.stdout)
+        .expect("utf8 stdout")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json line"))
+        .collect::<Vec<_>>();
+    let adapters = events
+        .iter()
+        .filter(|event| event["event"] == "framework_adapter_batch")
+        .flat_map(|event| {
+            event["framework_adapters"]
+                .as_array()
+                .expect("framework adapters")
+                .iter()
+        })
+        .collect::<Vec<_>>();
+    let entrypoints = events
+        .iter()
+        .filter(|event| event["event"] == "normalized_entrypoint_batch")
+        .flat_map(|event| {
+            event["normalized_entrypoints"]
+                .as_array()
+                .expect("normalized entrypoints")
+                .iter()
+        })
+        .collect::<Vec<_>>();
+    let capabilities = events
+        .iter()
+        .filter(|event| event["event"] == "framework_capability_batch")
+        .flat_map(|event| {
+            event["framework_capabilities"]
+                .as_array()
+                .expect("framework capabilities")
+                .iter()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        adapters.iter().any(|adapter| {
+            adapter["schema_version"] == "engine.framework.adapter.v1"
+                && adapter["adapter_id"] == "framework_adapter_next_v1"
+        }),
+        "missing stream framework adapter batch: {events:#?}"
+    );
+    assert!(
+        entrypoints.iter().any(|entrypoint| {
+            entrypoint["schema_version"] == "engine.normalized_entrypoint.v1"
+                && entrypoint["repo_id"] == "repo_framework_stream"
+                && entrypoint["scan_id"] == "scan_framework_stream"
+                && entrypoint["entrypoint_id"]
+                    == "entrypoint:next_app:src/app/api/users/[id]/route.ts:DELETE"
+                && entrypoint["framework"] == "next_app"
+                && entrypoint["route_pattern"] == "/api/users/:id"
+                && entrypoint["method"] == "DELETE"
+        }),
+        "missing stream normalized entrypoint batch: {events:#?}"
+    );
+    assert!(
+        capabilities.iter().any(|capability| {
+            capability["schema_version"] == "engine.framework.capability.v1"
+                && capability["adapter_id"] == "framework_adapter_next_v1"
+                && capability["capability"] == "entrypoint_discovery"
+                && capability["can_block"] == true
+        }),
+        "missing stream framework capability batch: {events:#?}"
     );
 }
 

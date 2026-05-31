@@ -12,12 +12,18 @@ import type {
   FactRecord,
   FileSnapshot,
   Finding,
+  FrameworkAdapter,
+  FrameworkCapability,
+  FrameworkParserGap,
   ModuleDependent,
+  NormalizedEntrypointFact,
   ParserGap,
+  ParserGapV2,
   RepoContract,
   RepoRecord,
   RequiredCheckExecution,
   ResolverDependency,
+  SecurityBoundaryProof,
   ScanCapabilityReport,
   ScanFileChange,
   ScanManifest,
@@ -34,12 +40,18 @@ import {
   FactRecordSchema,
   FileSnapshotSchema,
   FindingSchema,
+  FrameworkAdapterSchema,
+  FrameworkCapabilitySchema,
+  FrameworkParserGapSchema,
   ModuleDependentSchema,
+  NormalizedEntrypointFactSchema,
   ParserGapSchema,
+  ParserGapV2Schema,
   RepoContractSchema,
   RepoRecordSchema,
   RequiredCheckExecutionSchema,
   ResolverDependencySchema,
+  SecurityBoundaryProofSchema,
   ScanCapabilityReportSchema,
   ScanFileChangeSchema,
   ScanManifestSchema,
@@ -67,6 +79,25 @@ import { MIGRATIONS, type Migration } from "./migrations.js";
 
 export interface DriftStorageOptions {
   databasePath: string;
+}
+
+export interface StoredSecurityBoundaryProofRun {
+  storage_id: string;
+  proof_id: string;
+  repo_id: string;
+  scan_id: string;
+  check_id: string;
+  route_id: string;
+  file_path: string;
+  contract_kinds: string[];
+  capability_names: string[];
+  proof_status: "proven" | "violated" | "missing_proof" | "parser_gap" | "advisory_only";
+  enforcement_result: "pass" | "brief" | "warn" | "block";
+  parser_gap_count: number;
+  missing_proof_count: number;
+  affected_files: string[];
+  proof: SecurityBoundaryProof;
+  created_at: string;
 }
 
 type DatabaseHandle = Database.Database;
@@ -120,6 +151,10 @@ export class SqliteDriftStorage {
     }
     if (migration.id === "010_audit_sequence") {
       this.applyAuditSequenceMigration();
+      return;
+    }
+    if (migration.id === "023_parser_gap_v2_metadata") {
+      this.applyParserGapV2Migration();
       return;
     }
 
@@ -198,6 +233,48 @@ export class SqliteDriftStorage {
   private auditEventsColumnExists(columnName: string): boolean {
     return this.db
       .prepare("PRAGMA table_info(audit_events)")
+      .all()
+      .some((row) => rowValue<string>(row, "name") === columnName);
+  }
+
+  private applyParserGapV2Migration(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS parser_gaps (
+        gap_id TEXT PRIMARY KEY,
+        schema_version TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        start_line INTEGER NOT NULL,
+        end_line INTEGER NOT NULL,
+        confidence_impact TEXT NOT NULL,
+        message TEXT NOT NULL,
+        evidence_refs_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+    `);
+    for (const [column, definition] of [
+      ["source_text_hash", "TEXT"],
+      ["affected_capabilities_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["affected_contract_kinds_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["suggested_action", "TEXT"]
+    ] as const) {
+      if (!this.parserGapsColumnExists(column)) {
+        this.db.exec(`ALTER TABLE parser_gaps ADD COLUMN ${column} ${definition};`);
+      }
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_parser_gaps_repo_capability
+        ON parser_gaps(repo_id, scan_id);
+    `);
+  }
+
+  private parserGapsColumnExists(columnName: string): boolean {
+    return this.db
+      .prepare("PRAGMA table_info(parser_gaps)")
       .all()
       .some((row) => rowValue<string>(row, "name") === columnName);
   }
@@ -445,6 +522,143 @@ export class SqliteDriftStorage {
     return rows.map(factFromRow);
   }
 
+  upsertFrameworkScanData(input: {
+    repoId: string;
+    scanId: string;
+    adapters: FrameworkAdapter[];
+    entrypoints: NormalizedEntrypointFact[];
+    parserGaps: FrameworkParserGap[];
+    capabilities: FrameworkCapability[];
+  }): void {
+    const adapters = input.adapters.map((adapter) => FrameworkAdapterSchema.parse(adapter));
+    const entrypoints = input.entrypoints.map((entrypoint) => NormalizedEntrypointFactSchema.parse(entrypoint));
+    const parserGaps = input.parserGaps.map((gap) => FrameworkParserGapSchema.parse(gap));
+    const capabilities = input.capabilities.map((capability) => FrameworkCapabilitySchema.parse(capability));
+    const deleteAdapters = this.db.prepare("DELETE FROM framework_adapters WHERE repo_id = ? AND scan_id = ?");
+    const deleteEntrypoints = this.db.prepare("DELETE FROM normalized_entrypoints WHERE repo_id = ? AND scan_id = ?");
+    const deleteParserGaps = this.db.prepare("DELETE FROM framework_parser_gaps WHERE repo_id = ? AND scan_id = ?");
+    const deleteCapabilities = this.db.prepare("DELETE FROM framework_capabilities WHERE repo_id = ? AND scan_id = ?");
+    const insertAdapter = this.db.prepare(`
+      INSERT INTO framework_adapters (
+        repo_id, scan_id, adapter_id, framework, adapter_json
+      )
+      VALUES (
+        @repo_id, @scan_id, @adapter_id, @framework, @adapter_json
+      )
+    `);
+    const insertEntrypoint = this.db.prepare(`
+      INSERT INTO normalized_entrypoints (
+        repo_id, scan_id, entrypoint_id, adapter_id, framework, kind, file_path,
+        route_pattern, method, entrypoint_json
+      )
+      VALUES (
+        @repo_id, @scan_id, @entrypoint_id, @adapter_id, @framework, @kind, @file_path,
+        @route_pattern, @method, @entrypoint_json
+      )
+    `);
+    const insertParserGap = this.db.prepare(`
+      INSERT INTO framework_parser_gaps (
+        repo_id, scan_id, parser_gap_id, adapter_id, framework, file_path, code,
+        blocks_enforcement, parser_gap_json
+      )
+      VALUES (
+        @repo_id, @scan_id, @parser_gap_id, @adapter_id, @framework, @file_path, @code,
+        @blocks_enforcement, @parser_gap_json
+      )
+    `);
+    const insertCapability = this.db.prepare(`
+      INSERT INTO framework_capabilities (
+        repo_id, scan_id, adapter_id, framework, capability, status, can_block, capability_json
+      )
+      VALUES (
+        @repo_id, @scan_id, @adapter_id, @framework, @capability, @status, @can_block, @capability_json
+      )
+    `);
+
+    this.db.transaction(() => {
+      deleteAdapters.run(input.repoId, input.scanId);
+      deleteEntrypoints.run(input.repoId, input.scanId);
+      deleteParserGaps.run(input.repoId, input.scanId);
+      deleteCapabilities.run(input.repoId, input.scanId);
+      for (const adapter of adapters) {
+        insertAdapter.run({
+          repo_id: input.repoId,
+          scan_id: input.scanId,
+          adapter_id: adapter.adapter_id,
+          framework: adapter.framework,
+          adapter_json: stringifyJson(adapter)
+        });
+      }
+      for (const entrypoint of entrypoints) {
+        insertEntrypoint.run({
+          repo_id: entrypoint.repo_id,
+          scan_id: entrypoint.scan_id,
+          entrypoint_id: entrypoint.entrypoint_id,
+          adapter_id: entrypoint.adapter_id,
+          framework: entrypoint.framework,
+          kind: entrypoint.kind,
+          file_path: entrypoint.file_path,
+          route_pattern: entrypoint.route_pattern ?? null,
+          method: entrypoint.method ?? null,
+          entrypoint_json: stringifyJson(entrypoint)
+        });
+      }
+      for (const gap of parserGaps) {
+        insertParserGap.run({
+          repo_id: gap.repo_id,
+          scan_id: gap.scan_id,
+          parser_gap_id: gap.parser_gap_id,
+          adapter_id: gap.adapter_id,
+          framework: gap.framework ?? null,
+          file_path: gap.file_path,
+          code: gap.code,
+          blocks_enforcement: gap.blocks_enforcement ? 1 : 0,
+          parser_gap_json: stringifyJson(gap)
+        });
+      }
+      for (const capability of capabilities) {
+        insertCapability.run({
+          repo_id: input.repoId,
+          scan_id: input.scanId,
+          adapter_id: capability.adapter_id,
+          framework: capability.framework,
+          capability: capability.capability,
+          status: capability.status,
+          can_block: capability.can_block ? 1 : 0,
+          capability_json: stringifyJson(capability)
+        });
+      }
+    })();
+  }
+
+  listFrameworkAdapters(repoId: string, scanId: string): FrameworkAdapter[] {
+    return this.db
+      .prepare("SELECT adapter_json FROM framework_adapters WHERE repo_id = ? AND scan_id = ? ORDER BY framework, adapter_id")
+      .all(repoId, scanId)
+      .map(frameworkAdapterFromRow);
+  }
+
+  listNormalizedEntrypoints(repoId: string, scanId: string): NormalizedEntrypointFact[] {
+    return this.db
+      .prepare("SELECT entrypoint_json FROM normalized_entrypoints WHERE repo_id = ? AND scan_id = ? ORDER BY framework, file_path, entrypoint_id")
+      .all(repoId, scanId)
+      .map(normalizedEntrypointFromRow);
+  }
+
+  listFrameworkParserGaps(repoId: string, scanId: string): FrameworkParserGap[] {
+    return this.db
+      .prepare("SELECT parser_gap_json FROM framework_parser_gaps WHERE repo_id = ? AND scan_id = ? ORDER BY file_path, parser_gap_id")
+      .all(repoId, scanId)
+      .map(frameworkParserGapFromRow);
+  }
+
+  listFrameworkCapabilities(repoId: string, scanId: string): FrameworkCapability[] {
+    return this.db
+      .prepare("SELECT capability_json FROM framework_capabilities WHERE repo_id = ? AND scan_id = ? ORDER BY framework, capability, adapter_id")
+      .all(repoId, scanId)
+      .map(frameworkCapabilityFromRow);
+  }
+
   upsertParserGaps(gaps: ParserGap[]): void {
     const parsedGaps = deduplicateParserGaps(gaps.map((gap) => ParserGapSchema.parse(gap)));
     const insert = this.db.prepare(`
@@ -481,16 +695,74 @@ export class SqliteDriftStorage {
     transaction();
   }
 
+  upsertParserGapV2(gaps: ParserGapV2[]): void {
+    const parsedGaps = gaps.map((gap) => ParserGapV2Schema.parse(gap));
+    const insert = this.db.prepare(`
+      INSERT INTO parser_gaps (
+        gap_id, schema_version, repo_id, scan_id, kind, file_path, start_line, end_line,
+        confidence_impact, message, evidence_refs_json, created_at, source_text_hash,
+        affected_capabilities_json, affected_contract_kinds_json, suggested_action
+      )
+      VALUES (
+        @gap_id, @schema_version, @repo_id, @scan_id, @kind, @file_path, @start_line, @end_line,
+        @confidence_impact, @message, @evidence_refs_json, @created_at, @source_text_hash,
+        @affected_capabilities_json, @affected_contract_kinds_json, @suggested_action
+      )
+      ON CONFLICT(gap_id) DO UPDATE SET
+        schema_version = excluded.schema_version,
+        repo_id = excluded.repo_id,
+        scan_id = excluded.scan_id,
+        kind = excluded.kind,
+        file_path = excluded.file_path,
+        start_line = excluded.start_line,
+        end_line = excluded.end_line,
+        confidence_impact = excluded.confidence_impact,
+        message = excluded.message,
+        evidence_refs_json = excluded.evidence_refs_json,
+        source_text_hash = excluded.source_text_hash,
+        affected_capabilities_json = excluded.affected_capabilities_json,
+        affected_contract_kinds_json = excluded.affected_contract_kinds_json,
+        suggested_action = excluded.suggested_action
+    `);
+
+    const transaction = this.db.transaction(() => {
+      for (const gap of parsedGaps) {
+        insert.run({
+          ...gap,
+          gap_id: gap.parser_gap_id,
+          created_at: new Date(0).toISOString(),
+          source_text_hash: gap.source_text_hash ?? null,
+          evidence_refs_json: JSON.stringify(gap.evidence_refs),
+          affected_capabilities_json: JSON.stringify(gap.affected_capabilities),
+          affected_contract_kinds_json: JSON.stringify(gap.affected_contract_kinds)
+        });
+      }
+    });
+    transaction();
+  }
+
   listParserGaps(repoId: string, scanId?: string): ParserGap[] {
     const rows = scanId
       ? this.db
-          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND scan_id = ? ORDER BY file_path, start_line, gap_id")
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND scan_id = ? AND schema_version = 'drift.parser_gap.v1' ORDER BY file_path, start_line, gap_id")
           .all(repoId, scanId)
       : this.db
-          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? ORDER BY scan_id, file_path, start_line, gap_id")
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND schema_version = 'drift.parser_gap.v1' ORDER BY scan_id, file_path, start_line, gap_id")
           .all(repoId);
 
     return rows.map(parserGapFromRow);
+  }
+
+  listParserGapV2(repoId: string, scanId?: string): ParserGapV2[] {
+    const rows = scanId
+      ? this.db
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND scan_id = ? AND schema_version = 'drift.parser_gap.v2' ORDER BY file_path, start_line, gap_id")
+          .all(repoId, scanId)
+      : this.db
+          .prepare("SELECT * FROM parser_gaps WHERE repo_id = ? AND schema_version = 'drift.parser_gap.v2' ORDER BY scan_id, file_path, start_line, gap_id")
+          .all(repoId);
+
+    return rows.map(parserGapV2FromRow);
   }
 
   upsertScanCapabilityReport(report: ScanCapabilityReport): void {
@@ -544,6 +816,199 @@ export class SqliteDriftStorage {
       .prepare("SELECT * FROM scan_capability_reports WHERE repo_id = ? AND scan_id = ?")
       .get(repoId, scanId);
     return row ? scanCapabilityReportFromRow(row) : undefined;
+  }
+
+  upsertSecurityBoundaryProofs(input: {
+    repo_id: string;
+    scan_id: string;
+    proofs: SecurityBoundaryProof[];
+    created_at: string;
+  }): void {
+    const proofs = input.proofs.map((proof) => SecurityBoundaryProofSchema.parse(proof));
+    const insert = this.db.prepare(`
+      INSERT INTO security_boundary_proofs (
+        proof_id, repo_id, scan_id, route_id, file_path, contract_kinds_json,
+        proof_status, enforcement_result, proof_json, created_at
+      )
+      VALUES (
+        @proof_id, @repo_id, @scan_id, @route_id, @file_path, @contract_kinds_json,
+        @proof_status, @enforcement_result, @proof_json, @created_at
+      )
+      ON CONFLICT(proof_id) DO UPDATE SET
+        repo_id = excluded.repo_id,
+        scan_id = excluded.scan_id,
+        route_id = excluded.route_id,
+        file_path = excluded.file_path,
+        contract_kinds_json = excluded.contract_kinds_json,
+        proof_status = excluded.proof_status,
+        enforcement_result = excluded.enforcement_result,
+        proof_json = excluded.proof_json,
+        created_at = excluded.created_at
+    `);
+    const transaction = this.db.transaction(() => {
+      for (const proof of proofs) {
+        insert.run({
+          proof_id: proof.proof_id,
+          repo_id: input.repo_id,
+          scan_id: input.scan_id,
+          route_id: proof.route.route_id,
+          file_path: proof.route.file_path,
+          contract_kinds_json: stringifyJson(proof.contracts.map((contract) => contract.kind)),
+          proof_status: proof.result.proof_status,
+          enforcement_result: proof.result.enforcement_result,
+          proof_json: stringifyJson(proof),
+          created_at: input.created_at
+        });
+      }
+    });
+    transaction();
+  }
+
+  listSecurityBoundaryProofs(repoId: string, scanId?: string): SecurityBoundaryProof[] {
+    const rows = scanId
+      ? this.db
+          .prepare("SELECT proof_json FROM security_boundary_proofs WHERE repo_id = ? AND scan_id = ? ORDER BY route_id, proof_id")
+          .all(repoId, scanId)
+      : this.db
+          .prepare("SELECT proof_json FROM security_boundary_proofs WHERE repo_id = ? ORDER BY scan_id, route_id, proof_id")
+          .all(repoId);
+
+    return rows.map((row) =>
+      SecurityBoundaryProofSchema.parse(JSON.parse(rowValue<string>(row, "proof_json")))
+    );
+  }
+
+  upsertSecurityBoundaryProofRuns(input: {
+    repo_id: string;
+    scan_id: string;
+    check_id: string;
+    proofs: SecurityBoundaryProof[];
+    created_at: string;
+  }): void {
+    const proofs = input.proofs.map((proof) => SecurityBoundaryProofSchema.parse(proof));
+    const insert = this.db.prepare(`
+      INSERT INTO security_boundary_proof_runs (
+        storage_id, proof_id, repo_id, scan_id, check_id, route_id, file_path,
+        contract_kinds_json, capability_names_json, proof_status, enforcement_result,
+        parser_gap_count, missing_proof_count, affected_files_json, proof_json, created_at
+      )
+      VALUES (
+        @storage_id, @proof_id, @repo_id, @scan_id, @check_id, @route_id, @file_path,
+        @contract_kinds_json, @capability_names_json, @proof_status, @enforcement_result,
+        @parser_gap_count, @missing_proof_count, @affected_files_json, @proof_json, @created_at
+      )
+      ON CONFLICT(check_id, proof_id) DO UPDATE SET
+        route_id = excluded.route_id,
+        file_path = excluded.file_path,
+        contract_kinds_json = excluded.contract_kinds_json,
+        capability_names_json = excluded.capability_names_json,
+        proof_status = excluded.proof_status,
+        enforcement_result = excluded.enforcement_result,
+        parser_gap_count = excluded.parser_gap_count,
+        missing_proof_count = excluded.missing_proof_count,
+        affected_files_json = excluded.affected_files_json,
+        proof_json = excluded.proof_json,
+        created_at = excluded.created_at
+    `);
+    const transaction = this.db.transaction(() => {
+      for (const proof of proofs) {
+        const affectedFiles = [...new Set([
+          proof.route.file_path,
+          ...proof.parser_gaps.map((gap) => gap.file_path)
+        ])].sort();
+        insert.run({
+          storage_id: `${input.check_id}:${proof.proof_id}`,
+          proof_id: proof.proof_id,
+          repo_id: input.repo_id,
+          scan_id: input.scan_id,
+          check_id: input.check_id,
+          route_id: proof.route.route_id,
+          file_path: proof.route.file_path,
+          contract_kinds_json: stringifyJson(proof.contracts.map((contract) => contract.kind)),
+          capability_names_json: stringifyJson(proof.capability_status.map((status) => status.name)),
+          proof_status: proof.result.proof_status,
+          enforcement_result: proof.result.enforcement_result,
+          parser_gap_count: proof.parser_gaps.length,
+          missing_proof_count: proof.missing_proof.length,
+          affected_files_json: stringifyJson(affectedFiles),
+          proof_json: stringifyJson(proof),
+          created_at: input.created_at
+        });
+      }
+    });
+    transaction();
+  }
+
+  listSecurityBoundaryProofRuns(input: {
+    repo_id: string;
+    scan_id?: string;
+    check_id?: string;
+    file_path?: string;
+    route_id?: string;
+    contract_kind?: string;
+    latest_only?: boolean;
+  }): StoredSecurityBoundaryProofRun[] {
+    const clauses = ["repo_id = ?"];
+    const params: unknown[] = [input.repo_id];
+    if (input.scan_id) {
+      clauses.push("scan_id = ?");
+      params.push(input.scan_id);
+    }
+    if (input.check_id) {
+      clauses.push("check_id = ?");
+      params.push(input.check_id);
+    }
+    if (input.file_path) {
+      clauses.push("file_path = ?");
+      params.push(input.file_path);
+    }
+    if (input.route_id) {
+      clauses.push("route_id = ?");
+      params.push(input.route_id);
+    }
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM security_boundary_proof_runs
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY created_at DESC, route_id, proof_id
+      `)
+      .all(...params)
+      .map(securityBoundaryProofRunFromRow);
+    const filtered = input.contract_kind
+      ? rows.filter((row) => row.contract_kinds.includes(input.contract_kind as string))
+      : rows;
+    if (!input.latest_only) {
+      return filtered;
+    }
+    const latestCheckId = filtered[0]?.check_id;
+    return latestCheckId ? filtered.filter((row) => row.check_id === latestCheckId) : [];
+  }
+
+  listLatestSecurityBoundaryProofRunsForRepo(input: {
+    repo_id: string;
+    file_path?: string;
+    check_id?: string;
+  }): StoredSecurityBoundaryProofRun[] {
+    const clauses = ["repo_id = ?"];
+    const params: unknown[] = [input.repo_id];
+    if (input.check_id) {
+      clauses.push("check_id = ?");
+      params.push(input.check_id);
+    }
+    if (input.file_path) {
+      clauses.push("file_path = ?");
+      params.push(input.file_path);
+    }
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM security_boundary_proof_runs
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY created_at DESC, check_id DESC, proof_id ASC
+      `)
+      .all(...params)
+      .map(securityBoundaryProofRunFromRow);
+    const latestCheckId = rows[0]?.check_id;
+    return latestCheckId ? rows.filter((row) => row.check_id === latestCheckId) : [];
   }
 
   upsertSymbolIdentities(identities: SymbolIdentity[]): void {
@@ -1022,12 +1487,16 @@ export class SqliteDriftStorage {
       .prepare(`
         INSERT INTO convention_candidates (
           id, repo_id, scan_id, kind, statement, rationale, scope_json, matcher_json,
+          requires_json, matcher_fingerprint, scope_fingerprint, graph_fingerprint,
+          evidence_fingerprint, required_capabilities_json, reason_not_blocking,
           suggested_severity, suggested_enforcement_mode, enforcement_capability,
           confidence_label, scoring_json, evidence_refs_json, counterexample_refs_json,
           status, created_at
         )
         VALUES (
           @id, @repo_id, @scan_id, @kind, @statement, @rationale, @scope_json, @matcher_json,
+          @requires_json, @matcher_fingerprint, @scope_fingerprint, @graph_fingerprint,
+          @evidence_fingerprint, @required_capabilities_json, @reason_not_blocking,
           @suggested_severity, @suggested_enforcement_mode, @enforcement_capability,
           @confidence_label, @scoring_json, @evidence_refs_json, @counterexample_refs_json,
           @status, @created_at
@@ -1037,6 +1506,13 @@ export class SqliteDriftStorage {
           rationale = excluded.rationale,
           scope_json = excluded.scope_json,
           matcher_json = excluded.matcher_json,
+          requires_json = excluded.requires_json,
+          matcher_fingerprint = excluded.matcher_fingerprint,
+          scope_fingerprint = excluded.scope_fingerprint,
+          graph_fingerprint = excluded.graph_fingerprint,
+          evidence_fingerprint = excluded.evidence_fingerprint,
+          required_capabilities_json = excluded.required_capabilities_json,
+          reason_not_blocking = excluded.reason_not_blocking,
           suggested_severity = excluded.suggested_severity,
           suggested_enforcement_mode = excluded.suggested_enforcement_mode,
           enforcement_capability = excluded.enforcement_capability,
@@ -1044,13 +1520,27 @@ export class SqliteDriftStorage {
           scoring_json = excluded.scoring_json,
           evidence_refs_json = excluded.evidence_refs_json,
           counterexample_refs_json = excluded.counterexample_refs_json,
-          status = excluded.status
+          status = CASE
+            WHEN convention_candidates.status = 'rejected'
+              AND COALESCE(convention_candidates.evidence_fingerprint, '') = COALESCE(excluded.evidence_fingerprint, '')
+            THEN convention_candidates.status
+            ELSE excluded.status
+          END
       `)
       .run({
         ...parsed,
         rationale: parsed.rationale ?? null,
         scope_json: stringifyJson(parsed.scope),
         matcher_json: stringifyJson(parsed.matcher),
+        requires_json: parsed.requires ? stringifyJson(parsed.requires) : null,
+        matcher_fingerprint: parsed.matcher_fingerprint ?? null,
+        scope_fingerprint: parsed.scope_fingerprint ?? null,
+        graph_fingerprint: parsed.graph_fingerprint ?? null,
+        evidence_fingerprint: parsed.evidence_fingerprint ?? null,
+        required_capabilities_json: parsed.required_capabilities
+          ? stringifyJson(parsed.required_capabilities)
+          : null,
+        reason_not_blocking: parsed.reason_not_blocking ?? null,
         scoring_json: stringifyJson(parsed.scoring),
         evidence_refs_json: stringifyJson(parsed.evidence_refs),
         counterexample_refs_json: stringifyJson(parsed.counterexample_refs)
@@ -1085,13 +1575,13 @@ export class SqliteDriftStorage {
       .prepare(`
         INSERT INTO accepted_conventions (
           id, repo_id, contract_id, kind, statement, rationale, scope_json, matcher_json,
-          severity, enforcement_mode, enforcement_capability, exceptions_json,
+          requires_json, severity, enforcement_mode, enforcement_capability, exceptions_json,
           evidence_refs_json, counterexample_refs_json, accepted_by, accepted_at,
           updated_at, expires_at
         )
         VALUES (
           @id, @repo_id, @contract_id, @kind, @statement, @rationale, @scope_json, @matcher_json,
-          @severity, @enforcement_mode, @enforcement_capability, @exceptions_json,
+          @requires_json, @severity, @enforcement_mode, @enforcement_capability, @exceptions_json,
           @evidence_refs_json, @counterexample_refs_json, @accepted_by, @accepted_at,
           @updated_at, @expires_at
         )
@@ -1101,6 +1591,7 @@ export class SqliteDriftStorage {
           rationale = excluded.rationale,
           scope_json = excluded.scope_json,
           matcher_json = excluded.matcher_json,
+          requires_json = excluded.requires_json,
           severity = excluded.severity,
           enforcement_mode = excluded.enforcement_mode,
           enforcement_capability = excluded.enforcement_capability,
@@ -1116,6 +1607,7 @@ export class SqliteDriftStorage {
         rationale: parsed.rationale ?? null,
         scope_json: stringifyJson(parsed.scope),
         matcher_json: stringifyJson(parsed.matcher),
+        requires_json: parsed.requires ? stringifyJson(parsed.requires) : null,
         exceptions_json: stringifyJson(parsed.exceptions),
         evidence_refs_json: stringifyJson(parsed.evidence_refs),
         counterexample_refs_json: stringifyJson(parsed.counterexample_refs),
@@ -1538,6 +2030,41 @@ function parserGapFromRow(row: unknown): ParserGap {
   });
 }
 
+function parserGapV2FromRow(row: unknown): ParserGapV2 {
+  const record = row as Record<string, unknown>;
+  return ParserGapV2Schema.parse({
+    ...record,
+    parser_gap_id: record.gap_id,
+    source_text_hash: record.source_text_hash ?? undefined,
+    affected_capabilities: parseJsonArray(record.affected_capabilities_json),
+    affected_contract_kinds: parseJsonArray(record.affected_contract_kinds_json),
+    suggested_action: record.suggested_action,
+    evidence_refs: typeof record.evidence_refs_json === "string"
+      ? JSON.parse(record.evidence_refs_json) as unknown
+      : []
+  });
+}
+
+function frameworkAdapterFromRow(row: unknown): FrameworkAdapter {
+  const record = row as Record<string, unknown>;
+  return FrameworkAdapterSchema.parse(parseJsonObject(record.adapter_json));
+}
+
+function normalizedEntrypointFromRow(row: unknown): NormalizedEntrypointFact {
+  const record = row as Record<string, unknown>;
+  return NormalizedEntrypointFactSchema.parse(parseJsonObject(record.entrypoint_json));
+}
+
+function frameworkParserGapFromRow(row: unknown): FrameworkParserGap {
+  const record = row as Record<string, unknown>;
+  return FrameworkParserGapSchema.parse(parseJsonObject(record.parser_gap_json));
+}
+
+function frameworkCapabilityFromRow(row: unknown): FrameworkCapability {
+  const record = row as Record<string, unknown>;
+  return FrameworkCapabilitySchema.parse(parseJsonObject(record.capability_json));
+}
+
 function scanCapabilityReportFromRow(row: unknown): ScanCapabilityReport {
   const record = row as Record<string, unknown>;
   return ScanCapabilityReportSchema.parse({
@@ -1552,6 +2079,34 @@ function scanCapabilityReportFromRow(row: unknown): ScanCapabilityReport {
     fallback_used: record.fallback_used === 1,
     enforcement_degraded: record.enforcement_degraded === 1
   });
+}
+
+function securityBoundaryProofRunFromRow(row: unknown): StoredSecurityBoundaryProofRun {
+  const record = row as Record<string, unknown>;
+  return {
+    storage_id: rowValue<string>(row, "storage_id"),
+    proof_id: rowValue<string>(row, "proof_id"),
+    repo_id: rowValue<string>(row, "repo_id"),
+    scan_id: rowValue<string>(row, "scan_id"),
+    check_id: rowValue<string>(row, "check_id"),
+    route_id: rowValue<string>(row, "route_id"),
+    file_path: rowValue<string>(row, "file_path"),
+    contract_kinds: parseJsonArray(record.contract_kinds_json).filter((value): value is string =>
+      typeof value === "string"
+    ),
+    capability_names: parseJsonArray(record.capability_names_json).filter((value): value is string =>
+      typeof value === "string"
+    ),
+    proof_status: rowValue<StoredSecurityBoundaryProofRun["proof_status"]>(row, "proof_status"),
+    enforcement_result: rowValue<StoredSecurityBoundaryProofRun["enforcement_result"]>(row, "enforcement_result"),
+    parser_gap_count: rowValue<number>(row, "parser_gap_count"),
+    missing_proof_count: rowValue<number>(row, "missing_proof_count"),
+    affected_files: parseJsonArray(record.affected_files_json).filter((value): value is string =>
+      typeof value === "string"
+    ),
+    proof: SecurityBoundaryProofSchema.parse(JSON.parse(rowValue<string>(row, "proof_json"))),
+    created_at: rowValue<string>(row, "created_at")
+  };
 }
 
 function deduplicateParserGaps(gaps: ParserGap[]): ParserGap[] {
@@ -1697,9 +2252,18 @@ function conventionCandidateFromRow(row: unknown): ConventionCandidate {
     rationale: record.rationale ?? undefined,
     scope: parseJsonObject(record.scope_json),
     matcher: parseJsonObject(record.matcher_json),
+    requires: record.requires_json ? parseJsonObject(record.requires_json) : undefined,
     scoring: parseJsonObject(record.scoring_json),
     evidence_refs: parseJsonArray(record.evidence_refs_json),
-    counterexample_refs: parseJsonArray(record.counterexample_refs_json)
+    counterexample_refs: parseJsonArray(record.counterexample_refs_json),
+    matcher_fingerprint: record.matcher_fingerprint ?? undefined,
+    scope_fingerprint: record.scope_fingerprint ?? undefined,
+    graph_fingerprint: record.graph_fingerprint ?? undefined,
+    evidence_fingerprint: record.evidence_fingerprint ?? undefined,
+    required_capabilities: record.required_capabilities_json
+      ? parseJsonArray(record.required_capabilities_json)
+      : undefined,
+    reason_not_blocking: record.reason_not_blocking ?? undefined
   });
 }
 
@@ -1710,6 +2274,7 @@ function acceptedConventionFromRow(row: unknown): AcceptedConvention {
     rationale: record.rationale ?? undefined,
     scope: parseJsonObject(record.scope_json),
     matcher: parseJsonObject(record.matcher_json),
+    requires: record.requires_json ? parseJsonObject(record.requires_json) : undefined,
     exceptions: parseJsonArray(record.exceptions_json),
     evidence_refs: parseJsonArray(record.evidence_refs_json),
     counterexample_refs: parseJsonArray(record.counterexample_refs_json),

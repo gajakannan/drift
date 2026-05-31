@@ -1,4 +1,4 @@
-import type { ParserGap } from "@drift/core";
+import type { ParserGap, ParserGapV2 } from "@drift/core";
 
 export type DriftReadinessSurface =
   | "scan_status"
@@ -32,11 +32,13 @@ export interface BuildReadinessInput {
   surface: DriftReadinessSurface;
   graph_available: boolean;
   graph_complete: boolean;
-  parser_gaps?: ParserGap[];
+  parser_gaps?: ParserGapLike[];
   completeness_reasons?: string[];
   required_capabilities?: string[];
   missing_capabilities?: string[];
 }
+
+export type ParserGapLike = ParserGap | ParserGapV2;
 
 export function buildReadiness(input: BuildReadinessInput): DriftReadiness {
   const parserGaps = input.parser_gaps ?? [];
@@ -86,7 +88,7 @@ export function buildReadiness(input: BuildReadinessInput): DriftReadiness {
 function readinessDecision(input: {
   graphAvailable: boolean;
   graphComplete: boolean;
-  parserGaps: ParserGap[];
+  parserGaps: ParserGapLike[];
   missingCapabilities: string[];
 }): DriftReadinessDecision {
   if (!input.graphAvailable || !input.graphComplete || input.missingCapabilities.length > 0) {
@@ -104,7 +106,7 @@ function readinessDecision(input: {
 function readinessConfidence(input: {
   graphAvailable: boolean;
   graphComplete: boolean;
-  parserGaps: ParserGap[];
+  parserGaps: ParserGapLike[];
 }): number {
   if (!input.graphAvailable) {
     return 0;
@@ -121,7 +123,7 @@ function readinessConfidence(input: {
   return 1;
 }
 
-function blockingParserGapReasons(parserGaps: ParserGap[]): string[] {
+function blockingParserGapReasons(parserGaps: ParserGapLike[]): string[] {
   return parserGaps.some((gap) => gap.confidence_impact === "blocks_enforcement")
     ? ["parser_gap_blocks_enforcement"]
     : [];

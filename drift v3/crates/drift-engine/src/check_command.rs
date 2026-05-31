@@ -7,13 +7,16 @@ use std::{
 
 use drift_engine::{
     AcceptedAuthHelper, AcceptedAuthorizationHelper, AcceptedHelperImport,
-    AcceptedRequestValidator, AcceptedTenantHelper, AuthGuardBehavior, AuthorizationHelperBehavior,
-    AuthorizationHelperKind, BaselineStatus, BaselineViolation, DiffFile, DiffScope,
-    DirectDataAccessRule, EnforcementMode, Fact, FactKind, FindingStatus, ParsedDiff,
-    Phase4SecurityPolicy, RequestValidatorBehavior, RequestValidatorKind,
-    RouteSecurityBoundaryProof, RuleFinding, SecurityBoundaryProof, SecurityProofStatus, Severity,
+    AcceptedRequestValidator, AcceptedSecurityHelper, AcceptedTenantHelper, AuthGuardBehavior,
+    AuthorizationHelperBehavior, AuthorizationHelperKind, BaselineStatus, BaselineViolation,
+    DiffFile, DiffScope, DirectDataAccessRule, EnforcementMode, Fact, FactKind, FindingStatus,
+    ParsedDiff, Phase4SecurityPolicy, Phase6AcceptedHelper, Phase6CorsContract,
+    Phase6RawSqlContract, Phase6SecurityContract, Phase6SecurityProof, Phase6SsrfContract,
+    RequestValidatorBehavior, RequestValidatorKind, RouteSecurityBoundaryProof, RuleFinding,
+    SecurityBoundaryProof, SecurityProofStatus, Severity, accepted_phase5_contract_from_requires,
     build_auth_boundary_proofs_for_file, build_phase4_security_proof_with_policy,
-    classify_findings_against_diff, materialize_direct_data_access_findings,
+    build_phase6_security_proofs_for_file, classify_findings_against_diff,
+    materialize_direct_data_access_findings, phase6_proof_to_json,
 };
 use serde_json::json;
 
@@ -153,6 +156,68 @@ pub fn check_repo(request: CheckRequest) -> CheckResult {
             );
             security_boundary_proofs.extend(validation_result.proofs);
             validation_result.findings
+        } else if is_phase6_security_convention(&convention.kind) {
+            required_capabilities.extend(phase6_required_capabilities(&convention.kind));
+            let phase6_result = security_phase6_findings_and_proofs(
+                &facts,
+                repo_root.as_deref(),
+                &parsed_diff,
+                diff_scope,
+                &convention,
+                severity,
+                enforcement_mode,
+            );
+            security_boundary_proofs.extend(phase6_result.proofs);
+            phase6_result.findings
+        } else if convention.kind == "api_route_forbids_sensitive_response_fields" {
+            let has_phase5_inputs = convention
+                .requires
+                .as_ref()
+                .and_then(accepted_phase5_contract_from_requires)
+                .is_some_and(|accepted| {
+                    !accepted.sensitive_response_fields.is_empty()
+                        || !accepted.response_serializers.is_empty()
+                });
+            if has_phase5_inputs {
+                required_capabilities.extend([
+                    "security_facts".to_string(),
+                    "response_shape_facts".to_string(),
+                ]);
+            }
+            let phase5_result = security_phase5_findings_and_proofs(
+                &facts,
+                repo_root.as_deref(),
+                &parsed_diff,
+                diff_scope,
+                &convention,
+                severity,
+                enforcement_mode,
+            );
+            security_boundary_proofs.extend(phase5_result.proofs);
+            phase5_result.findings
+        } else if convention.kind == "api_route_forbids_secret_exposure" {
+            let has_phase5_inputs = convention
+                .requires
+                .as_ref()
+                .and_then(accepted_phase5_contract_from_requires)
+                .is_some_and(|accepted| {
+                    !accepted.secret_sources.is_empty() || !accepted.log_sinks.is_empty()
+                });
+            if has_phase5_inputs {
+                required_capabilities
+                    .extend(["security_facts".to_string(), "secret_exposure".to_string()]);
+            }
+            let phase5_result = security_phase5_findings_and_proofs(
+                &facts,
+                repo_root.as_deref(),
+                &parsed_diff,
+                diff_scope,
+                &convention,
+                severity,
+                enforcement_mode,
+            );
+            security_boundary_proofs.extend(phase5_result.proofs);
+            phase5_result.findings
         } else if convention.kind == "api_route_requires_tenant_scope"
             || convention.kind == "api_route_requires_authorization"
             || convention.kind == "session_object_must_come_from_trusted_helper"
@@ -544,6 +609,16 @@ struct SecurityPhase4Evaluation {
     proofs: Vec<serde_json::Value>,
 }
 
+struct SecurityPhase5Evaluation {
+    findings: Vec<PendingFinding>,
+    proofs: Vec<serde_json::Value>,
+}
+
+struct SecurityPhase6Evaluation {
+    findings: Vec<PendingFinding>,
+    proofs: Vec<serde_json::Value>,
+}
+
 fn security_auth_findings_and_proofs(
     facts: &[Fact],
     repo_root: Option<&str>,
@@ -735,6 +810,416 @@ fn security_request_validation_findings_and_proofs(
     SecurityRequestValidationEvaluation { findings, proofs }
 }
 
+fn security_phase6_findings_and_proofs(
+    facts: &[Fact],
+    repo_root: Option<&str>,
+    parsed_diff: &ParsedDiff,
+    diff_scope: DiffScope,
+    convention: &crate::protocol::CheckConvention,
+    severity: Severity,
+    enforcement_mode: EnforcementMode,
+) -> SecurityPhase6Evaluation {
+    let Some(contract) = phase6_contract_for_convention(convention) else {
+        return SecurityPhase6Evaluation {
+            findings: Vec::new(),
+            proofs: Vec::new(),
+        };
+    };
+    if convention
+        .matcher
+        .applies_to_file_roles
+        .as_ref()
+        .or(convention.matcher.file_roles.as_ref())
+        .is_some_and(|roles| !roles.iter().any(|role| role == "api_route"))
+    {
+        return SecurityPhase6Evaluation {
+            findings: Vec::new(),
+            proofs: Vec::new(),
+        };
+    }
+
+    let allowed_methods = convention
+        .matcher
+        .methods
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|method| method.to_uppercase())
+        .collect::<Vec<_>>();
+    let route_paths = phase6_route_paths(convention, &contract);
+    let files = security_auth_files(facts, parsed_diff, diff_scope);
+    let mut findings = Vec::new();
+    let mut proofs = Vec::new();
+
+    for file_path in files {
+        if !path_matches_globs(&file_path, convention.matcher.path_globs.as_deref()) {
+            continue;
+        }
+        if !route_paths.is_empty() {
+            let route_path = route_path_from_file(&file_path);
+            if route_path.is_none_or(|route_path| !route_paths.contains(&route_path)) {
+                continue;
+            }
+        }
+        if !allowed_methods.is_empty()
+            && !route_methods_for_file(facts, &file_path)
+                .iter()
+                .any(|method| allowed_methods.contains(method))
+        {
+            continue;
+        }
+        let Some(source) = read_repo_file(repo_root, &file_path) else {
+            continue;
+        };
+        let route_proofs =
+            match build_phase6_security_proofs_for_file(&file_path, &source, &contract) {
+                Ok(route_proofs) => route_proofs,
+                Err(_) => continue,
+            };
+        for proof in route_proofs {
+            if !allowed_methods.is_empty() && !allowed_methods.contains(&proof.handler_symbol) {
+                continue;
+            }
+            if !phase6_proof_required_for_contract(&proof, &convention.kind) {
+                continue;
+            }
+            let missing_code = phase6_missing_code(&proof, &convention.kind);
+            let finding_line = phase6_finding_line(&proof);
+            let finding_fingerprint = stable_hash(&format!(
+                "{}:{}:{}:{}",
+                convention.id, proof.route_id, missing_code, finding_line
+            ));
+            let finding_id = format!("finding_{}", &finding_fingerprint[..16]);
+            proofs.push(phase6_proof_to_json(
+                &proof,
+                &convention.kind,
+                &convention.id,
+                &convention.enforcement_mode,
+                (proof.result.proof_status != SecurityProofStatus::Proven)
+                    .then_some(finding_id.as_str()),
+            ));
+            if proof.result.proof_status != SecurityProofStatus::Proven {
+                let (title, message, expected_layer) = phase6_finding_text(&convention.kind);
+                findings.push(PendingFinding {
+                    fingerprint: finding_fingerprint,
+                    convention_id: convention.id.clone(),
+                    rule_id: convention.kind.clone(),
+                    title: title.to_string(),
+                    message: message.to_string(),
+                    severity,
+                    enforcement_result: enforcement_result_for_mode(enforcement_mode),
+                    file_path: proof.file_path.clone(),
+                    import_name: expected_layer.to_string(),
+                    import_source: missing_code,
+                    line: finding_line,
+                    evidence_id: format!("evidence_{}", &finding_id["finding_".len()..]),
+                    legacy_fingerprints: Vec::new(),
+                    related_node_ids: Vec::new(),
+                });
+            }
+        }
+    }
+
+    SecurityPhase6Evaluation { findings, proofs }
+}
+
+fn is_phase6_security_convention(kind: &str) -> bool {
+    matches!(
+        kind,
+        "api_route_forbids_untrusted_ssrf"
+            | "api_route_forbids_raw_sql_without_params"
+            | "api_route_cors_must_match_policy"
+            | "api_route_requires_csrf_for_mutation"
+            | "api_route_requires_rate_limit"
+    )
+}
+
+fn phase6_required_capabilities(kind: &str) -> Vec<String> {
+    let capability = match kind {
+        "api_route_forbids_untrusted_ssrf" => "outbound_request_facts",
+        "api_route_forbids_raw_sql_without_params" => "raw_sql_facts",
+        "api_route_cors_must_match_policy" => "cors_policy_facts",
+        "api_route_requires_csrf_for_mutation" => "csrf_facts",
+        "api_route_requires_rate_limit" => "rate_limit_facts",
+        _ => "security_facts",
+    };
+    vec!["security_facts".to_string(), capability.to_string()]
+}
+
+fn phase6_contract_for_convention(
+    convention: &crate::protocol::CheckConvention,
+) -> Option<Phase6SecurityContract> {
+    match convention.kind.as_str() {
+        "api_route_forbids_untrusted_ssrf" => {
+            Some(Phase6SecurityContract::Ssrf(Phase6SsrfContract {
+                contract_id: convention.id.clone(),
+                accepted_allowlist_helpers: phase6_helpers_from_requires(
+                    convention,
+                    "outbound_url_allowlist_helpers",
+                ),
+            }))
+        }
+        "api_route_forbids_raw_sql_without_params" => {
+            Some(Phase6SecurityContract::RawSql(Phase6RawSqlContract {
+                contract_id: convention.id.clone(),
+            }))
+        }
+        "api_route_cors_must_match_policy" => {
+            Some(Phase6SecurityContract::Cors(Phase6CorsContract {
+                contract_id: convention.id.clone(),
+                allowed_origins: string_array_from_requires(convention, "allowed_origins")
+                    .or_else(|| {
+                        convention
+                            .requires
+                            .as_ref()
+                            .and_then(|requires| requires.get("cors"))
+                            .and_then(|cors| cors.get("allowed_origins"))
+                            .and_then(json_string_array)
+                    })
+                    .unwrap_or_default(),
+                allow_credentials: bool_from_requires(convention, "allow_credentials")
+                    .or_else(|| {
+                        convention
+                            .requires
+                            .as_ref()
+                            .and_then(|requires| requires.get("cors"))
+                            .and_then(|cors| cors.get("allow_credentials"))
+                            .and_then(|value| value.as_bool())
+                    })
+                    .unwrap_or(false),
+            }))
+        }
+        "api_route_requires_csrf_for_mutation" => Some(Phase6SecurityContract::Csrf {
+            contract_id: convention.id.clone(),
+            accepted_helpers: security_helpers_from_requires(convention, "csrf_helpers"),
+        }),
+        "api_route_requires_rate_limit" => Some(Phase6SecurityContract::RateLimit {
+            contract_id: convention.id.clone(),
+            accepted_helpers: security_helpers_from_requires(convention, "rate_limit_helpers"),
+            route_paths: phase6_route_paths_from_convention(convention),
+        }),
+        _ => None,
+    }
+}
+
+fn phase6_helpers_from_requires(
+    convention: &crate::protocol::CheckConvention,
+    key: &str,
+) -> Vec<Phase6AcceptedHelper> {
+    convention
+        .requires
+        .as_ref()
+        .and_then(|requires| requires.get(key))
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|helper| {
+            Some(Phase6AcceptedHelper {
+                helper_id: helper.get("helper_id")?.as_str()?.to_string(),
+                module: helper.get("module")?.as_str()?.to_string(),
+                symbol: helper.get("symbol")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn security_helpers_from_requires(
+    convention: &crate::protocol::CheckConvention,
+    key: &str,
+) -> Vec<AcceptedSecurityHelper> {
+    convention
+        .requires
+        .as_ref()
+        .and_then(|requires| requires.get(key))
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|helper| {
+            Some(AcceptedSecurityHelper {
+                helper_id: helper.get("helper_id")?.as_str()?.to_string(),
+                module: helper.get("module")?.as_str()?.to_string(),
+                symbol: helper.get("symbol")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn string_array_from_requires(
+    convention: &crate::protocol::CheckConvention,
+    key: &str,
+) -> Option<Vec<String>> {
+    convention
+        .requires
+        .as_ref()
+        .and_then(|requires| requires.get(key))
+        .and_then(json_string_array)
+}
+
+fn bool_from_requires(convention: &crate::protocol::CheckConvention, key: &str) -> Option<bool> {
+    convention
+        .requires
+        .as_ref()
+        .and_then(|requires| requires.get(key))
+        .and_then(|value| value.as_bool())
+}
+
+fn json_string_array(value: &serde_json::Value) -> Option<Vec<String>> {
+    value.as_array().map(|values| {
+        values
+            .iter()
+            .filter_map(|value| value.as_str().map(str::to_string))
+            .collect()
+    })
+}
+
+fn phase6_route_paths(
+    convention: &crate::protocol::CheckConvention,
+    contract: &Phase6SecurityContract,
+) -> Vec<String> {
+    match contract {
+        Phase6SecurityContract::RateLimit { route_paths, .. } if !route_paths.is_empty() => {
+            route_paths.clone()
+        }
+        _ => phase6_route_paths_from_convention(convention),
+    }
+}
+
+fn phase6_route_paths_from_convention(
+    convention: &crate::protocol::CheckConvention,
+) -> Vec<String> {
+    convention
+        .matcher
+        .route_paths
+        .clone()
+        .or_else(|| {
+            convention
+                .requires
+                .as_ref()
+                .and_then(|requires| requires.get("route_paths"))
+                .and_then(json_string_array)
+        })
+        .unwrap_or_default()
+}
+
+fn phase6_proof_required_for_contract(proof: &Phase6SecurityProof, kind: &str) -> bool {
+    match kind {
+        "api_route_forbids_untrusted_ssrf" => proof.ssrf.required,
+        "api_route_forbids_raw_sql_without_params" => proof.raw_sql.required,
+        "api_route_cors_must_match_policy" => proof.cors.required,
+        "api_route_requires_csrf_for_mutation" => proof.csrf.required,
+        "api_route_requires_rate_limit" => proof.rate_limit.required,
+        _ => false,
+    }
+}
+
+fn phase6_missing_code(proof: &Phase6SecurityProof, kind: &str) -> String {
+    let missing = match kind {
+        "api_route_forbids_untrusted_ssrf" => &proof.ssrf.missing_proof,
+        "api_route_forbids_raw_sql_without_params" => &proof.raw_sql.missing_proof,
+        "api_route_cors_must_match_policy" => &proof.cors.missing_proof,
+        "api_route_requires_csrf_for_mutation" => &proof.csrf.missing_proof,
+        "api_route_requires_rate_limit" => &proof.rate_limit.missing_proof,
+        _ => &proof.ssrf.missing_proof,
+    };
+    proof
+        .parser_gaps
+        .first()
+        .map(|gap| gap.code.clone())
+        .or_else(|| missing.first().map(|missing| missing.code.clone()))
+        .unwrap_or_else(|| "missing_phase6_proof".to_string())
+}
+
+fn phase6_finding_line(proof: &Phase6SecurityProof) -> usize {
+    proof
+        .ssrf
+        .outbound_requests
+        .first()
+        .map(|request| request.start_line)
+        .or_else(|| {
+            proof
+                .raw_sql
+                .raw_sql_calls
+                .first()
+                .map(|call| call.start_line)
+        })
+        .or_else(|| proof.cors.policies.first().map(|policy| policy.start_line))
+        .or_else(|| proof.csrf.guard_calls.first().map(|guard| guard.start_line))
+        .or_else(|| {
+            proof
+                .rate_limit
+                .guard_calls
+                .first()
+                .map(|guard| guard.start_line)
+        })
+        .unwrap_or(1)
+}
+
+fn phase6_finding_text(kind: &str) -> (&'static str, &'static str, &'static str) {
+    match kind {
+        "api_route_forbids_untrusted_ssrf" => (
+            "API route allows request-controlled outbound URL",
+            "Request-controlled URL reaches outbound request without accepted allowlist proof.",
+            "outbound_request",
+        ),
+        "api_route_forbids_raw_sql_without_params" => (
+            "API route uses raw SQL without parameterization",
+            "Raw SQL sink uses untrusted input without parameterization proof.",
+            "raw_sql",
+        ),
+        "api_route_cors_must_match_policy" => (
+            "CORS policy violates accepted contract",
+            "CORS policy must match accepted static origin and credential policy.",
+            "cors_policy",
+        ),
+        "api_route_requires_csrf_for_mutation" => (
+            "Mutation route missing CSRF proof",
+            "Mutation route lacks accepted CSRF guard or middleware proof.",
+            "csrf_guard",
+        ),
+        "api_route_requires_rate_limit" => (
+            "Route missing rate limit proof",
+            "Matched route lacks accepted rate-limit guard or middleware proof.",
+            "rate_limit_guard",
+        ),
+        _ => (
+            "Security proof missing",
+            "Security proof is missing.",
+            "security",
+        ),
+    }
+}
+
+fn route_path_from_file(file_path: &str) -> Option<String> {
+    if let Some(path) = next_route_path(file_path) {
+        return Some(path);
+    }
+    if let Some(rest) = file_path
+        .strip_prefix("pages")
+        .and_then(|path| path.strip_suffix(".ts"))
+    {
+        return Some(rest.to_string());
+    }
+    None
+}
+
+fn path_matches_globs(file_path: &str, globs: Option<&[String]>) -> bool {
+    let Some(globs) = globs else {
+        return true;
+    };
+    if globs.is_empty() {
+        return true;
+    }
+    globs.iter().any(|glob| {
+        if let Some(prefix) = glob.strip_suffix("/**") {
+            file_path.starts_with(prefix)
+        } else if let Some(prefix) = glob.strip_suffix('*') {
+            file_path.starts_with(prefix)
+        } else {
+            file_path == glob
+        }
+    })
+}
+
 fn security_phase4_findings_and_proofs(
     facts: &[Fact],
     repo_root: Option<&str>,
@@ -850,6 +1335,147 @@ fn security_phase4_findings_and_proofs(
     }
 
     SecurityPhase4Evaluation { findings, proofs }
+}
+
+fn security_phase5_findings_and_proofs(
+    facts: &[Fact],
+    repo_root: Option<&str>,
+    parsed_diff: &ParsedDiff,
+    diff_scope: DiffScope,
+    convention: &crate::protocol::CheckConvention,
+    severity: Severity,
+    enforcement_mode: EnforcementMode,
+) -> SecurityPhase5Evaluation {
+    let Some(accepted_phase5) = convention
+        .requires
+        .as_ref()
+        .and_then(accepted_phase5_contract_from_requires)
+    else {
+        return SecurityPhase5Evaluation {
+            findings: Vec::new(),
+            proofs: Vec::new(),
+        };
+    };
+    if convention
+        .matcher
+        .applies_to_file_roles
+        .as_ref()
+        .is_some_and(|roles| !roles.iter().any(|role| role == "api_route"))
+    {
+        return SecurityPhase5Evaluation {
+            findings: Vec::new(),
+            proofs: Vec::new(),
+        };
+    }
+
+    let allowed_methods = convention
+        .matcher
+        .methods
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|method| method.to_uppercase())
+        .collect::<Vec<_>>();
+    let path_globs = convention
+        .scope
+        .as_ref()
+        .map(|scope| string_array_field(scope, "path_globs"))
+        .unwrap_or_default();
+    let files = security_auth_files(facts, parsed_diff, diff_scope);
+    let mut findings = Vec::new();
+    let mut proofs = Vec::new();
+
+    for file_path in files {
+        if !phase5_file_scope_matches(&file_path, &path_globs) {
+            continue;
+        }
+        let route_facts = phase5_route_facts_for_file(facts, &file_path, &allowed_methods);
+        if route_facts.is_empty() {
+            continue;
+        }
+        let Some(source) = read_repo_file(repo_root, &file_path) else {
+            continue;
+        };
+        for route_fact in route_facts {
+            let proof = match convention.kind.as_str() {
+                "api_route_forbids_sensitive_response_fields" => {
+                    if accepted_phase5.sensitive_response_fields.is_empty()
+                        && accepted_phase5.response_serializers.is_empty()
+                    {
+                        continue;
+                    }
+                    match drift_engine::build_response_shape_proof(
+                        &file_path,
+                        &source,
+                        &accepted_phase5,
+                    ) {
+                        Ok(proof) => phase5_scope_proof_to_route(
+                            proof,
+                            route_fact.start_line,
+                            route_fact.end_line,
+                        ),
+                        Err(_) => continue,
+                    }
+                }
+                "api_route_forbids_secret_exposure" => {
+                    if accepted_phase5.secret_sources.is_empty() {
+                        continue;
+                    }
+                    match drift_engine::build_secret_exposure_proof(
+                        &file_path,
+                        &source,
+                        &accepted_phase5,
+                    ) {
+                        Ok(proof) => phase5_scope_proof_to_route(
+                            proof,
+                            route_fact.start_line,
+                            route_fact.end_line,
+                        ),
+                        Err(_) => continue,
+                    }
+                }
+                _ => continue,
+            };
+            let route_id = format!("route:{}:{}", route_fact.file_path, route_fact.name);
+            let handler_symbol = route_fact.name.clone();
+            let missing_code = phase5_missing_code(&proof, &convention.kind);
+            let finding_line = phase5_finding_line(&proof).unwrap_or(route_fact.start_line);
+            let finding_fingerprint = stable_hash(&format!(
+                "{}:{}:{}:{}",
+                convention.id, route_id, missing_code, finding_line
+            ));
+            let finding_id = format!("finding_{}", &finding_fingerprint[..16]);
+            proofs.push(phase5_proof_json(
+                &proof,
+                &route_id,
+                &file_path,
+                &handler_symbol,
+                convention,
+                &finding_id,
+                &missing_code,
+            ));
+            if proof.result.proof_status != SecurityProofStatus::Proven {
+                findings.push(PendingFinding {
+                    fingerprint: finding_fingerprint,
+                    convention_id: convention.id.clone(),
+                    rule_id: convention.kind.clone(),
+                    title: phase5_finding_title(&convention.kind).to_string(),
+                    message: phase5_finding_message(&convention.kind).to_string(),
+                    severity,
+                    enforcement_result: enforcement_result_for_mode(enforcement_mode),
+                    file_path: file_path.clone(),
+                    import_name: "security_boundary".to_string(),
+                    import_source: missing_code,
+                    line: finding_line,
+                    evidence_id: format!("evidence_{}", &finding_id["finding_".len()..]),
+                    legacy_fingerprints: Vec::new(),
+                    related_node_ids: Vec::new(),
+                });
+            }
+        }
+    }
+
+    SecurityPhase5Evaluation { findings, proofs }
 }
 
 fn accepted_auth_helpers_for_convention(
@@ -1295,9 +1921,155 @@ fn route_methods_for_file(facts: &[Fact], file_path: &str) -> Vec<String> {
         .collect()
 }
 
+fn phase5_route_facts_for_file<'a>(
+    facts: &'a [Fact],
+    file_path: &str,
+    allowed_methods: &[String],
+) -> Vec<&'a Fact> {
+    facts
+        .iter()
+        .filter(|fact| fact.file_path == file_path && fact.kind == FactKind::RouteDeclared)
+        .filter(|fact| {
+            allowed_methods.is_empty() || allowed_methods.contains(&fact.name.to_uppercase())
+        })
+        .collect()
+}
+
+fn phase5_missing_code(proof: &SecurityBoundaryProof, convention_kind: &str) -> String {
+    if convention_kind == "api_route_forbids_sensitive_response_fields" {
+        if !proof.response_shape.sensitive_leaks.is_empty() {
+            "sensitive_response_field_unfiltered".to_string()
+        } else {
+            "dynamic_response_shape_missing_proof".to_string()
+        }
+    } else {
+        "secret_exposure_not_excluded".to_string()
+    }
+}
+
+fn phase5_finding_line(proof: &SecurityBoundaryProof) -> Option<usize> {
+    proof
+        .response_shape
+        .sensitive_leaks
+        .first()
+        .map(|leak| input_line_from_fact_id(&leak.field_fact_id))
+        .or_else(|| {
+            proof
+                .secret_exposure
+                .exposed_secrets
+                .first()
+                .map(|secret| secret.sink_line)
+        })
+        .or_else(|| {
+            proof
+                .parser_gaps
+                .first()
+                .and_then(|gap| gap.parser_gap_id.split(':').nth_back(1))
+                .and_then(|line| line.parse::<usize>().ok())
+        })
+        .filter(|line| *line > 0)
+}
+
+fn phase5_scope_proof_to_route(
+    mut proof: SecurityBoundaryProof,
+    start_line: usize,
+    end_line: usize,
+) -> SecurityBoundaryProof {
+    proof.response_shape.sensitive_leaks.retain(|leak| {
+        line_in_range(
+            input_line_from_fact_id(&leak.field_fact_id),
+            start_line,
+            end_line,
+        )
+    });
+    proof
+        .secret_exposure
+        .exposed_secrets
+        .retain(|secret| line_in_range(secret.sink_line, start_line, end_line));
+    proof
+        .parser_gaps
+        .retain(|gap| line_in_range(phase5_parser_gap_line(gap), start_line, end_line));
+
+    if proof.response_shape.required {
+        proof.response_shape.proven =
+            proof.response_shape.sensitive_leaks.is_empty() && proof.parser_gaps.is_empty();
+    }
+    if proof.secret_exposure.required {
+        proof.secret_exposure.proven =
+            proof.secret_exposure.exposed_secrets.is_empty() && proof.parser_gaps.is_empty();
+    }
+    let proven = (proof.response_shape.required && proof.response_shape.proven)
+        || (proof.secret_exposure.required && proof.secret_exposure.proven);
+    proof.result.proof_status = if !proof.parser_gaps.is_empty() {
+        SecurityProofStatus::ParserGap
+    } else if proven {
+        SecurityProofStatus::Proven
+    } else {
+        SecurityProofStatus::MissingProof
+    };
+    proof
+}
+
+fn phase5_parser_gap_line(gap: &drift_engine::SecurityParserGap) -> usize {
+    gap.parser_gap_id
+        .split(':')
+        .nth_back(1)
+        .and_then(|line| line.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn line_in_range(line: usize, start_line: usize, end_line: usize) -> bool {
+    line >= start_line && line <= end_line
+}
+
+fn phase5_finding_title(convention_kind: &str) -> &'static str {
+    if convention_kind == "api_route_forbids_sensitive_response_fields" {
+        "API route emits sensitive response field"
+    } else {
+        "API route exposes secret to response or log sink"
+    }
+}
+
+fn phase5_finding_message(convention_kind: &str) -> &'static str {
+    if convention_kind == "api_route_forbids_sensitive_response_fields" {
+        "Accepted sensitive response fields must be excluded by an accepted serializer."
+    } else {
+        "Accepted secret sources must not reach response or log sinks."
+    }
+}
+
+fn phase5_file_scope_matches(file_path: &str, path_globs: &[String]) -> bool {
+    if path_globs.is_empty() {
+        return true;
+    }
+    let route_path = phase5_route_path_from_file(file_path);
+    path_globs.iter().any(|pattern| {
+        path_glob_matches(pattern, file_path)
+            || route_path
+                .as_deref()
+                .is_some_and(|route_path| path_glob_matches(pattern, route_path))
+    })
+}
+
+fn phase5_route_path_from_file(file_path: &str) -> Option<String> {
+    let rest = file_path
+        .strip_prefix("app/")
+        .and_then(|path| path.strip_suffix("/route.ts"))?;
+    Some(format!("/{}", rest.trim_end_matches('/')))
+}
+
 fn path_glob_matches(pattern: &str, file_path: &str) -> bool {
     if pattern == file_path {
         return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/**/route.ts") {
+        return file_path.starts_with(prefix) && file_path.ends_with("/route.ts");
+    }
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        return file_path == prefix || file_path.starts_with(&format!("{prefix}/"));
+    }
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return file_path == prefix || file_path.starts_with(&format!("{prefix}/"));
     }
     if let Some((prefix, suffix)) = pattern.split_once("**") {
         return file_path.starts_with(prefix) && file_path.ends_with(suffix);
@@ -1345,6 +2117,229 @@ fn input_line_from_fact_id(fact_id: &str) -> usize {
         .next()
         .and_then(|line| line.parse::<usize>().ok())
         .unwrap_or(0)
+}
+
+fn security_line_evidence_refs(
+    route_id: &str,
+    file_path: &str,
+    capability: &str,
+    role: &str,
+    kind: &str,
+    fact_ids: Vec<String>,
+) -> Vec<serde_json::Value> {
+    let mut refs = Vec::new();
+    let mut seen = BTreeSet::new();
+    for fact_id in fact_ids {
+        if fact_id.is_empty() || !seen.insert(fact_id.clone()) {
+            continue;
+        }
+        let line = input_line_from_fact_id(&fact_id);
+        let mut evidence = serde_json::Map::new();
+        evidence.insert(
+            "evidence_id".to_string(),
+            json!(format!("evidence:{route_id}:{fact_id}:{kind}")),
+        );
+        evidence.insert("fact_id".to_string(), json!(fact_id));
+        evidence.insert("capability".to_string(), json!(capability));
+        evidence.insert("kind".to_string(), json!(kind));
+        evidence.insert("file_path".to_string(), json!(file_path));
+        if line > 0 {
+            evidence.insert("start_line".to_string(), json!(line));
+            evidence.insert("end_line".to_string(), json!(line));
+        }
+        evidence.insert("role".to_string(), json!(role));
+        refs.push(serde_json::Value::Object(evidence));
+    }
+    refs
+}
+
+fn phase4_missing_fact_ids(proof: &SecurityBoundaryProof) -> Vec<String> {
+    proof
+        .tenant
+        .missing
+        .iter()
+        .map(|missing| missing.data_operation_fact_id.clone())
+        .chain(
+            proof
+                .authorization
+                .missing
+                .iter()
+                .filter_map(|missing| missing.sink_fact_id.clone()),
+        )
+        .chain(
+            proof
+                .session_trust
+                .missing_trust
+                .iter()
+                .map(|missing| missing.fact_id.clone()),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn phase5_proof_json(
+    proof: &SecurityBoundaryProof,
+    route_id: &str,
+    file_path: &str,
+    handler_symbol: &str,
+    convention: &crate::protocol::CheckConvention,
+    finding_id: &str,
+    missing_code: &str,
+) -> serde_json::Value {
+    let missing_codes = if proof.result.proof_status == SecurityProofStatus::Proven {
+        Vec::new()
+    } else {
+        vec![missing_code.to_string()]
+    };
+    let missing_proof_ids = missing_codes
+        .iter()
+        .map(|code| format!("missing_proof:{route_id}:{code}"))
+        .collect::<Vec<_>>();
+    let parser_gap_ids = proof
+        .parser_gaps
+        .iter()
+        .map(|gap| gap.parser_gap_id.clone())
+        .collect::<Vec<_>>();
+    let missing_fact_ids = proof
+        .response_shape
+        .sensitive_leaks
+        .iter()
+        .map(|leak| leak.field_fact_id.clone())
+        .chain(
+            proof
+                .secret_exposure
+                .exposed_secrets
+                .iter()
+                .map(|secret| secret.secret_fact_id.clone()),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let missing_proof = missing_codes
+        .iter()
+        .enumerate()
+        .map(|(index, code)| {
+            json!({
+                "id": missing_proof_ids[index],
+                "capability": if convention.kind == "api_route_forbids_sensitive_response_fields" {
+                    "response_shape_facts"
+                } else {
+                    "secret_exposure"
+                },
+                "code": code,
+                "blocks_enforcement": true,
+                "fact_ids": missing_fact_ids.clone(),
+                "graph_edge_ids": []
+            })
+        })
+        .collect::<Vec<_>>();
+    let evidence_refs = security_line_evidence_refs(
+        route_id,
+        file_path,
+        if convention.kind == "api_route_forbids_sensitive_response_fields" {
+            "response_shape_facts"
+        } else {
+            "secret_exposure"
+        },
+        "missing_proof",
+        missing_code,
+        missing_fact_ids.clone(),
+    );
+    let parser_gaps = proof
+        .parser_gaps
+        .iter()
+        .map(|gap| {
+            json!({
+                "parser_gap_id": gap.parser_gap_id,
+                "capability": if convention.kind == "api_route_forbids_sensitive_response_fields" {
+                    "response_shape_facts"
+                } else {
+                    "secret_exposure"
+                },
+                "code": gap.code,
+                "file_path": gap.file_path,
+                "reason": gap.reason,
+                "affected_contract_kinds": [convention.kind.clone()],
+                "affected_route_ids": [route_id],
+                "missing_proof_ids": missing_proof_ids.clone(),
+                "blocks_enforcement": gap.blocks_enforcement
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "proof_id": format!("proof:{route_id}:phase5"),
+        "proof_version": "security-boundary-proof/v1",
+        "route": {
+            "route_id": route_id,
+            "file_path": file_path,
+            "file_role": "api_route",
+            "endpoint": route_endpoint(file_path, handler_symbol),
+            "handler_symbol": handler_symbol
+        },
+        "contracts": [{
+            "contract_id": convention.id,
+            "kind": convention.kind,
+            "enforcement_mode": convention.enforcement_mode,
+            "capability": convention.enforcement_capability,
+            "matched": true
+        }],
+        "capability_status": [{
+            "name": if convention.kind == "api_route_forbids_sensitive_response_fields" {
+                "response_shape_facts"
+            } else {
+                "secret_exposure"
+            },
+            "status": if proof.result.proof_status == SecurityProofStatus::Proven { "complete" } else { "partial" },
+            "can_block": true,
+            "parser_gap_ids": parser_gap_ids,
+            "missing_proof_ids": missing_proof_ids
+        }],
+        "auth": {
+            "required": false,
+            "proven": false,
+            "proof_kind": "none",
+            "trusted_guard_calls": [],
+            "dominated_sinks": [],
+            "undominated_sinks": []
+        },
+        "response_shape": {
+            "required": proof.response_shape.required,
+            "proven": proof.response_shape.proven,
+            "sensitive_leaks": proof.response_shape.sensitive_leaks.iter().map(|leak| json!({
+                "field_fact_id": leak.field_fact_id,
+                "field_path": leak.field_path,
+                "reason": leak.reason
+            })).collect::<Vec<_>>()
+        },
+        "sinks": {
+            "secrets": proof.secret_exposure.exposed_secrets.iter().map(|secret| json!({
+                "secret_fact_id": secret.secret_fact_id,
+                "secret_class": secret.secret_class,
+                "sink_kind": secret.sink_kind,
+                "sink_line": secret.sink_line,
+                "reason": secret.reason
+            })).collect::<Vec<_>>()
+        },
+        "missing_proof": missing_proof,
+        "parser_gaps": parser_gaps,
+        "evidence_refs": evidence_refs,
+        "result": {
+            "proof_status": security_proof_status(&proof.result.proof_status),
+            "enforcement_result": if proof.result.proof_status == SecurityProofStatus::Proven {
+                "pass"
+            } else {
+                convention.enforcement_mode.as_str()
+            },
+            "can_block": proof.result.proof_status != SecurityProofStatus::Proven,
+            "finding_ids": if proof.result.proof_status == SecurityProofStatus::Proven {
+                Vec::<String>::new()
+            } else {
+                vec![finding_id.to_string()]
+            }
+        }
+    })
 }
 
 fn route_security_proof_json(
@@ -1405,6 +2400,23 @@ fn route_security_proof_json(
             })
         })
         .collect::<Vec<_>>();
+    let evidence_refs = security_line_evidence_refs(
+        &proof.route_id,
+        &proof.file_path,
+        "control_flow_guard_dominance",
+        if proof.auth.proven {
+            "guard"
+        } else {
+            "missing_proof"
+        },
+        "auth_boundary",
+        proof
+            .trusted_guard_calls
+            .iter()
+            .map(|guard| guard.fact_id.clone())
+            .chain(undominated_fact_ids.clone())
+            .collect(),
+    );
 
     json!({
         "proof_id": format!("proof:{}:auth", proof.route_id),
@@ -1413,6 +2425,7 @@ fn route_security_proof_json(
             "route_id": proof.route_id,
             "file_path": proof.file_path,
             "file_role": "api_route",
+            "endpoint": route_endpoint(&proof.file_path, &proof.handler_symbol),
             "handler_symbol": proof.handler_symbol
         },
         "contracts": [{
@@ -1454,6 +2467,7 @@ fn route_security_proof_json(
         },
         "missing_proof": missing_proof,
         "parser_gaps": parser_gaps,
+        "evidence_refs": evidence_refs,
         "result": {
             "proof_status": security_proof_status(&proof.result.proof_status),
             "enforcement_result": if proof.result.proof_status == SecurityProofStatus::Proven {
@@ -1567,6 +2581,38 @@ fn request_validation_proof_json(
             serde_json::Value::Object(object)
         })
         .collect::<Vec<_>>();
+    let evidence_refs = security_line_evidence_refs(
+        route_id,
+        file_path,
+        "request_validation_facts",
+        if proof.request_validation.proven {
+            "validator"
+        } else {
+            "missing_proof"
+        },
+        "request_validation_boundary",
+        proof
+            .request_validation
+            .input_reads
+            .iter()
+            .map(|input| input.fact_id.clone())
+            .chain(
+                proof
+                    .request_validation
+                    .validations
+                    .iter()
+                    .map(|validation| validation.fact_id.clone()),
+            )
+            .chain(
+                proof
+                    .request_validation
+                    .validated_uses
+                    .iter()
+                    .map(|use_proof| use_proof.fact_id.clone()),
+            )
+            .chain(missing_fact_ids.clone())
+            .collect(),
+    );
 
     json!({
         "proof_id": format!("proof:{route_id}:request_validation"),
@@ -1575,6 +2621,7 @@ fn request_validation_proof_json(
             "route_id": route_id,
             "file_path": file_path,
             "file_role": "api_route",
+            "endpoint": route_endpoint(file_path, handler_symbol),
             "handler_symbol": handler_symbol
         },
         "contracts": [{
@@ -1629,6 +2676,7 @@ fn request_validation_proof_json(
         },
         "missing_proof": missing_proof,
         "parser_gaps": parser_gaps,
+        "evidence_refs": evidence_refs,
         "result": {
             "proof_status": security_proof_status(&proof.result.proof_status),
             "enforcement_result": if proof.result.proof_status == SecurityProofStatus::Proven {
@@ -1756,6 +2804,7 @@ fn phase4_proof_json(
             })
         })
         .collect::<Vec<_>>();
+    let missing_fact_ids = phase4_missing_fact_ids(proof);
     let missing_proof = missing_proof_ids
         .iter()
         .map(|id| {
@@ -1764,11 +2813,50 @@ fn phase4_proof_json(
                 "capability": phase4_expected_layer(&convention.kind),
                 "code": missing_code,
                 "blocks_enforcement": true,
-                "fact_ids": [],
+                "fact_ids": missing_fact_ids.clone(),
                 "graph_edge_ids": []
             })
         })
         .collect::<Vec<_>>();
+    let evidence_refs = security_line_evidence_refs(
+        route_id,
+        file_path,
+        phase4_expected_layer(&convention.kind),
+        if proof.result.proof_status == SecurityProofStatus::Proven {
+            "guard"
+        } else {
+            "missing_proof"
+        },
+        &missing_code,
+        proof
+            .session_trust
+            .trusted_sessions
+            .iter()
+            .map(|session| session.fact_id.clone())
+            .chain(
+                proof
+                    .authorization
+                    .role_or_policy_guards
+                    .iter()
+                    .map(|guard| guard.fact_id.clone()),
+            )
+            .chain(
+                proof
+                    .tenant
+                    .tenant_sources
+                    .iter()
+                    .map(|source| source.fact_id.clone()),
+            )
+            .chain(
+                proof
+                    .tenant
+                    .predicates
+                    .iter()
+                    .map(|predicate| predicate.fact_id.clone()),
+            )
+            .chain(missing_fact_ids.clone())
+            .collect(),
+    );
 
     json!({
         "proof_id": format!("proof:{route_id}:phase4"),
@@ -1777,6 +2865,7 @@ fn phase4_proof_json(
             "route_id": route_id,
             "file_path": file_path,
             "file_role": "api_route",
+            "endpoint": route_endpoint(file_path, handler_symbol),
             "handler_symbol": handler_symbol
         },
         "contracts": [{
@@ -1862,6 +2951,7 @@ fn phase4_proof_json(
         },
         "missing_proof": missing_proof,
         "parser_gaps": parser_gaps,
+        "evidence_refs": evidence_refs,
         "result": {
             "proof_status": security_proof_status(&proof.result.proof_status),
             "enforcement_result": if proof.result.proof_status == SecurityProofStatus::Proven {
@@ -1885,6 +2975,50 @@ fn security_proof_status(status: &SecurityProofStatus) -> &'static str {
         SecurityProofStatus::MissingProof => "missing_proof",
         SecurityProofStatus::ParserGap => "parser_gap",
     }
+}
+
+fn route_endpoint(file_path: &str, handler_symbol: &str) -> serde_json::Value {
+    let Some(path) = next_route_path(file_path) else {
+        return json!({ "method": handler_symbol });
+    };
+    json!({
+        "path": path,
+        "method": handler_symbol,
+        "framework": "next"
+    })
+}
+
+fn next_route_path(file_path: &str) -> Option<String> {
+    let normalized = file_path.replace('\\', "/");
+    let route = normalized
+        .strip_prefix("app/api/")?
+        .strip_suffix("/route.ts")
+        .or_else(|| {
+            normalized
+                .strip_prefix("app/api/")?
+                .strip_suffix("/route.tsx")
+        })
+        .or_else(|| {
+            normalized
+                .strip_prefix("app/api/")?
+                .strip_suffix("/route.js")
+        })
+        .or_else(|| {
+            normalized
+                .strip_prefix("app/api/")?
+                .strip_suffix("/route.jsx")
+        })?;
+    let segments = route
+        .split('/')
+        .filter(|segment| !(segment.starts_with('(') && segment.ends_with(')')))
+        .collect::<Vec<_>>();
+    if segments.is_empty() {
+        return Some("/api".to_string());
+    }
+    Some(format!(
+        "/api/{}",
+        segments.join("/").replace("[", ":").replace("]", "")
+    ))
 }
 
 fn security_auth_files(
@@ -2228,6 +3362,10 @@ fn fact_kind_from_str(kind: &str) -> Option<FactKind> {
         "authorization_guard_called" => Some(FactKind::AuthorizationGuardCalled),
         "request_validation_called" => Some(FactKind::RequestValidationCalled),
         "validated_input_used" => Some(FactKind::ValidatedInputUsed),
+        "sensitive_field_declared" => Some(FactKind::SensitiveFieldDeclared),
+        "response_emits_field" => Some(FactKind::ResponseEmitsField),
+        "serializer_called" => Some(FactKind::SerializerCalled),
+        "secret_read" => Some(FactKind::SecretRead),
         _ => None,
     }
 }
