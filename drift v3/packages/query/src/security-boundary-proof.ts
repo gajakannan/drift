@@ -1,4 +1,5 @@
 import type { AcceptedConvention, SecurityBoundaryProof } from "@drift/core";
+import type { CanonicalRouteFreshness, CanonicalRouteSource } from "./canonical-routes.js";
 
 export interface SecurityFindingSummaryInput {
   finding_id: string;
@@ -82,15 +83,24 @@ export interface BuildSecurityPhase8ReadModelInput {
   repo_id: string;
   scan_id: string | null;
   check_id: string | null;
+  proof_scan_id?: string | null;
   proofs: SecurityBoundaryProof[];
   findings: SecurityFindingSummaryInput[];
   accepted_conventions: AcceptedConvention[];
   changed_files?: string[];
+  route_source_summary?: Record<CanonicalRouteSource, number>;
+  canonical_route_fallback?: {
+    used: boolean;
+    reason: "normalized_entrypoints_missing" | null;
+  };
   known_routes?: Array<{
     route_id: string;
+    normalized_entrypoint_id?: string;
     file_path: string;
     path?: string;
     method?: string;
+    source?: CanonicalRouteSource;
+    freshness?: CanonicalRouteFreshness;
     file_role?: string;
   }>;
 }
@@ -107,9 +117,12 @@ export interface SecurityCapabilitySummary {
 
 export interface SecurityPhase8Route {
   route_id: string;
+  normalized_entrypoint_id?: string;
   path: string | null;
   method: string | null;
   file_path: string;
+  source?: CanonicalRouteSource;
+  freshness?: CanonicalRouteFreshness;
   security: {
     public_or_protected: "public" | "protected" | "unknown";
     auth_proven: boolean | "not_required" | "missing_proof" | "parser_gap" | "unknown";
@@ -160,8 +173,14 @@ const CAPABILITY_ALIASES: Record<string, string> = {
   rate_limit_facts: "rate_limit"
 };
 
+type KnownSecurityRoute = NonNullable<BuildSecurityPhase8ReadModelInput["known_routes"]>[number];
+
 export function buildSecurityPhase8ReadModel(input: BuildSecurityPhase8ReadModelInput) {
-  const proofRoutes = input.proofs.map((proof) => phase8Route(input.repo_id, proof));
+  const knownRoutesById = new Map((input.known_routes ?? []).map((route) => [route.route_id, route]));
+  const proofFreshness = proofFreshnessFor(input.scan_id, input.proof_scan_id, input.proofs);
+  const proofRoutes = input.proofs.map((proof) =>
+    phase8Route(input.repo_id, proof, knownRoutesById.get(proof.route.route_id), proofFreshness)
+  );
   const proofRouteIds = new Set(proofRoutes.map((route) => route.route_id));
   const unknownRoutes = (input.known_routes ?? [])
     .filter((route) => !proofRouteIds.has(route.route_id))
@@ -175,6 +194,12 @@ export function buildSecurityPhase8ReadModel(input: BuildSecurityPhase8ReadModel
     repo_id: input.repo_id,
     scan_id: input.scan_id,
     check_id: input.check_id,
+    route_source_summary: input.route_source_summary ?? routeSourceSummary(input.known_routes ?? []),
+    canonical_route_fallback: input.canonical_route_fallback ?? {
+      used: false,
+      reason: null
+    },
+    proof_freshness: proofFreshness,
     security_capabilities: securityCapabilities(input.proofs, input.accepted_conventions),
     routes,
     repo_security_contracts: input.accepted_conventions
@@ -186,11 +211,16 @@ export function buildSecurityPhase8ReadModel(input: BuildSecurityPhase8ReadModel
         const proof = input.proofs.find((candidate) => candidate.route.route_id === route.route_id);
         return {
           route_id: route.route_id,
+          ...(route.normalized_entrypoint_id ? { normalized_entrypoint_id: route.normalized_entrypoint_id } : {}),
           path: route.path,
           method: route.method,
           file_path: route.file_path,
-          required_proofs: proof ? requiredProofSummaries(proof) : [],
+          ...(route.source ? { source: route.source } : {}),
+          ...(route.freshness ? { freshness: route.freshness } : {}),
+          required_proofs: proof ? requiredProofSummaries(route, proof) : [],
           current_proof_status: route.security.proof_status,
+          current_proof_status_detail: proofStatusSummary(route),
+          proof_status: route.security.proof_status,
           enforcement_result: route.security.enforcement_result,
           missing_proof: (proof?.missing_proof ?? []).map((missing) => ({
             id: missing.id,
@@ -212,14 +242,9 @@ export function buildSecurityPhase8ReadModel(input: BuildSecurityPhase8ReadModel
       }),
     required_proofs: routes.flatMap((route) => {
       const proof = input.proofs.find((candidate) => candidate.route.route_id === route.route_id);
-      return proof ? requiredProofSummaries(proof) : [];
+      return proof ? requiredProofSummaries(route, proof) : [];
     }),
-    current_proof_status: routes.map((route) => ({
-      route_id: route.route_id,
-      file_path: route.file_path,
-      proof_status: route.security.proof_status,
-      enforcement_result: route.security.enforcement_result
-    })),
+    current_proof_status: routes.map(proofStatusSummary),
     missing_proof_summaries: input.proofs.flatMap((proof) => proof.missing_proof.map((missing) => ({
       route_id: proof.route.route_id,
       file_path: proof.route.file_path,
@@ -255,13 +280,16 @@ export function buildSecurityPhase8ReadModel(input: BuildSecurityPhase8ReadModel
 
 function unknownPhase8Route(
   repoId: string,
-  route: { route_id: string; file_path: string; path?: string; method?: string }
+  route: KnownSecurityRoute
 ): SecurityPhase8Route {
   return {
     route_id: route.route_id,
+    ...(route.normalized_entrypoint_id ? { normalized_entrypoint_id: route.normalized_entrypoint_id } : {}),
     path: route.path ?? null,
     method: route.method ?? null,
     file_path: route.file_path,
+    ...(route.source ? { source: route.source } : {}),
+    ...(route.freshness ? { freshness: route.freshness } : {}),
     security: {
       public_or_protected: "unknown",
       auth_proven: "unknown",
@@ -442,7 +470,12 @@ export function buildSecurityBoundaryProofReadModel(
   };
 }
 
-function phase8Route(repoId: string, proof: SecurityBoundaryProof): SecurityPhase8Route {
+function phase8Route(
+  repoId: string,
+  proof: SecurityBoundaryProof,
+  canonicalRoute: KnownSecurityRoute | undefined,
+  proofFreshness: CanonicalRouteFreshness
+): SecurityPhase8Route {
   const middleware = proof.middleware ?? {
     required: false,
     proven: false,
@@ -503,9 +536,14 @@ function phase8Route(repoId: string, proof: SecurityBoundaryProof): SecurityPhas
   };
   return {
     route_id: proof.route.route_id,
-    path: proof.route.endpoint?.path ?? null,
-    method: proof.route.endpoint?.method ?? null,
+    ...(canonicalRoute?.normalized_entrypoint_id || proof.route.normalized_entrypoint_id ? {
+      normalized_entrypoint_id: canonicalRoute?.normalized_entrypoint_id ?? proof.route.normalized_entrypoint_id
+    } : {}),
+    path: canonicalRoute?.path ?? proof.route.endpoint?.path ?? null,
+    method: canonicalRoute?.method ?? proof.route.endpoint?.method ?? null,
     file_path: proof.route.file_path,
+    source: canonicalRoute?.source ?? "security_proof",
+    freshness: canonicalRoute?.freshness ?? proofFreshness,
     security: {
       public_or_protected: proof.auth.required || proof.auth.proven ? "protected" : "unknown",
       auth_proven: booleanSecurityState(proof.auth.required, proof.auth.proven, proof, "control_flow_guard_dominance"),
@@ -763,8 +801,60 @@ function helperObjects(value: unknown) {
     }));
 }
 
-function requiredProofSummaries(proof: SecurityBoundaryProof): string[] {
-  return proof.contracts.flatMap((contract) => requiredProofSummariesForKind(contract.kind));
+function proofStatusSummary(route: SecurityPhase8Route) {
+  return {
+    route_id: route.route_id,
+    ...(route.normalized_entrypoint_id ? { normalized_entrypoint_id: route.normalized_entrypoint_id } : {}),
+    file_path: route.file_path,
+    path: route.path,
+    method: route.method,
+    ...(route.source ? { source: route.source } : {}),
+    ...(route.freshness ? { freshness: route.freshness } : {}),
+    proof_status: route.security.proof_status,
+    enforcement_result: route.security.enforcement_result
+  };
+}
+
+function requiredProofSummaries(route: SecurityPhase8Route, proof: SecurityBoundaryProof) {
+  return proof.contracts.flatMap((contract) =>
+    requiredProofSummariesForKind(contract.kind).map((summary) => ({
+      route_id: route.route_id,
+      ...(route.normalized_entrypoint_id ? { normalized_entrypoint_id: route.normalized_entrypoint_id } : {}),
+      file_path: route.file_path,
+      path: route.path,
+      method: route.method,
+      ...(route.source ? { source: route.source } : {}),
+      ...(route.freshness ? { freshness: route.freshness } : {}),
+      contract_id: contract.contract_id,
+      kind: contract.kind,
+      summary
+    }))
+  );
+}
+
+function routeSourceSummary(routes: KnownSecurityRoute[]): Record<CanonicalRouteSource, number> {
+  return {
+    normalized_entrypoint: routes.filter((route) => route.source === "normalized_entrypoint").length,
+    security_proof: routes.filter((route) => route.source === "security_proof").length,
+    legacy_fact_fallback: routes.filter((route) => route.source === "legacy_fact_fallback").length
+  };
+}
+
+function proofFreshnessFor(
+  scanId: string | null,
+  proofScanId: string | null | undefined,
+  proofs: SecurityBoundaryProof[]
+): CanonicalRouteFreshness {
+  if (proofs.length === 0) {
+    return "none";
+  }
+  if (!scanId) {
+    return "stale";
+  }
+  if (proofScanId && proofScanId !== scanId) {
+    return "stale";
+  }
+  return "fresh";
 }
 
 function requiredProofSummariesForKind(kind: string): string[] {
