@@ -7,6 +7,7 @@ export * from "./capabilities.js";
 export * from "./contracts.js";
 export * from "./contract-ledger.js";
 export * from "./domain.js";
+export * from "./frameworks.js";
 export * from "./ids.js";
 export * from "./policy.js";
 export * from "./scans.js";

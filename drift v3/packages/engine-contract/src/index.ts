@@ -17,6 +17,159 @@ const DiagnosticSeveritySchema = z.enum(["info", "warning", "error"]);
 const DiffModeSchema = z.enum(["changed-hunks", "changed-files", "full"]);
 const CompletenessScopeSchema = z.enum(["repo", "changed-files", "changed-hunks", "route-flow", "file"]);
 
+const EngineFrameworkNameSchema = z.enum([
+  "next_app",
+  "next_pages",
+  "express",
+  "fastify",
+  "nest",
+  "hono",
+  "remix",
+  "trpc",
+  "graphql",
+  "lambda",
+  "worker",
+  "custom"
+]);
+
+const EngineEntrypointKindSchema = z.enum([
+  "api_route",
+  "page_route",
+  "server_action",
+  "cli_command",
+  "cron_job",
+  "queue_consumer",
+  "webhook_handler",
+  "middleware",
+  "test_entrypoint",
+  "script",
+  "migration",
+  "lambda_handler",
+  "worker"
+]);
+
+const EngineFrameworkCapabilityNameSchema = z.enum([
+  "entrypoint_discovery",
+  "route_pattern_resolution",
+  "method_resolution",
+  "middleware_chain_resolution",
+  "request_input_tracking",
+  "auth_guard_dominance",
+  "validation_dominance",
+  "authorization_dominance",
+  "tenant_scope_proof"
+]);
+
+const EngineFrameworkCapabilityStatusSchema = z.enum([
+  "complete",
+  "partial",
+  "unsupported",
+  "failed"
+]);
+
+export const EngineFrameworkCapabilitySchema = z.object({
+  schema_version: z.literal("engine.framework.capability.v1"),
+  adapter_id: z.string().min(1),
+  framework: EngineFrameworkNameSchema,
+  capability: EngineFrameworkCapabilityNameSchema,
+  status: EngineFrameworkCapabilityStatusSchema,
+  can_block: z.boolean(),
+  block_requires_accepted_convention: z.boolean(),
+  parser_gap_ids: z.array(z.string().min(1)),
+  missing_proof_ids: z.array(z.string().min(1))
+}).superRefine((capability, context) => {
+  if (capability.can_block && capability.status !== "complete") {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["can_block"],
+      message: "can_block requires complete framework capability"
+    });
+  }
+  if (capability.can_block && !capability.block_requires_accepted_convention) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["block_requires_accepted_convention"],
+      message: "blocking framework capability requires accepted convention"
+    });
+  }
+});
+
+export const EngineFrameworkAdapterSchema = z.object({
+  schema_version: z.literal("engine.framework.adapter.v1"),
+  adapter_id: z.string().min(1),
+  framework: EngineFrameworkNameSchema,
+  adapter_version: z.string().min(1),
+  package_names: z.array(z.string().min(1)),
+  entrypoint_kinds: z.array(EngineEntrypointKindSchema),
+  supported_patterns: z.array(z.string().min(1)),
+  unsupported_patterns: z.array(z.string().min(1))
+});
+
+export const EngineNormalizedEntrypointSchema = z.object({
+  schema_version: z.literal("engine.normalized_entrypoint.v1"),
+  entrypoint_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  adapter_id: z.string().min(1),
+  framework: EngineFrameworkNameSchema,
+  kind: EngineEntrypointKindSchema,
+  file_path: z.string().min(1),
+  exported_symbol: z.string().min(1).optional(),
+  handler_symbol: z.string().min(1).optional(),
+  route_pattern: z.string().min(1).optional(),
+  method: z.string().min(1).optional(),
+  route_group: z.string().min(1).optional(),
+  package_name: z.string().min(1).optional(),
+  subdirectory_role: z.string().min(1).optional(),
+  middleware_refs: z.array(z.string().min(1)),
+  request_source_refs: z.array(z.string().min(1)),
+  response_sink_refs: z.array(z.string().min(1)),
+  data_operation_refs: z.array(z.string().min(1)),
+  confidence_label: z.enum(["certain", "high", "medium", "low", "heuristic"]),
+  evidence_refs: z.array(z.string().min(1)),
+  parser_gap_ids: z.array(z.string().min(1))
+});
+
+export const EngineFrameworkParserGapSchema = z.object({
+  schema_version: z.literal("engine.framework.parser_gap.v1"),
+  parser_gap_id: z.string().min(1),
+  repo_id: z.string().min(1),
+  scan_id: z.string().min(1),
+  adapter_id: z.string().min(1),
+  framework: EngineFrameworkNameSchema.optional(),
+  file_path: z.string().min(1),
+  start_line: z.number().int().positive().optional(),
+  end_line: z.number().int().positive().optional(),
+  code: z.enum([
+    "unsupported_framework_pattern",
+    "route_binding_unresolved",
+    "handler_unresolved",
+    "dynamic_router_registration",
+    "decorator_metadata_unresolved",
+    "middleware_chain_unresolved",
+    "rpc_procedure_unresolved",
+    "graphql_resolver_unresolved",
+    "serverless_event_shape_unresolved"
+  ]),
+  reason: z.string().min(1),
+  affected_entrypoint_ids: z.array(z.string().min(1)),
+  affected_contract_kinds: z.array(z.string().min(1)),
+  blocks_enforcement: z.boolean(),
+  suggested_next_step: z.string().min(1)
+}).superRefine((gap, context) => {
+  if (
+    gap.start_line !== undefined &&
+    gap.end_line !== undefined &&
+    gap.end_line < gap.start_line
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["end_line"],
+      message: "end_line must be greater than or equal to start_line"
+    });
+  }
+});
+
 export const EngineLimitsSchema = z.object({
   max_files_seen: z.number().int().positive(),
   max_files_parsed: z.number().int().positive(),
@@ -156,6 +309,10 @@ export const EngineScanResultSchema = z.object({
   adapter_versions: z.record(z.string().min(1)),
   file_snapshots: z.array(EngineFileSnapshotSchema),
   facts: z.array(EngineFactSchema),
+  framework_adapters: z.array(EngineFrameworkAdapterSchema).default([]),
+  normalized_entrypoints: z.array(EngineNormalizedEntrypointSchema).default([]),
+  framework_parser_gaps: z.array(EngineFrameworkParserGapSchema).default([]),
+  framework_capabilities: z.array(EngineFrameworkCapabilitySchema).default([]),
   graph: z.unknown().optional(),
   diagnostics: z.array(EngineDiagnosticSchema),
   stats: EngineStatsSchema,
@@ -561,6 +718,7 @@ const EngineSecurityBoundaryProofSchema = z.object({
   proof_version: z.literal("security-boundary-proof/v1"),
   route: z.object({
     route_id: z.string().min(1),
+    normalized_entrypoint_id: z.string().min(1).optional(),
     file_path: z.string().min(1),
     file_role: z.literal("api_route"),
     endpoint: z.object({
@@ -1098,6 +1256,26 @@ export const EngineStreamEventSchema = z.discriminatedUnion("event", [
     schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),
     event: z.literal("graph_evidence_batch"),
     graph_evidence: z.array(GraphEvidenceSchema)
+  }),
+  z.object({
+    schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),
+    event: z.literal("framework_adapter_batch"),
+    framework_adapters: z.array(EngineFrameworkAdapterSchema)
+  }),
+  z.object({
+    schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),
+    event: z.literal("normalized_entrypoint_batch"),
+    normalized_entrypoints: z.array(EngineNormalizedEntrypointSchema)
+  }),
+  z.object({
+    schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),
+    event: z.literal("framework_parser_gap_batch"),
+    framework_parser_gaps: z.array(EngineFrameworkParserGapSchema)
+  }),
+  z.object({
+    schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),
+    event: z.literal("framework_capability_batch"),
+    framework_capabilities: z.array(EngineFrameworkCapabilitySchema)
   }),
   z.object({
     schema_version: z.literal(ENGINE_STREAM_EVENT_SCHEMA_VERSION),

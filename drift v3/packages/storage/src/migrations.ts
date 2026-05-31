@@ -745,5 +745,71 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_security_boundary_proof_runs_repo_route
         ON security_boundary_proof_runs(repo_id, route_id);
     `
+  },
+  {
+    id: "026_framework_entrypoints",
+    sql: `
+      CREATE TABLE IF NOT EXISTS framework_adapters (
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        framework TEXT NOT NULL,
+        adapter_json TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id, adapter_id),
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS normalized_entrypoints (
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        entrypoint_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        framework TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        route_pattern TEXT,
+        method TEXT,
+        entrypoint_json TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id, entrypoint_id),
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS framework_parser_gaps (
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        parser_gap_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        framework TEXT,
+        file_path TEXT NOT NULL,
+        code TEXT NOT NULL,
+        blocks_enforcement INTEGER NOT NULL CHECK (blocks_enforcement IN (0, 1)),
+        parser_gap_json TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id, parser_gap_id),
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS framework_capabilities (
+        repo_id TEXT NOT NULL,
+        scan_id TEXT NOT NULL,
+        adapter_id TEXT NOT NULL,
+        framework TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        status TEXT NOT NULL,
+        can_block INTEGER NOT NULL CHECK (can_block IN (0, 1)),
+        capability_json TEXT NOT NULL,
+        PRIMARY KEY (repo_id, scan_id, adapter_id, capability),
+        FOREIGN KEY (repo_id) REFERENCES repos(id),
+        FOREIGN KEY (scan_id) REFERENCES scan_manifests(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_normalized_entrypoints_repo_scan_framework
+        ON normalized_entrypoints(repo_id, scan_id, framework);
+
+      CREATE INDEX IF NOT EXISTS idx_normalized_entrypoints_repo_scan_file
+        ON normalized_entrypoints(repo_id, scan_id, file_path);
+    `
   }
 ];

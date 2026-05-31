@@ -108,7 +108,8 @@ describe("SQLite Drift storage", () => {
       "022_fact_imported_name",
       "023_security_boundary_proofs",
       "024_phase7_candidate_election_metadata",
-      "025_security_boundary_proof_runs"
+      "025_security_boundary_proof_runs",
+      "026_framework_entrypoints"
     ]);
     storage.close();
   });
@@ -439,6 +440,96 @@ describe("SQLite Drift storage", () => {
       })
     ]);
     expect(storage.listBaselineViolations("repo_abc")).toHaveLength(1);
+    storage.close();
+  });
+
+  it("persists normalized framework entrypoints for product read models", async () => {
+    const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
+    storage.migrate();
+    storage.upsertRepo({
+      id: "repo_framework",
+      root_path: "/repo",
+      fingerprint: "repo-fp",
+      created_at: "2026-05-10T00:00:00.000Z",
+      updated_at: "2026-05-10T00:00:00.000Z"
+    });
+    storage.upsertScanManifest({
+      id: "scan_framework",
+      repo_id: "repo_framework",
+      branch: "main",
+      commit: "abc123",
+      dirty: false,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0" },
+      rule_engine_version: "0.1.0",
+      status: "completed",
+      file_count: 1,
+      fact_count: 1,
+      finding_count: 0,
+      started_at: "2026-05-10T00:00:00.000Z",
+      completed_at: "2026-05-10T00:00:01.000Z"
+    });
+
+    storage.upsertFrameworkScanData({
+      repoId: "repo_framework",
+      scanId: "scan_framework",
+      adapters: [{
+        schema_version: "drift.framework.adapter.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        adapter_version: "0.1.0",
+        package_names: ["next"],
+        entrypoint_kinds: ["api_route"],
+        supported_patterns: ["app/api/**/route.{ts,tsx,js,jsx}"],
+        unsupported_patterns: [],
+        capabilities: []
+      }],
+      entrypoints: [{
+        schema_version: "drift.normalized_entrypoint.v1",
+        entrypoint_id: "entrypoint:next_app:app/api/users/route.ts:GET",
+        repo_id: "repo_framework",
+        scan_id: "scan_framework",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        kind: "api_route",
+        file_path: "app/api/users/route.ts",
+        route_pattern: "/api/users",
+        method: "GET",
+        middleware_refs: [],
+        request_source_refs: [],
+        response_sink_refs: [],
+        data_operation_refs: [],
+        confidence_label: "high",
+        evidence_refs: ["fact:app/api/users/route.ts:route_declared:GET:1-1"],
+        parser_gap_ids: []
+      }],
+      parserGaps: [],
+      capabilities: [{
+        schema_version: "drift.framework.capability.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        capability: "entrypoint_discovery",
+        status: "complete",
+        can_block: true,
+        block_requires_accepted_convention: true,
+        parser_gap_ids: [],
+        missing_proof_ids: []
+      }]
+    });
+
+    expect(storage.listNormalizedEntrypoints("repo_framework", "scan_framework")).toMatchObject([{
+      entrypoint_id: "entrypoint:next_app:app/api/users/route.ts:GET",
+      repo_id: "repo_framework",
+      scan_id: "scan_framework",
+      framework: "next_app",
+      route_pattern: "/api/users"
+    }]);
+    expect(storage.listFrameworkCapabilities("repo_framework", "scan_framework")).toMatchObject([{
+      framework: "next_app",
+      capability: "entrypoint_discovery",
+      can_block: true
+    }]);
+    expect(storage.listFrameworkAdapters("repo_framework", "scan_framework")).toHaveLength(1);
     storage.close();
   });
 

@@ -1,5 +1,6 @@
 import { authorizeContextExport,type FileRole,type PolicyDecision,type RepoContract } from "@drift/core";
 import {
+  buildFrameworkEntrypointReadModel,
   buildRepoMapReadModel,
   buildSecurityPhase8ReadModel,
   createGraphQueryService,
@@ -89,6 +90,15 @@ export function repoMapPayload(
   const facts = latestScan ? storage.listFacts(latestScan.id) : [];
   const findings = storage.listFindings(repoId);
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
+  const frameworkEntryPoints = latestScan
+    ? buildFrameworkEntrypointReadModel({
+        repo_id: repoId,
+        scan_id: latestScan.id,
+        entrypoints: storage.listNormalizedEntrypoints(repoId, latestScan.id),
+        parser_gaps: storage.listFrameworkParserGaps(repoId, latestScan.id),
+        capabilities: storage.listFrameworkCapabilities(repoId, latestScan.id)
+      })
+    : null;
   const readModel = buildRepoMapReadModel({
     repoId,
     scanId: latestScan?.id ?? null,
@@ -158,6 +168,7 @@ export function repoMapPayload(
     topology: readModel.topology,
     pagination: readModel.pagination,
     routes: phase8Security.routes,
+    framework_entrypoints: frameworkEntryPoints,
     freshness_requirement: freshnessRequirement(Boolean(options.requireFresh), scanStatus),
     files: readModel.listed_files,
     redactions: {

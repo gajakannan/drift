@@ -12,7 +12,11 @@ import type {
   FactRecord,
   FileSnapshot,
   Finding,
+  FrameworkAdapter,
+  FrameworkCapability,
+  FrameworkParserGap,
   ModuleDependent,
+  NormalizedEntrypointFact,
   ParserGap,
   RepoContract,
   RepoRecord,
@@ -35,7 +39,11 @@ import {
   FactRecordSchema,
   FileSnapshotSchema,
   FindingSchema,
+  FrameworkAdapterSchema,
+  FrameworkCapabilitySchema,
+  FrameworkParserGapSchema,
   ModuleDependentSchema,
+  NormalizedEntrypointFactSchema,
   ParserGapSchema,
   RepoContractSchema,
   RepoRecordSchema,
@@ -464,6 +472,143 @@ export class SqliteDriftStorage {
           .all(scanId);
 
     return rows.map(factFromRow);
+  }
+
+  upsertFrameworkScanData(input: {
+    repoId: string;
+    scanId: string;
+    adapters: FrameworkAdapter[];
+    entrypoints: NormalizedEntrypointFact[];
+    parserGaps: FrameworkParserGap[];
+    capabilities: FrameworkCapability[];
+  }): void {
+    const adapters = input.adapters.map((adapter) => FrameworkAdapterSchema.parse(adapter));
+    const entrypoints = input.entrypoints.map((entrypoint) => NormalizedEntrypointFactSchema.parse(entrypoint));
+    const parserGaps = input.parserGaps.map((gap) => FrameworkParserGapSchema.parse(gap));
+    const capabilities = input.capabilities.map((capability) => FrameworkCapabilitySchema.parse(capability));
+    const deleteAdapters = this.db.prepare("DELETE FROM framework_adapters WHERE repo_id = ? AND scan_id = ?");
+    const deleteEntrypoints = this.db.prepare("DELETE FROM normalized_entrypoints WHERE repo_id = ? AND scan_id = ?");
+    const deleteParserGaps = this.db.prepare("DELETE FROM framework_parser_gaps WHERE repo_id = ? AND scan_id = ?");
+    const deleteCapabilities = this.db.prepare("DELETE FROM framework_capabilities WHERE repo_id = ? AND scan_id = ?");
+    const insertAdapter = this.db.prepare(`
+      INSERT INTO framework_adapters (
+        repo_id, scan_id, adapter_id, framework, adapter_json
+      )
+      VALUES (
+        @repo_id, @scan_id, @adapter_id, @framework, @adapter_json
+      )
+    `);
+    const insertEntrypoint = this.db.prepare(`
+      INSERT INTO normalized_entrypoints (
+        repo_id, scan_id, entrypoint_id, adapter_id, framework, kind, file_path,
+        route_pattern, method, entrypoint_json
+      )
+      VALUES (
+        @repo_id, @scan_id, @entrypoint_id, @adapter_id, @framework, @kind, @file_path,
+        @route_pattern, @method, @entrypoint_json
+      )
+    `);
+    const insertParserGap = this.db.prepare(`
+      INSERT INTO framework_parser_gaps (
+        repo_id, scan_id, parser_gap_id, adapter_id, framework, file_path, code,
+        blocks_enforcement, parser_gap_json
+      )
+      VALUES (
+        @repo_id, @scan_id, @parser_gap_id, @adapter_id, @framework, @file_path, @code,
+        @blocks_enforcement, @parser_gap_json
+      )
+    `);
+    const insertCapability = this.db.prepare(`
+      INSERT INTO framework_capabilities (
+        repo_id, scan_id, adapter_id, framework, capability, status, can_block, capability_json
+      )
+      VALUES (
+        @repo_id, @scan_id, @adapter_id, @framework, @capability, @status, @can_block, @capability_json
+      )
+    `);
+
+    this.db.transaction(() => {
+      deleteAdapters.run(input.repoId, input.scanId);
+      deleteEntrypoints.run(input.repoId, input.scanId);
+      deleteParserGaps.run(input.repoId, input.scanId);
+      deleteCapabilities.run(input.repoId, input.scanId);
+      for (const adapter of adapters) {
+        insertAdapter.run({
+          repo_id: input.repoId,
+          scan_id: input.scanId,
+          adapter_id: adapter.adapter_id,
+          framework: adapter.framework,
+          adapter_json: stringifyJson(adapter)
+        });
+      }
+      for (const entrypoint of entrypoints) {
+        insertEntrypoint.run({
+          repo_id: entrypoint.repo_id,
+          scan_id: entrypoint.scan_id,
+          entrypoint_id: entrypoint.entrypoint_id,
+          adapter_id: entrypoint.adapter_id,
+          framework: entrypoint.framework,
+          kind: entrypoint.kind,
+          file_path: entrypoint.file_path,
+          route_pattern: entrypoint.route_pattern ?? null,
+          method: entrypoint.method ?? null,
+          entrypoint_json: stringifyJson(entrypoint)
+        });
+      }
+      for (const gap of parserGaps) {
+        insertParserGap.run({
+          repo_id: gap.repo_id,
+          scan_id: gap.scan_id,
+          parser_gap_id: gap.parser_gap_id,
+          adapter_id: gap.adapter_id,
+          framework: gap.framework ?? null,
+          file_path: gap.file_path,
+          code: gap.code,
+          blocks_enforcement: gap.blocks_enforcement ? 1 : 0,
+          parser_gap_json: stringifyJson(gap)
+        });
+      }
+      for (const capability of capabilities) {
+        insertCapability.run({
+          repo_id: input.repoId,
+          scan_id: input.scanId,
+          adapter_id: capability.adapter_id,
+          framework: capability.framework,
+          capability: capability.capability,
+          status: capability.status,
+          can_block: capability.can_block ? 1 : 0,
+          capability_json: stringifyJson(capability)
+        });
+      }
+    })();
+  }
+
+  listFrameworkAdapters(repoId: string, scanId: string): FrameworkAdapter[] {
+    return this.db
+      .prepare("SELECT adapter_json FROM framework_adapters WHERE repo_id = ? AND scan_id = ? ORDER BY framework, adapter_id")
+      .all(repoId, scanId)
+      .map(frameworkAdapterFromRow);
+  }
+
+  listNormalizedEntrypoints(repoId: string, scanId: string): NormalizedEntrypointFact[] {
+    return this.db
+      .prepare("SELECT entrypoint_json FROM normalized_entrypoints WHERE repo_id = ? AND scan_id = ? ORDER BY framework, file_path, entrypoint_id")
+      .all(repoId, scanId)
+      .map(normalizedEntrypointFromRow);
+  }
+
+  listFrameworkParserGaps(repoId: string, scanId: string): FrameworkParserGap[] {
+    return this.db
+      .prepare("SELECT parser_gap_json FROM framework_parser_gaps WHERE repo_id = ? AND scan_id = ? ORDER BY file_path, parser_gap_id")
+      .all(repoId, scanId)
+      .map(frameworkParserGapFromRow);
+  }
+
+  listFrameworkCapabilities(repoId: string, scanId: string): FrameworkCapability[] {
+    return this.db
+      .prepare("SELECT capability_json FROM framework_capabilities WHERE repo_id = ? AND scan_id = ? ORDER BY framework, capability, adapter_id")
+      .all(repoId, scanId)
+      .map(frameworkCapabilityFromRow);
   }
 
   upsertParserGaps(gaps: ParserGap[]): void {
@@ -1777,6 +1922,26 @@ function parserGapFromRow(row: unknown): ParserGap {
       ? JSON.parse(record.evidence_refs_json) as unknown
       : []
   });
+}
+
+function frameworkAdapterFromRow(row: unknown): FrameworkAdapter {
+  const record = row as Record<string, unknown>;
+  return FrameworkAdapterSchema.parse(parseJsonObject(record.adapter_json));
+}
+
+function normalizedEntrypointFromRow(row: unknown): NormalizedEntrypointFact {
+  const record = row as Record<string, unknown>;
+  return NormalizedEntrypointFactSchema.parse(parseJsonObject(record.entrypoint_json));
+}
+
+function frameworkParserGapFromRow(row: unknown): FrameworkParserGap {
+  const record = row as Record<string, unknown>;
+  return FrameworkParserGapSchema.parse(parseJsonObject(record.parser_gap_json));
+}
+
+function frameworkCapabilityFromRow(row: unknown): FrameworkCapability {
+  const record = row as Record<string, unknown>;
+  return FrameworkCapabilitySchema.parse(parseJsonObject(record.capability_json));
 }
 
 function scanCapabilityReportFromRow(row: unknown): ScanCapabilityReport {
