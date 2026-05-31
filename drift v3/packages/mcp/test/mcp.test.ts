@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildFactGraphArtifactFromParts } from "@drift/factgraph";
 import { MIGRATIONS, openDriftStorage } from "@drift/storage";
+import { runCli } from "../../cli/src/index.js";
 import {
   DRIFT_READ_ONLY_MCP_TOOLS,
   createReadOnlyMcpHandlers,
@@ -544,6 +545,49 @@ describe("read-only MCP handlers", () => {
         required_capabilities: ["fact_graph", "scan_manifest"]
       }
     });
+  });
+
+  it("matches CLI readiness for scan status, repo map, and preflight surfaces", async () => {
+    const databasePath = await seedMcpDatabase();
+    const handlers = createReadOnlyMcpHandlers({ databasePath });
+    const now = "2026-05-10T00:00:10.000Z";
+    const task = "change users api route";
+
+    const cliScanStatus = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", "repo_abc",
+      "--json"
+    ]);
+    const cliRepoMap = await runCli([
+      "--db", databasePath,
+      "repo", "map",
+      "--repo", "repo_abc",
+      "--json"
+    ]);
+    const cliPreflight = await runCli([
+      "--db", databasePath,
+      "prepare", task,
+      "--repo", "repo_abc",
+      "--now", now,
+      "--json"
+    ]);
+
+    expect(cliScanStatus.exitCode).toBe(0);
+    expect(cliRepoMap.exitCode).toBe(0);
+    expect(cliPreflight.exitCode).toBe(0);
+
+    const mcpScanStatus = handlers.get_scan_status({ repo_id: "repo_abc" });
+    const mcpRepoMap = handlers.get_repo_map({ repo_id: "repo_abc" });
+    const mcpPreflight = handlers.get_task_preflight({
+      repo_id: "repo_abc",
+      task,
+      now
+    });
+
+    expect(mcpScanStatus.readiness).toEqual(JSON.parse(cliScanStatus.stdout).readiness);
+    expect(mcpRepoMap.readiness).toEqual(JSON.parse(cliRepoMap.stdout).readiness);
+    expect(mcpPreflight.readiness).toEqual(JSON.parse(cliPreflight.stdout).readiness);
   });
 
   it("reports parser gap summaries in scan status", async () => {
