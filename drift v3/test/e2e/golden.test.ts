@@ -226,7 +226,39 @@ describe("golden fixture CLI lifecycle", () => {
         "forbidden_imports": [
           "~/lib/server/db",
         ],
-        "response_schema": null,
+        "response_schema": "drift.start.result.v1",
+      }
+    `);
+
+    const doctor = await runCli([
+      "--db", payload.state.database_path,
+      "doctor",
+      "--repo-root", repoRoot,
+      "--state-root", stateRoot,
+      "--json"
+    ]);
+    expect(doctor.exitCode).toBe(0);
+    expect(goldenDoctor(JSON.parse(doctor.stdout))).toMatchInlineSnapshot(`
+      {
+        "check_ids": [
+          "repo_root",
+          "git",
+          "package_manifest",
+          "package_manager",
+          "workspace",
+          "typescript_files",
+          "api_routes",
+          "local_state",
+          "drift_state",
+          "contract",
+          "scan_freshness",
+          "audit_integrity",
+          "backup_artifacts",
+        ],
+        "machine_contract_versions_schema": "drift.machine_contract_versions.v1",
+        "response_schema": "drift.doctor.result.v1",
+        "status": "warn",
+        "v1_scope": "typescript_api_route_layering",
       }
     `);
   });
@@ -268,6 +300,16 @@ function goldenChadlikeStart(payload: any) {
     forbidden_imports: direct?.matcher?.forbidden_imports,
     evidence_symbols: direct?.evidence_refs?.map((ref: any) => ref.symbol),
     accepted_fact_counts: payload.accepted?.evidence_refs?.map((ref: any) => ref.fact_ids.length)
+  };
+}
+
+function goldenDoctor(payload: any) {
+  return {
+    response_schema: payload.response_schema,
+    status: payload.status,
+    machine_contract_versions_schema: payload.machine_contract_versions.schema_version,
+    v1_scope: payload.v1_scope.primary_wedge,
+    check_ids: payload.checks.map((check: any) => check.id)
   };
 }
 
