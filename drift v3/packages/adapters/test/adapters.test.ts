@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   AdapterCapabilitySchema,
@@ -62,6 +64,16 @@ describe("adapter capability registry", () => {
       "direct_data_access_check",
       "candidate_inference"
     ]));
+  });
+
+  it("keeps TypeScript adapter evidence fixture ids resolvable", () => {
+    const fixtureIds = TYPESCRIPT_ADAPTER_MANIFEST.capabilities
+      .flatMap((capability) => capability.evidence.fixture_ids);
+    const fixtureRoot = resolve("..", "..", "test", "fixtures");
+
+    expect(fixtureIds.filter((fixtureId) =>
+      !existsSync(resolve(fixtureRoot, fixtureId))
+    )).toEqual([]);
   });
 
   it("certifies capabilities with scope, evidence, and blocking safety", () => {

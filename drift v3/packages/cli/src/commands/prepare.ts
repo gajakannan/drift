@@ -6,7 +6,7 @@ import {
   createContextPolicyMatrix,
   type FileRole
 } from "@drift/core";
-import { buildChangeImpact,buildReadiness,buildSemanticCoverageFromCapabilityReport,classifyAgentTask,selectRelevantTests,type ChangeImpactRouteFlow } from "@drift/query";
+import { buildChangeImpact,buildParserGapQuality,buildReadiness,buildSemanticCoverageFromCapabilityReport,classifyAgentTask,selectRelevantTests,type ChangeImpactRouteFlow } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { optionalRepoRelativeFlag,requiredValue,stringFlag } from "../args/flag-readers.js";
@@ -147,6 +147,13 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     parser_gaps: allParserGaps,
     generated_at: now
   });
+  const parserGapQuality = buildParserGapQuality({
+    repo_id: repoId,
+    scan_id: scanStatus.latest_scan?.id ?? null,
+    surface: "prepare",
+    parser_gaps: allParserGaps,
+    readiness
+  });
   const contextPolicy = createContextPolicyMatrix(contract, policy);
   const taskPreflightPacket = AgentPreflightPacketV2Schema.parse({
     schema_version: "drift.agent_preflight.v2",
@@ -197,6 +204,7 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     }),
     policy,
     readiness,
+    parser_gap_quality: parserGapQuality,
     semantic_coverage: semanticCoverage,
     contract: {
       id: storedContract?.id ?? null,

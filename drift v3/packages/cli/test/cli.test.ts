@@ -1744,6 +1744,25 @@ supported_sqlite_schema_version: 27,
       by_capability: {},
       by_contract_kind: {}
     });
+    expect(payload.parser_gap_quality).toMatchObject({
+      schema_version: "drift.parser_gap_quality.v1",
+      total_count: 1,
+      blocking_count: 0,
+      advisory_count: 1,
+      by_kind: { unresolved_import: 1 },
+      by_capability: {},
+      by_contract_kind: {},
+      top_actions: [{
+        suggested_action: "Resolve the import or add resolver configuration, then rerun drift scan.",
+        count: 1
+      }],
+      sample_gaps: [expect.objectContaining({
+        parser_gap_id: "parser_gap_unresolved_users",
+        suggested_action: "Resolve the import or add resolver configuration, then rerun drift scan."
+      })],
+      decision: "advisory_only",
+      user_action: "Review advisory parser gaps; blocking enforcement remains limited to complete evidence."
+    });
     expect(payload.readiness).toMatchObject({
       schema_version: "drift.readiness.v1",
       repo_id: repoId,
@@ -1800,6 +1819,22 @@ supported_sqlite_schema_version: 27,
       by_contract_kind: {
         api_route_no_direct_data_access: 1
       }
+    });
+    expect(payload.parser_gap_quality).toMatchObject({
+      schema_version: "drift.parser_gap_quality.v1",
+      total_count: 1,
+      blocking_count: 1,
+      advisory_count: 0,
+      by_capability: {
+        "ts.dynamic_imports.v1": 1,
+        "ts.route_flow.v1": 1
+      },
+      by_contract_kind: {
+        api_route_no_direct_data_access: 1
+      },
+      top_actions: [{ suggested_action: "rewrite_static", count: 1 }],
+      decision: "refuse",
+      user_action: "Resolve blocking parser gaps before enabling blocking enforcement."
     });
     expect(payload.readiness).toMatchObject({
       parser_gap_count: 1,
@@ -9701,6 +9736,12 @@ schema_version: 27,
     expect(payload.scan_status.indexed_file_count).toBeGreaterThan(0);
     expect(payload.scan_status.source_change_count).toBeGreaterThan(0);
     expect(payload.scan_status.changes.added).toContain("apps/web/app/api/search/route.ts");
+    expect(payload.parser_gap_quality).toMatchObject({
+      schema_version: "drift.parser_gap_quality.v1",
+      total_count: 0,
+      decision: payload.readiness.decision,
+      user_action: "No parser gap action required."
+    });
     expect(payload.task_model).toMatchObject({
       schema_version: "drift.agent_task.v1",
       task_intent: "feature",
@@ -10534,6 +10575,13 @@ schema_version: 27,
         schema_version: "drift.readiness.v1",
         surface: "repo_map",
         repo_id: repoId
+      },
+      parser_gap_quality: {
+        schema_version: "drift.parser_gap_quality.v1",
+        surface: "repo_map",
+        repo_id: repoId,
+        total_count: 0,
+        user_action: "No parser gap action required."
       },
       governance: {
         read_only: true,

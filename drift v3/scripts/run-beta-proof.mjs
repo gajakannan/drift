@@ -299,6 +299,8 @@ try {
         .map((capability) => capability.capability_id)
     }
   };
+  const realisticFixtureProof = await realisticFixtureProofFor(tempRoot);
+  const parserGapQualityProof = await parserGapQualityProofFor(tempRoot);
 
   const betaProof = {
     verify_ci_status: process.env.DRIFT_VERIFY_CI_STATUS ?? null,
@@ -330,6 +332,10 @@ try {
     machine_contract_versions_verified: machineContractVersionsVerified,
     finding_evidence_confidence_verified: findingEvidenceConfidenceVerified,
     required_check_execution_proof_verified: requiredCheckExecutionProofVerified,
+    realistic_fixture_matrix_verified: realisticFixtureProof.realistic_fixture_matrix_verified,
+    no_false_prisma_fixture_verified: realisticFixtureProof.no_false_prisma_fixture_verified,
+    non_next_fixture_graceful_verified: realisticFixtureProof.non_next_fixture_graceful_verified,
+    parser_gap_quality_verified: parserGapQualityProof.parser_gap_quality_verified,
     semantic_beta_proof_verified: semanticBetaProof.semantic_capability_contracts_verified &&
       semanticBetaProof.architecture_contract_verified &&
       semanticBetaProof.convention_election_contract_verified &&
@@ -392,6 +398,8 @@ try {
         argv: requiredCheckExecution.execution?.argv ?? [],
         mcp_summary: mcpRequiredCheckExecutions.summary ?? null
       },
+      realistic_fixture_matrix: realisticFixtureProof,
+      parser_gap_quality: parserGapQualityProof,
       semantic_beta_proof: semanticBetaProof,
       canonical_route_proof: canonicalRouteProof,
       contract_parity: contractParity,
@@ -436,6 +444,173 @@ async function createFixture(dir) {
   ].join("\n"));
   await writeCanonicalRouteFixtures(repoRoot);
   return { repoRoot, stateRoot };
+}
+
+async function realisticFixtureProofFor(tempRoot) {
+  const [prisma, fetch, express] = await Promise.all([
+    scanStaticFixture({
+      fixtureId: "next-prisma-clean-service",
+      stateRoot: join(tempRoot, "next-prisma-clean-service-state"),
+      now: "2026-05-10T00:01:00.000Z"
+    }),
+    scanStaticFixture({
+      fixtureId: "next-non-prisma-fetch-service",
+      stateRoot: join(tempRoot, "next-non-prisma-fetch-service-state"),
+      now: "2026-05-10T00:01:01.000Z"
+    }),
+    scanStaticFixture({
+      fixtureId: "node-express-api",
+      stateRoot: join(tempRoot, "node-express-api-state"),
+      now: "2026-05-10T00:01:02.000Z"
+    })
+  ]);
+  const prismaDiagnostics = graphDiagnosticsForScan(prisma);
+  const prismaEdges = graphEdgesForScan(prisma);
+  const prismaCandidateKinds = candidateKinds(prisma.scan);
+  const fetchCandidateKinds = candidateKinds(fetch.scan);
+  const expressCandidateKinds = candidateKinds(express.scan);
+  const realisticFixtureMatrixVerified = prisma.scan.summary?.engine_source === "rust" &&
+    prisma.scan.summary?.files_indexed >= 3 &&
+    !prismaCandidateKinds.includes("api_route_no_direct_data_access") &&
+    !prismaDiagnostics.some((diagnostic) => diagnostic.code === "unresolved_import") &&
+    prismaEdges.some((edge) =>
+      edge.kind === "IMPORT_RESOLVES_TO_MODULE" &&
+      edge.to === "module:apps/web/services/users.ts"
+    ) &&
+    prismaEdges.some((edge) =>
+      edge.kind === "IMPORT_RESOLVES_TO_MODULE" &&
+      edge.to === "module:apps/web/lib/prisma.ts"
+    );
+  const noFalsePrismaFixtureVerified = fetch.scan.summary?.engine_source === "rust" &&
+    fetch.scan.summary?.files_indexed >= 2 &&
+    !fetchCandidateKinds.includes("api_route_no_direct_data_access") &&
+    !JSON.stringify(fetch.scan.candidates ?? []).toLowerCase().includes("prisma");
+  const nonNextFixtureGracefulVerified = express.scan.summary?.engine_source === "rust" &&
+    express.scan.summary?.files_indexed >= 4 &&
+    !expressCandidateKinds.includes("api_route_no_direct_data_access");
+
+  return {
+    realistic_fixture_matrix_verified: realisticFixtureMatrixVerified,
+    no_false_prisma_fixture_verified: noFalsePrismaFixtureVerified,
+    non_next_fixture_graceful_verified: nonNextFixtureGracefulVerified,
+    fixtures: {
+      next_prisma_clean_service: fixtureScanEvidence(prisma, {
+        diagnostics_count: prismaDiagnostics.length,
+        import_edges: prismaEdges
+          .filter((edge) => edge.kind === "IMPORT_RESOLVES_TO_MODULE")
+          .map((edge) => ({ from: edge.from, to: edge.to }))
+      }),
+      next_non_prisma_fetch_service: fixtureScanEvidence(fetch),
+      node_express_api: fixtureScanEvidence(express)
+    }
+  };
+}
+
+async function parserGapQualityProofFor(tempRoot) {
+  const clean = await scanStaticFixture({
+    fixtureId: "next-api-service-delegated",
+    stateRoot: join(tempRoot, "parser-gap-quality-clean-state"),
+    now: "2026-05-10T00:02:00.000Z"
+  });
+  const cleanStatus = await runJson([
+    "--db", clean.scan.database_path,
+    "scan", "status",
+    "--repo", clean.scan.repo.id,
+    "--json"
+  ]);
+  const parserGapFixture = await scanStaticFixture({
+    fixtureId: "next-api-service-delegated",
+    stateRoot: join(tempRoot, "parser-gap-quality-gap-state"),
+    now: "2026-05-10T00:02:01.000Z"
+  });
+  const storage = openDriftStorage({ databasePath: parserGapFixture.scan.database_path });
+  try {
+    storage.upsertParserGaps([{
+      schema_version: "drift.parser_gap.v1",
+      gap_id: "parser_gap_beta_unresolved_import",
+      repo_id: parserGapFixture.scan.repo.id,
+      scan_id: parserGapFixture.scan.scan.id,
+      kind: "unresolved_import",
+      file_path: "apps/web/app/api/users/route.ts",
+      start_line: 1,
+      end_line: 1,
+      confidence_impact: "lowers_flow",
+      message: "Could not resolve import @/missing/service.",
+      evidence_refs: ["diagnostic_unresolved_import"],
+      created_at: "2026-05-10T00:02:02.000Z"
+    }]);
+  } finally {
+    storage.close();
+  }
+  const gapStatus = await runJson([
+    "--db", parserGapFixture.scan.database_path,
+    "scan", "status",
+    "--repo", parserGapFixture.scan.repo.id,
+    "--json"
+  ]);
+  const cleanQuality = cleanStatus.parser_gap_quality ?? {};
+  const gapQuality = gapStatus.parser_gap_quality ?? {};
+  const sample = Array.isArray(gapQuality.sample_gaps) ? gapQuality.sample_gaps[0] : null;
+  const parserGapQualityVerified = cleanQuality.schema_version === "drift.parser_gap_quality.v1" &&
+    cleanQuality.total_count === 0 &&
+    cleanQuality.user_action === "No parser gap action required." &&
+    gapQuality.schema_version === "drift.parser_gap_quality.v1" &&
+    gapQuality.total_count >= 1 &&
+    gapQuality.decision === gapStatus.readiness?.decision &&
+    sample?.file_path === "apps/web/app/api/users/route.ts" &&
+    sample?.suggested_action === "Resolve the import or add resolver configuration, then rerun drift scan.";
+
+  return {
+    parser_gap_quality_verified: parserGapQualityVerified,
+    clean_quality: cleanQuality,
+    parser_gap_quality: gapQuality,
+    readiness_decision: gapStatus.readiness?.decision ?? null
+  };
+}
+
+async function scanStaticFixture({ fixtureId, stateRoot, now }) {
+  const scan = await runJson([
+    "scan",
+    "--repo-root", resolve("test/fixtures", fixtureId),
+    "--state-root", stateRoot,
+    "--now", now,
+    "--json"
+  ]);
+  return { fixture_id: fixtureId, scan };
+}
+
+function graphDiagnosticsForScan(fixtureScan) {
+  const storage = openDriftStorage({ databasePath: fixtureScan.scan.database_path });
+  try {
+    return storage.listGraphDiagnostics(fixtureScan.scan.repo.id, fixtureScan.scan.scan.id);
+  } finally {
+    storage.close();
+  }
+}
+
+function graphEdgesForScan(fixtureScan) {
+  const storage = openDriftStorage({ databasePath: fixtureScan.scan.database_path });
+  try {
+    return storage.listGraphEdges(fixtureScan.scan.repo.id, fixtureScan.scan.scan.id);
+  } finally {
+    storage.close();
+  }
+}
+
+function fixtureScanEvidence(fixtureScan, extra = {}) {
+  return {
+    fixture_id: fixtureScan.fixture_id,
+    repo_id: fixtureScan.scan.repo?.id ?? null,
+    scan_id: fixtureScan.scan.scan?.id ?? null,
+    engine_source: fixtureScan.scan.summary?.engine_source ?? null,
+    files_indexed: fixtureScan.scan.summary?.files_indexed ?? null,
+    candidates: candidateKinds(fixtureScan.scan),
+    ...extra
+  };
+}
+
+function candidateKinds(scan) {
+  return (scan.candidates ?? []).map((candidate) => candidate.kind).sort();
 }
 
 async function writeCanonicalRouteFixtures(repoRoot) {
@@ -941,6 +1116,10 @@ function assertBetaProof(proof) {
     "machine_contract_versions_verified",
     "finding_evidence_confidence_verified",
     "required_check_execution_proof_verified",
+    "realistic_fixture_matrix_verified",
+    "no_false_prisma_fixture_verified",
+    "non_next_fixture_graceful_verified",
+    "parser_gap_quality_verified",
     "semantic_beta_proof_verified",
     "canonical_routes_verified",
     "canonical_route_fallback_absent",

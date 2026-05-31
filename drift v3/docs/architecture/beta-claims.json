@@ -57,7 +57,7 @@
         "AdapterContract",
         "EntrypointContract"
       ],
-      "fixture": "scripts/run-beta-proof.mjs"
+      "fixture": "scripts/run-beta-proof.mjs parser-gap quality proof plus test/e2e/fixture-matrix.test.ts realistic Next/Node fixtures"
     }
   }
 }

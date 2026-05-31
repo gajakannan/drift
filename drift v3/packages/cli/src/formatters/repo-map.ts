@@ -1,4 +1,5 @@
 import type { FileRole } from "@drift/core";
+import type { ParserGapQuality } from "@drift/query";
 import { RepoMapFile } from "../domain/repo-map.js";
 import { formatCounts } from "./findings.js";
 
@@ -21,9 +22,15 @@ export function formatRepoMapText(payload: {
     has_more: boolean;
     next_offset: number | null;
   };
+  parser_gap_quality?: ParserGapQuality;
   files: RepoMapFile[];
   next_commands: string[];
 }): string {
+  const parserGapLines = payload.parser_gap_quality && payload.parser_gap_quality.total_count > 0
+    ? [
+        `Parser gaps: ${payload.parser_gap_quality.blocking_count} blocking, ${payload.parser_gap_quality.advisory_count} advisory. Action: ${payload.parser_gap_quality.user_action}`
+      ]
+    : [];
   const rows = payload.files.length > 0
     ? payload.files.map((file) =>
         `  ${file.path} roles:${file.roles.join(",") || "none"} imports:${file.imports.length} exports:${file.exported_symbols.length} calls:${file.calls.length}`
@@ -42,6 +49,7 @@ export function formatRepoMapText(payload: {
     `Imports: ${payload.summary.import_count}`,
     `Exports: ${payload.summary.export_count}`,
     `Calls: ${payload.summary.call_count}`,
+    ...parserGapLines,
     "",
     "Files:",
     ...rows,

@@ -153,6 +153,10 @@ describe("release hygiene", () => {
         "machine_contract_versions_verified",
         "finding_evidence_confidence_verified",
         "required_check_execution_proof_verified",
+        "realistic_fixture_matrix_verified",
+        "no_false_prisma_fixture_verified",
+        "non_next_fixture_graceful_verified",
+        "parser_gap_quality_verified",
         "contract_parity_verified",
         "mcp_cli_parity_verified",
         "audit_verified"
@@ -183,6 +187,10 @@ describe("release hygiene", () => {
       finding_evidence_confidence_verified: true,
       required_check_execution_proof_verified: true,
       semantic_beta_proof_verified: true,
+      realistic_fixture_matrix_verified: true,
+      no_false_prisma_fixture_verified: true,
+      non_next_fixture_graceful_verified: true,
+      parser_gap_quality_verified: true,
       contract_parity_verified: true,
       mcp_cli_parity_verified: true,
       audit_verified: true
@@ -203,6 +211,19 @@ describe("release hygiene", () => {
       semantic_capability_contracts_verified: true,
       partial_beta_required_count: 0,
       unsupported_beta_required_count: 0
+    });
+    expect(betaProof.evidence.realistic_fixture_matrix).toMatchObject({
+      realistic_fixture_matrix_verified: true,
+      no_false_prisma_fixture_verified: true,
+      non_next_fixture_graceful_verified: true
+    });
+    expect(betaProof.evidence.parser_gap_quality).toMatchObject({
+      parser_gap_quality_verified: true,
+      clean_quality: {
+        schema_version: "drift.parser_gap_quality.v1",
+        total_count: 0,
+        user_action: "No parser gap action required."
+      }
     });
     expect(betaProof.evidence.finding_evidence_confidence).toMatchObject({
       confidence_kind: "deterministic",

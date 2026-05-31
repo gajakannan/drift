@@ -264,6 +264,67 @@ describe("golden fixture CLI lifecycle", () => {
   });
 });
 
+describe("golden realistic repo evidence", () => {
+  it("summarizes widened beta fixtures without volatile fields", async () => {
+    const prisma = await scanOnlyGolden("next-prisma-clean-service");
+    const fetch = await scanOnlyGolden("next-non-prisma-fetch-service");
+    const express = await scanOnlyGolden("node-express-api");
+
+    expect(prisma).toMatchInlineSnapshot(`
+      {
+        "candidate_kinds": [
+          "api_route_requires_service_delegation",
+        ],
+        "diagnostics_count": 0,
+        "engine_source": "rust",
+        "facts_count": 17,
+        "files_indexed": 3,
+      }
+    `);
+    expect(fetch).toMatchInlineSnapshot(`
+      {
+        "candidate_kinds": [
+          "api_route_requires_service_delegation",
+        ],
+        "diagnostics_count": 0,
+        "engine_source": "rust",
+        "facts_count": 17,
+        "files_indexed": 2,
+      }
+    `);
+    expect(express).toMatchInlineSnapshot(`
+      {
+        "candidate_kinds": [],
+        "diagnostics_count": 0,
+        "engine_source": "rust",
+        "facts_count": 22,
+        "files_indexed": 4,
+      }
+    `);
+  });
+});
+
+async function scanOnlyGolden(name: string) {
+  const { repoRoot, stateRoot } = await fixtureRepo(name);
+  const scan = await runCli([
+    "scan",
+    "--repo-root", repoRoot,
+    "--state-root", stateRoot,
+    "--now", "2026-05-10T00:00:00.000Z",
+    "--json"
+  ]);
+
+  expect(scan.exitCode).toBe(0);
+  const payload = JSON.parse(scan.stdout);
+  return {
+    files_indexed: payload.summary.files_indexed,
+    facts_count: payload.summary.facts_count,
+    diagnostics_count: payload.summary.diagnostics_count,
+    engine_source: payload.summary.engine_source,
+    candidate_kinds: payload.candidates.map((candidate: any) => candidate.kind)
+  };
+}
+
 function goldenScan(payload: any) {
   return {
     files_indexed: payload.summary.files_indexed,

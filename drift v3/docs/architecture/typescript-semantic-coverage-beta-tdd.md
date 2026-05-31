@@ -1139,9 +1139,12 @@ it("scan status groups parser gaps by capability and contract kind", () => {
 });
 ```
 
-Expected RED:
+Historical RED:
 
-- Parser gap V2 fields are not persisted or grouped.
+- Parser gap V2 fields were not persisted or grouped. Current beta wiring keeps
+  V2 as an existing source contract and derives `drift.parser_gap_quality.v1`
+  in `@drift/query` for grouped user-facing quality; it does not claim
+  production-complete TypeScript semantics.
 
 GREEN requirements:
 

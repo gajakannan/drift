@@ -315,6 +315,26 @@ function betaProofFields({ dirtyState, sourceBuildSchemaMatch, installedCliSmoke
     "required_check_execution_proof_verified",
     strictBetaInput ? null : "DRIFT_RELEASE_REQUIRED_CHECK_EXECUTION_PROOF_VERIFIED"
   );
+  const realisticFixtureMatrixVerified = booleanInput(
+    betaProofInput,
+    "realistic_fixture_matrix_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_REALISTIC_FIXTURE_MATRIX_VERIFIED"
+  );
+  const noFalsePrismaFixtureVerified = booleanInput(
+    betaProofInput,
+    "no_false_prisma_fixture_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_NO_FALSE_PRISMA_FIXTURE_VERIFIED"
+  );
+  const nonNextFixtureGracefulVerified = booleanInput(
+    betaProofInput,
+    "non_next_fixture_graceful_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_NON_NEXT_FIXTURE_GRACEFUL_VERIFIED"
+  );
+  const parserGapQualityVerified = booleanInput(
+    betaProofInput,
+    "parser_gap_quality_verified",
+    strictBetaInput ? null : "DRIFT_RELEASE_PARSER_GAP_QUALITY_VERIFIED"
+  );
   const contractParityVerified = booleanInput(
     betaProofInput,
     "contract_parity_verified",
@@ -361,6 +381,10 @@ function betaProofFields({ dirtyState, sourceBuildSchemaMatch, installedCliSmoke
     machine_contract_versions_verified: machineContractVersionsVerified,
     finding_evidence_confidence_verified: findingEvidenceConfidenceVerified,
     required_check_execution_proof_verified: requiredCheckExecutionProofVerified,
+    realistic_fixture_matrix_verified: realisticFixtureMatrixVerified,
+    no_false_prisma_fixture_verified: noFalsePrismaFixtureVerified,
+    non_next_fixture_graceful_verified: nonNextFixtureGracefulVerified,
+    parser_gap_quality_verified: parserGapQualityVerified,
     contract_parity_verified: contractParityVerified,
     mcp_cli_parity_hash: mcpCliParityHash,
     mcp_cli_parity_verified: Boolean(mcpCliParityHash),
@@ -448,6 +472,10 @@ function missingBetaProofFields(proof) {
     machine_contract_versions_verified: proof.machine_contract_versions_verified,
     finding_evidence_confidence_verified: proof.finding_evidence_confidence_verified,
     required_check_execution_proof_verified: proof.required_check_execution_proof_verified,
+    realistic_fixture_matrix_verified: proof.realistic_fixture_matrix_verified,
+    no_false_prisma_fixture_verified: proof.no_false_prisma_fixture_verified,
+    non_next_fixture_graceful_verified: proof.non_next_fixture_graceful_verified,
+    parser_gap_quality_verified: proof.parser_gap_quality_verified,
     contract_parity_verified: proof.contract_parity_verified,
     mcp_cli_parity_verified: proof.mcp_cli_parity_verified,
     audit_head_hash: proof.audit_head_hash,

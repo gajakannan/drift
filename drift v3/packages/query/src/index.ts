@@ -30,6 +30,7 @@ export { evaluateRoleEdge } from "./role-ontology.js";
 export { scoreHelperSimilarity } from "./helper-similarity.js";
 export { buildRepoTopology } from "./repo-topology.js";
 export { buildParserGapSummary, buildReadiness, buildStoredScanReadiness } from "./readiness.js";
+export { buildParserGapQuality } from "./parser-gap-quality.js";
 export { buildSemanticCoverage, buildSemanticCoverageFromCapabilityReport } from "./semantic-coverage.js";
 export { buildCanonicalRouteReadModel } from "./canonical-routes.js";
 export { buildSecurityBoundaryProofReadModel, buildSecurityPhase8ReadModel } from "./security-boundary-proof.js";
@@ -44,8 +45,15 @@ export type {
   DriftReadiness,
   DriftReadinessDecision,
   DriftReadinessSurface,
+  ParserGapLike,
   ParserGapSummary
 } from "./readiness.js";
+export type {
+  BuildParserGapQualityInput,
+  ParserGapQuality,
+  ParserGapQualityAction,
+  ParserGapQualitySample
+} from "./parser-gap-quality.js";
 export type {
   BuildSemanticCoverageFromCapabilityReportInput,
   BuildSemanticCoverageInput
