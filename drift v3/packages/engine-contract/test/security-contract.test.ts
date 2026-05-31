@@ -6,7 +6,7 @@ import {
 } from "../src/index.js";
 
 describe("engine security contract schemas", () => {
-  it("validates versioned security proof events", () => {
+  it("preserves normalized entrypoint ids in versioned security proof events", () => {
     const event = parseEngineSecurityProofEvent({
       event: "SecurityProof",
       schema_version: "engine.security.proof/v1",
@@ -15,6 +15,7 @@ describe("engine security contract schemas", () => {
         proof_version: "security-boundary-proof/v1",
         route: {
           route_id: "route_projects_get",
+          normalized_entrypoint_id: "entrypoint:next_app:app/api/projects/route.ts:GET",
           file_path: "app/api/projects/route.ts",
           file_role: "api_route"
         },
@@ -58,6 +59,9 @@ describe("engine security contract schemas", () => {
     });
 
     expect(event.schema_version).toBe("engine.security.proof/v1");
+    expect(event.proofs[0]?.route.normalized_entrypoint_id).toBe(
+      "entrypoint:next_app:app/api/projects/route.ts:GET"
+    );
     expect(EngineSecurityProofEventSchema.safeParse(event).success).toBe(true);
     expect(JSON.stringify(event)).not.toContain("requireUser()");
   });

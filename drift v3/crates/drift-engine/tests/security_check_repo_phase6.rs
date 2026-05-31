@@ -54,6 +54,183 @@ fn check_repo_blocks_phase6_ssrf_with_trusted_proof() {
         payload["security_boundary_proofs"][0]["result"]["proof_status"],
         "missing_proof"
     );
+    assert_eq!(
+        payload["security_boundary_proofs"][0]["route"]["normalized_entrypoint_id"],
+        "entrypoint:next_app:app/api/proxy/route.ts:GET"
+    );
+}
+
+#[test]
+fn check_repo_links_phase6_raw_sql_proof_to_normalized_entrypoint() {
+    let source = [
+        "const db = { $queryRawUnsafe: async (query) => query };",
+        "export async function POST(request: Request) {",
+        r#"  const id = request.nextUrl.searchParams.get("id");"#,
+        "  await db.$queryRawUnsafe(`SELECT * FROM users WHERE id = ${id}`);",
+        "  return Response.json({ ok: true });",
+        "}",
+        "",
+    ]
+    .join("\n");
+    let payload = run_phase6_fixture(
+        "raw_sql",
+        "app/api/users/route.ts",
+        &source,
+        json!({
+            "id": "security_api_no_raw_sql",
+            "kind": "api_route_forbids_raw_sql_without_params",
+            "matcher": {
+                "applies_to_file_roles": ["api_route"],
+                "methods": ["POST"]
+            },
+            "severity": "error",
+            "enforcement_mode": "block",
+            "enforcement_capability": "deterministic_check"
+        }),
+    );
+
+    assert_eq!(
+        payload["security_boundary_proofs"][0]["raw_sql"]["required"],
+        json!(true)
+    );
+    assert_eq!(
+        payload["security_boundary_proofs"][0]["route"]["normalized_entrypoint_id"],
+        "entrypoint:next_app:app/api/users/route.ts:POST"
+    );
+}
+
+#[test]
+fn check_repo_links_phase6_cors_proof_to_normalized_entrypoint() {
+    let source = [
+        "export async function GET() {",
+        "  return Response.json({ ok: true }, {",
+        "    headers: {",
+        r#"      "Access-Control-Allow-Origin": "*","#,
+        r#"      "Access-Control-Allow-Credentials": "true""#,
+        "    }",
+        "  });",
+        "}",
+        "",
+    ]
+    .join("\n");
+    let payload = run_phase6_fixture(
+        "cors",
+        "app/api/public/route.ts",
+        &source,
+        json!({
+            "id": "security_api_cors",
+            "kind": "api_route_cors_must_match_policy",
+            "matcher": {
+                "applies_to_file_roles": ["api_route"],
+                "methods": ["GET"]
+            },
+            "requires": {
+                "cors": {
+                    "allowed_origins": ["https://app.example.com"],
+                    "allow_credentials": true
+                }
+            },
+            "severity": "error",
+            "enforcement_mode": "block",
+            "enforcement_capability": "deterministic_check"
+        }),
+    );
+
+    assert_eq!(
+        payload["security_boundary_proofs"][0]["cors"]["required"],
+        json!(true)
+    );
+    assert_eq!(
+        payload["security_boundary_proofs"][0]["route"]["normalized_entrypoint_id"],
+        "entrypoint:next_app:app/api/public/route.ts:GET"
+    );
+}
+
+#[test]
+fn check_repo_links_phase6_csrf_proof_to_normalized_entrypoint() {
+    let source = [
+        "export async function POST(request: Request) {",
+        "  return Response.json({ ok: true });",
+        "}",
+        "",
+    ]
+    .join("\n");
+    let payload = run_phase6_fixture(
+        "csrf",
+        "app/api/settings/route.ts",
+        &source,
+        json!({
+            "id": "security_api_csrf",
+            "kind": "api_route_requires_csrf_for_mutation",
+            "matcher": {
+                "applies_to_file_roles": ["api_route"],
+                "methods": ["POST"]
+            },
+            "requires": {
+                "csrf_helpers": [{
+                    "helper_id": "csrf",
+                    "module": "@/security/csrf",
+                    "symbol": "requireCsrf"
+                }]
+            },
+            "severity": "error",
+            "enforcement_mode": "block",
+            "enforcement_capability": "deterministic_check"
+        }),
+    );
+
+    assert_eq!(
+        payload["security_boundary_proofs"][0]["csrf"]["required"],
+        json!(true)
+    );
+    assert_eq!(
+        payload["security_boundary_proofs"][0]["route"]["normalized_entrypoint_id"],
+        "entrypoint:next_app:app/api/settings/route.ts:POST"
+    );
+}
+
+#[test]
+fn check_repo_links_phase6_rate_limit_proof_to_normalized_entrypoint() {
+    let source = [
+        "export async function POST(request: Request) {",
+        "  return Response.json({ ok: true });",
+        "}",
+        "",
+    ]
+    .join("\n");
+    let payload = run_phase6_fixture(
+        "rate_limit",
+        "app/api/login/route.ts",
+        &source,
+        json!({
+            "id": "security_api_rate_limit",
+            "kind": "api_route_requires_rate_limit",
+            "matcher": {
+                "applies_to_file_roles": ["api_route"],
+                "methods": ["POST"]
+            },
+            "requires": {
+                "route_paths": ["/api/login"],
+                "rate_limit_helpers": [{
+                    "helper_id": "rate_limit",
+                    "module": "@/security/rate-limit",
+                    "symbol": "requireRateLimit"
+                }]
+            },
+            "severity": "error",
+            "enforcement_mode": "block",
+            "enforcement_capability": "deterministic_check"
+        }),
+    );
+
+    assert_eq!(
+        payload["security_boundary_proofs"][0]["rate_limit"]["required"],
+        json!(true)
+    );
+    assert_eq!(
+        payload["security_boundary_proofs"][0]["route"]["normalized_entrypoint_id"],
+        "entrypoint:next_app:app/api/login/route.ts:POST"
+    );
 }
 
 fn run_phase6_fixture(name: &str, file_path: &str, source: &str, convention: Value) -> Value {

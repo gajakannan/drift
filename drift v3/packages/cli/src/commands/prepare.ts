@@ -6,7 +6,7 @@ import {
   createContextPolicyMatrix,
   type FileRole
 } from "@drift/core";
-import { buildChangeImpact,buildReadiness,buildSemanticCoverage,classifyAgentTask,selectRelevantTests,type ChangeImpactRouteFlow } from "@drift/query";
+import { buildChangeImpact,buildReadiness,buildSemanticCoverageFromCapabilityReport,classifyAgentTask,selectRelevantTests,type ChangeImpactRouteFlow } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
 import { CommandPayload,ParsedArgs } from "../app/command-types.js";
 import { optionalRepoRelativeFlag,requiredValue,stringFlag } from "../args/flag-readers.js";
@@ -137,14 +137,12 @@ export function prepareTask(storage: SqliteDriftStorage, parsed: ParsedArgs): Co
     required_capabilities: ["ts.route_flow.v1"],
     missing_capabilities: graphContext.available ? [] : ["fact_graph"]
   });
-  const semanticCoverage = buildSemanticCoverage({
+  const semanticCoverage = buildSemanticCoverageFromCapabilityReport({
     repo_id: repoId,
     scan_id: scanStatus.latest_scan?.id ?? "scan_missing",
     scope: "preflight",
     scope_id: targetPath ?? task,
-    required_capabilities: ["ts.route_flow.v1"],
-    certified_capabilities: scanStatus.capability_report?.certified_capabilities ?? [],
-    missing_capabilities: readiness.missing_capabilities,
+    capability_report: scanStatus.capability_report,
     readiness,
     parser_gaps: allParserGaps,
     generated_at: now

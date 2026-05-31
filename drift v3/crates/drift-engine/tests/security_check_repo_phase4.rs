@@ -75,6 +75,10 @@ fn engine_blocks_tenant_missing_predicate_from_accepted_phase4_contract() {
         findings[0]["evidence"][0]["file_path"],
         "app/api/projects/route.ts"
     );
+    assert_eq!(
+        payload["security_boundary_proofs"][0]["route"]["normalized_entrypoint_id"],
+        "entrypoint:next_app:app/api/projects/route.ts:GET"
+    );
     assert!(
         payload["security_boundary_proofs"][0]["tenant"]["missing"]
             .as_array()

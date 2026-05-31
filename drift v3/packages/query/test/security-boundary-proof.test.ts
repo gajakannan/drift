@@ -683,6 +683,124 @@ describe("security boundary proof read model", () => {
     })]);
   });
 
+  it("merges canonical route metadata into proof-backed and unknown Phase 8 routes", () => {
+    const model = buildSecurityPhase8ReadModel({
+      repo_id: "repo_security",
+      scan_id: "scan_new",
+      check_id: "check_security",
+      proof_scan_id: "scan_old",
+      proofs: [securityBoundaryProofFixture({
+        route: {
+          route_id: "route:apps/web/app/api/users/route.ts:GET",
+          file_path: "apps/web/app/api/users/route.ts",
+          file_role: "api_route",
+          endpoint: { path: "/api/wrong", method: "POST", framework: "next" }
+        }
+      })],
+      findings: [],
+      accepted_conventions: [],
+      changed_files: ["apps/web/app/api/users/route.ts", "apps/web/app/api/admin/route.ts"],
+      canonical_route_fallback: { used: false, reason: null },
+      route_source_summary: {
+        normalized_entrypoint: 2,
+        security_proof: 0,
+        legacy_fact_fallback: 0
+      },
+      known_routes: [{
+        route_id: "route:apps/web/app/api/users/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/users/route.ts:GET",
+        file_path: "apps/web/app/api/users/route.ts",
+        path: "/api/users",
+        method: "GET",
+        source: "normalized_entrypoint",
+        freshness: "stale"
+      }, {
+        route_id: "route:apps/web/app/api/admin/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/admin/route.ts:GET",
+        file_path: "apps/web/app/api/admin/route.ts",
+        path: "/api/admin",
+        method: "GET",
+        source: "normalized_entrypoint",
+        freshness: "stale"
+      }]
+    });
+
+    expect(model.proof_freshness).toBe("stale");
+    expect(model.canonical_route_fallback).toEqual({ used: false, reason: null });
+    expect(model.route_source_summary).toMatchObject({ normalized_entrypoint: 2 });
+    expect(model.routes).toEqual([
+      expect.objectContaining({
+        route_id: "route:apps/web/app/api/admin/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/admin/route.ts:GET",
+        path: "/api/admin",
+        method: "GET",
+        source: "normalized_entrypoint",
+        freshness: "stale",
+        security: expect.objectContaining({ proof_status: "unknown" })
+      }),
+      expect.objectContaining({
+        route_id: "route:apps/web/app/api/users/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/users/route.ts:GET",
+        path: "/api/users",
+        method: "GET",
+        source: "normalized_entrypoint",
+        freshness: "stale",
+        security: expect.objectContaining({ proof_status: "proven" })
+      })
+    ]);
+    expect(model.changed_route_security).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        route_id: "route:apps/web/app/api/users/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/users/route.ts:GET",
+        path: "/api/users",
+        method: "GET",
+        source: "normalized_entrypoint",
+        freshness: "stale",
+        current_proof_status: "proven",
+        current_proof_status_detail: expect.objectContaining({
+          proof_status: "proven",
+          source: "normalized_entrypoint",
+          freshness: "stale"
+        })
+      })
+    ]));
+    expect(model.changed_route_security).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        route_id: "route:apps/web/app/api/admin/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/admin/route.ts:GET",
+        path: "/api/admin",
+        method: "GET",
+        source: "normalized_entrypoint",
+        freshness: "stale",
+        current_proof_status: "unknown"
+      })
+    ]));
+    expect(model.required_proofs[0]).toMatchObject({
+      route_id: "route:apps/web/app/api/users/route.ts:GET",
+      normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/users/route.ts:GET",
+      path: "/api/users",
+      method: "GET",
+      source: "normalized_entrypoint",
+      freshness: "stale"
+    });
+    expect(model.current_proof_status).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        route_id: "route:apps/web/app/api/users/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/users/route.ts:GET",
+        proof_status: "proven",
+        source: "normalized_entrypoint",
+        freshness: "stale"
+      }),
+      expect.objectContaining({
+        route_id: "route:apps/web/app/api/admin/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/api/admin/route.ts:GET",
+        proof_status: "unknown",
+        source: "normalized_entrypoint",
+        freshness: "stale"
+      })
+    ]));
+  });
+
   it("derives mixed capability route status by capability", () => {
     const model = buildSecurityPhase8ReadModel({
       repo_id: "repo_security",

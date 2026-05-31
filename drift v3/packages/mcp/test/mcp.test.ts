@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildFactGraphArtifactFromParts } from "@drift/factgraph";
 import { MIGRATIONS, openDriftStorage } from "@drift/storage";
+import { runCli } from "../../cli/src/index.js";
 import {
   DRIFT_READ_ONLY_MCP_TOOLS,
   createReadOnlyMcpHandlers,
@@ -241,6 +242,140 @@ async function seedMcpDatabase(): Promise<string> {
   });
   storage.close();
   return databasePath;
+}
+
+const crossSurfaceExpectedRouteContracts = [
+  {
+    route_id: "route:apps/web/app/(admin)/api/projects/route.ts:GET",
+    normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/(admin)/api/projects/route.ts:GET",
+    path: "/api/projects",
+    method: "GET"
+  },
+  {
+    route_id: "route:apps/web/src/app/api/users/[id]/route.ts:GET",
+    normalized_entrypoint_id: "entrypoint:next_app:apps/web/src/app/api/users/[id]/route.ts:GET",
+    path: "/api/users/:id",
+    method: "GET"
+  },
+  {
+    route_id: "route:src/pages/api/projects/[projectId].ts:default",
+    normalized_entrypoint_id: "entrypoint:next_pages:src/pages/api/projects/[projectId].ts:default",
+    path: "/api/projects/:projectId",
+    method: "default"
+  }
+];
+
+function routeContractProjection(routes: Array<{
+  route_id: string;
+  normalized_entrypoint_id?: string;
+  path: string | null;
+  method: string | null;
+}>): Array<{
+  route_id: string;
+  normalized_entrypoint_id: string | undefined;
+  path: string | null;
+  method: string | null;
+}> {
+  return routes
+    .map((route) => ({
+      route_id: route.route_id,
+      normalized_entrypoint_id: route.normalized_entrypoint_id,
+      path: route.path,
+      method: route.method
+    }))
+    .sort((left, right) => left.route_id.localeCompare(right.route_id));
+}
+
+function readinessCapabilitySummary(payload: {
+  readiness?: unknown;
+  capability_report?: {
+    certified_capabilities?: unknown;
+    required_capabilities?: unknown;
+    missing_capabilities?: unknown;
+    completeness?: unknown;
+    parser_gap_count?: unknown;
+    parser_gap_kinds?: unknown;
+    fallback_used?: unknown;
+    enforcement_degraded?: unknown;
+  };
+  security_capabilities?: unknown;
+}): {
+  readiness?: unknown;
+  capability_report: unknown;
+  security_capabilities?: unknown;
+} {
+  return {
+    readiness: payload.readiness,
+    capability_report: payload.capability_report
+      ? {
+          certified_capabilities: payload.capability_report.certified_capabilities,
+          required_capabilities: payload.capability_report.required_capabilities,
+          missing_capabilities: payload.capability_report.missing_capabilities,
+          completeness: payload.capability_report.completeness,
+          parser_gap_count: payload.capability_report.parser_gap_count,
+          parser_gap_kinds: payload.capability_report.parser_gap_kinds,
+          fallback_used: payload.capability_report.fallback_used,
+          enforcement_degraded: payload.capability_report.enforcement_degraded
+        }
+      : null,
+    security_capabilities: payload.security_capabilities
+  };
+}
+
+async function seedCrossSurfaceCanonicalRouteState(prefix = "drift-mcp-cross-surface-routes-"): Promise<{
+  databasePath: string;
+  repoId: string;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  const repoRoot = join(dir, "repo");
+  const stateRoot = join(dir, "state");
+  await mkdir(join(repoRoot, "apps/web/app/(admin)/api/projects"), { recursive: true });
+  await mkdir(join(repoRoot, "apps/web/src/app/api/users/[id]"), { recursive: true });
+  await mkdir(join(repoRoot, "src/pages/api/projects"), { recursive: true });
+  await writeFile(
+    join(repoRoot, "apps/web/app/(admin)/api/projects/route.ts"),
+    "export async function GET() { return Response.json({ projects: [] }); }\n"
+  );
+  await writeFile(
+    join(repoRoot, "apps/web/src/app/api/users/[id]/route.ts"),
+    "export async function GET() { return Response.json({ user: null }); }\n"
+  );
+  await writeFile(
+    join(repoRoot, "src/pages/api/projects/[projectId].ts"),
+    [
+      "export default function handler(_req, res) {",
+      "  res.status(200).json({ project: null });",
+      "}",
+      ""
+    ].join("\n")
+  );
+  await writeFile(
+    join(repoRoot, "middleware.ts"),
+    [
+      "import { NextResponse } from \"next/server\";",
+      "export function middleware() {",
+      "  return NextResponse.next();",
+      "}",
+      ""
+    ].join("\n")
+  );
+
+  const scanned = await runCli([
+    "start",
+    "--repo-root", repoRoot,
+    "--state-root", stateRoot,
+    "--accept-defaults",
+    "--now", "2026-05-31T00:00:00.000Z",
+    "--json"
+  ]);
+  expect(scanned.stderr).toBe("");
+  expect(scanned.exitCode).toBe(0);
+  const payload = JSON.parse(scanned.stdout);
+  return {
+    databasePath: payload.state.database_path,
+    repoId: payload.repo.id
+  };
 }
 
 function deleteAppliedMigration(databasePath: string, migrationId: string): void {
@@ -544,6 +679,49 @@ describe("read-only MCP handlers", () => {
         required_capabilities: ["fact_graph", "scan_manifest"]
       }
     });
+  });
+
+  it("matches CLI readiness for scan status, repo map, and preflight surfaces", async () => {
+    const databasePath = await seedMcpDatabase();
+    const handlers = createReadOnlyMcpHandlers({ databasePath });
+    const now = "2026-05-10T00:00:10.000Z";
+    const task = "change users api route";
+
+    const cliScanStatus = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", "repo_abc",
+      "--json"
+    ]);
+    const cliRepoMap = await runCli([
+      "--db", databasePath,
+      "repo", "map",
+      "--repo", "repo_abc",
+      "--json"
+    ]);
+    const cliPreflight = await runCli([
+      "--db", databasePath,
+      "prepare", task,
+      "--repo", "repo_abc",
+      "--now", now,
+      "--json"
+    ]);
+
+    expect(cliScanStatus.exitCode).toBe(0);
+    expect(cliRepoMap.exitCode).toBe(0);
+    expect(cliPreflight.exitCode).toBe(0);
+
+    const mcpScanStatus = handlers.get_scan_status({ repo_id: "repo_abc" });
+    const mcpRepoMap = handlers.get_repo_map({ repo_id: "repo_abc" });
+    const mcpPreflight = handlers.get_task_preflight({
+      repo_id: "repo_abc",
+      task,
+      now
+    });
+
+    expect(mcpScanStatus.readiness).toEqual(JSON.parse(cliScanStatus.stdout).readiness);
+    expect(mcpRepoMap.readiness).toEqual(JSON.parse(cliRepoMap.stdout).readiness);
+    expect(mcpPreflight.readiness).toEqual(JSON.parse(cliPreflight.stdout).readiness);
   });
 
   it("reports parser gap summaries in scan status", async () => {
@@ -1559,6 +1737,245 @@ describe("read-only MCP handlers", () => {
     ]);
   });
 
+  it("returns canonical route entrypoints in MCP repo map and security context", async () => {
+    const databasePath = await seedMcpDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertFrameworkScanData({
+      repoId: "repo_abc",
+      scanId: "scan_abc",
+      adapters: [{
+        schema_version: "drift.framework.adapter.v1",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        adapter_version: "0.1.0",
+        package_names: ["next"],
+        entrypoint_kinds: ["api_route"],
+        supported_patterns: ["app/api/**/route.{ts,tsx,js,jsx}", "pages/api/**/*.{ts,tsx,js,jsx}"],
+        unsupported_patterns: [],
+        capabilities: []
+      }],
+      entrypoints: [{
+        schema_version: "drift.normalized_entrypoint.v1",
+        entrypoint_id: "entrypoint:next_app:apps/web/app/(admin)/api/projects/route.ts:GET",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_app",
+        kind: "api_route",
+        file_path: "apps/web/app/(admin)/api/projects/route.ts",
+        handler_symbol: "GET",
+        route_pattern: "/api/projects",
+        method: "GET",
+        middleware_refs: [],
+        request_source_refs: [],
+        response_sink_refs: [],
+        data_operation_refs: [],
+        confidence_label: "high",
+        evidence_refs: ["fact:apps/web/app/(admin)/api/projects/route.ts:route_declared:GET:1-1"],
+        parser_gap_ids: []
+      }, {
+        schema_version: "drift.normalized_entrypoint.v1",
+        entrypoint_id: "entrypoint:next_pages:src/pages/api/projects/[projectId].ts:default",
+        repo_id: "repo_abc",
+        scan_id: "scan_abc",
+        adapter_id: "framework_adapter_next_v1",
+        framework: "next_pages",
+        kind: "api_route",
+        file_path: "src/pages/api/projects/[projectId].ts",
+        handler_symbol: "default",
+        route_pattern: "/api/projects/:projectId",
+        method: "default",
+        middleware_refs: [],
+        request_source_refs: [],
+        response_sink_refs: [],
+        data_operation_refs: [],
+        confidence_label: "high",
+        evidence_refs: ["fact:src/pages/api/projects/[projectId].ts:route_declared:default:1-1"],
+        parser_gap_ids: []
+      }],
+      parserGaps: [],
+      capabilities: []
+    });
+    storage.close();
+
+    const handlers = createReadOnlyMcpHandlers({ databasePath });
+    const repoMap = handlers.get_repo_map({ repo_id: "repo_abc" } as never) as {
+      routes: Array<{
+        route_id: string;
+        normalized_entrypoint_id?: string;
+        path: string | null;
+        method: string | null;
+        source?: string;
+        freshness?: string;
+      }>;
+      route_source_summary: {
+        normalized_entrypoint: number;
+        security_proof: number;
+        legacy_fact_fallback: number;
+      };
+      canonical_route_fallback: { used: boolean; reason: string | null };
+      proof_freshness: string;
+      redactions: {
+        snippets_included: boolean;
+      };
+    };
+    const securityContext = handlers.get_security_context({ repo_id: "repo_abc" } as never) as {
+      routes: Array<{
+        route_id: string;
+        normalized_entrypoint_id?: string;
+        path: string | null;
+        method: string | null;
+        source?: string;
+        freshness?: string;
+      }>;
+      route_source_summary: {
+        normalized_entrypoint: number;
+        security_proof: number;
+        legacy_fact_fallback: number;
+      };
+      canonical_route_fallback: { used: boolean; reason: string | null };
+      proof_freshness: string;
+      redactions: {
+        snippets_included: boolean;
+        request_payloads_included: boolean;
+        secret_values_included: boolean;
+        actor_identity_included: boolean;
+      };
+    };
+
+    const expectedRoutes = [
+      expect.objectContaining({
+        route_id: "route:apps/web/app/(admin)/api/projects/route.ts:GET",
+        normalized_entrypoint_id: "entrypoint:next_app:apps/web/app/(admin)/api/projects/route.ts:GET",
+        path: "/api/projects",
+        method: "GET",
+        source: "normalized_entrypoint",
+        freshness: "fresh"
+      }),
+      expect.objectContaining({
+        route_id: "route:src/pages/api/projects/[projectId].ts:default",
+        normalized_entrypoint_id: "entrypoint:next_pages:src/pages/api/projects/[projectId].ts:default",
+        path: "/api/projects/:projectId",
+        method: "default",
+        source: "normalized_entrypoint",
+        freshness: "fresh"
+      })
+    ];
+    expect(repoMap.routes).toEqual(expect.arrayContaining(expectedRoutes));
+    expect(repoMap.route_source_summary).toEqual({
+      normalized_entrypoint: 2,
+      security_proof: 0,
+      legacy_fact_fallback: 0
+    });
+    expect(repoMap.canonical_route_fallback).toEqual({ used: false, reason: null });
+    expect(repoMap.proof_freshness).toBe("none");
+    expect(repoMap.redactions.snippets_included).toBe(false);
+    expect(securityContext.routes).toEqual(expect.arrayContaining(expectedRoutes));
+    expect(securityContext.route_source_summary).toEqual({
+      normalized_entrypoint: 2,
+      security_proof: 0,
+      legacy_fact_fallback: 0
+    });
+    expect(securityContext.canonical_route_fallback).toEqual({ used: false, reason: null });
+    expect(securityContext.proof_freshness).toBe("none");
+    expect(securityContext.redactions).toMatchObject({
+      snippets_included: false,
+      request_payloads_included: false,
+      secret_values_included: false,
+      actor_identity_included: false
+    });
+    expect(JSON.stringify(securityContext)).not.toContain("request.json()");
+    expect(JSON.stringify(securityContext)).not.toContain("process.env");
+    expect(JSON.stringify(securityContext)).not.toContain("local-user");
+  });
+
+  it("proves cross-surface canonical route parity for CLI and MCP route contracts", async () => {
+    const { databasePath, repoId } = await seedCrossSurfaceCanonicalRouteState();
+    const handlers = createReadOnlyMcpHandlers({ databasePath });
+    const cliRepoMap = await runCli([
+      "--db", databasePath,
+      "repo", "map",
+      "--repo", repoId,
+      "--json"
+    ]);
+    const cliScanStatus = await runCli([
+      "--db", databasePath,
+      "scan", "status",
+      "--repo", repoId,
+      "--json"
+    ]);
+
+    expect(cliRepoMap.stderr).toBe("");
+    expect(cliRepoMap.exitCode).toBe(0);
+    expect(cliScanStatus.stderr).toBe("");
+    expect(cliScanStatus.exitCode).toBe(0);
+    const cliRepoMapPayload = JSON.parse(cliRepoMap.stdout);
+    const cliScanStatusPayload = JSON.parse(cliScanStatus.stdout);
+    const mcpRepoMap = handlers.get_repo_map({ repo_id: repoId } as never) as {
+      routes: Array<{
+        route_id: string;
+        normalized_entrypoint_id?: string;
+        path: string | null;
+        method: string | null;
+        source?: string;
+      }>;
+      route_source_summary: {
+        normalized_entrypoint: number;
+        security_proof: number;
+        legacy_fact_fallback: number;
+      };
+      canonical_route_fallback: { used: boolean; reason: string | null };
+    };
+    const securityContext = handlers.get_security_context({ repo_id: repoId } as never) as {
+      routes: Array<{
+        route_id: string;
+        normalized_entrypoint_id?: string;
+        path: string | null;
+        method: string | null;
+        source?: string;
+      }>;
+      route_source_summary: {
+        normalized_entrypoint: number;
+        security_proof: number;
+        legacy_fact_fallback: number;
+      };
+      canonical_route_fallback: { used: boolean; reason: string | null };
+      redactions: {
+        snippets_included: boolean;
+        source_content_included?: boolean;
+        request_payloads_included: boolean;
+        secret_values_included: boolean;
+        actor_identity_included: boolean;
+      };
+    };
+    const mcpScanStatus = handlers.get_scan_status({ repo_id: repoId });
+
+    const cliRouteContracts = routeContractProjection(cliRepoMapPayload.routes);
+    expect(cliRouteContracts).toEqual(crossSurfaceExpectedRouteContracts);
+    expect(routeContractProjection(mcpRepoMap.routes)).toEqual(cliRouteContracts);
+    expect(routeContractProjection(securityContext.routes)).toEqual(cliRouteContracts);
+    expect(mcpRepoMap.route_source_summary).toEqual({
+      normalized_entrypoint: 3,
+      security_proof: 0,
+      legacy_fact_fallback: 0
+    });
+    expect(securityContext.route_source_summary).toEqual(mcpRepoMap.route_source_summary);
+    expect(mcpRepoMap.canonical_route_fallback).toEqual({ used: false, reason: null });
+    expect(securityContext.canonical_route_fallback).toEqual({ used: false, reason: null });
+    expect(mcpRepoMap.routes.every((route) => route.source === "normalized_entrypoint")).toBe(true);
+    expect(securityContext.routes.every((route) => route.source === "normalized_entrypoint")).toBe(true);
+    expect(readinessCapabilitySummary(mcpScanStatus)).toEqual(
+      readinessCapabilitySummary(cliScanStatusPayload)
+    );
+    expect(securityContext.redactions).toMatchObject({
+      snippets_included: false,
+      request_payloads_included: false,
+      secret_values_included: false,
+      actor_identity_included: false
+    });
+  });
+
   it("exposes required-check execution proof through read-only MCP", async () => {
     const databasePath = await seedMcpDatabase();
     const command = "node -e \"process.stdout.write('ok')\"";
@@ -1869,7 +2286,7 @@ describe("read-only MCP handlers", () => {
     expect(JSON.stringify(securityContext)).not.toContain("session=secret");
   });
 
-  it("normalizes grouped app api route ids in MCP security context fallbacks", async () => {
+  it("marks grouped app api raw fact security context fallbacks explicitly", async () => {
     const databasePath = await seedMcpDatabase();
     const storage = openDriftStorage({ databasePath });
     storage.migrate();
@@ -1900,17 +2317,41 @@ describe("read-only MCP handlers", () => {
     }]);
     storage.close();
 
-    const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
+    const handlers = createReadOnlyMcpHandlers({ databasePath });
+    const repoMap = handlers.get_repo_map({
       repo_id: "repo_abc"
     } as never) as {
-      routes: Array<{ route_id: string; file_path: string; path: string; method: string }>;
+      canonical_route_fallback: { used: boolean; reason: string | null };
+      routes: Array<{ route_id: string; file_path: string; path: string | null; method: string; source?: string }>;
+    };
+    const securityContext = handlers.get_security_context({
+      repo_id: "repo_abc"
+    } as never) as {
+      canonical_route_fallback: { used: boolean; reason: string | null };
+      routes: Array<{ route_id: string; file_path: string; path: string | null; method: string; source?: string }>;
     };
 
+    expect(repoMap.canonical_route_fallback).toEqual({
+      used: true,
+      reason: "normalized_entrypoints_missing"
+    });
+    expect(repoMap.routes).toContainEqual(expect.objectContaining({
+      route_id: "route:apps/web/app/api/users/route.ts:GET",
+      file_path: "apps/web/app/api/users/route.ts",
+      path: null,
+      method: "GET",
+      source: "legacy_fact_fallback"
+    }));
+    expect(securityContext.canonical_route_fallback).toEqual({
+      used: true,
+      reason: "normalized_entrypoints_missing"
+    });
     expect(securityContext.routes).toContainEqual(expect.objectContaining({
       route_id: "route:apps/web/app/(admin)/api/projects/route.ts:GET",
       file_path: "apps/web/app/(admin)/api/projects/route.ts",
-      path: "/api/projects",
-      method: "GET"
+      path: null,
+      method: "GET",
+      source: "legacy_fact_fallback"
     }));
   });
 
@@ -2178,7 +2619,16 @@ describe("read-only MCP handlers", () => {
     const securityContext = createReadOnlyMcpHandlers({ databasePath }).get_security_context({
       repo_id: "repo_abc"
     } as never) as {
-      current_proof_status: Array<{ route_id: string; proof_status: string; enforcement_result: string }>;
+      current_proof_status: Array<{
+        route_id: string;
+        file_path: string;
+        path: string | null;
+        method: string | null;
+        proof_status: string;
+        enforcement_result: string;
+        source?: string;
+        freshness?: string;
+      }>;
       changed_route_security: Array<{
         route_id: string;
         file_path: string;
@@ -2187,12 +2637,16 @@ describe("read-only MCP handlers", () => {
       }>;
     };
 
-    expect(securityContext.current_proof_status).toEqual([{
+    expect(securityContext.current_proof_status).toEqual([expect.objectContaining({
       route_id: "route:apps/web/app/api/users/route.ts:GET",
       file_path: "apps/web/app/api/users/route.ts",
+      path: null,
+      method: "GET",
       proof_status: "missing_proof",
-      enforcement_result: "block"
-    }]);
+      enforcement_result: "block",
+      source: "security_proof",
+      freshness: "fresh"
+    })]);
     expect(securityContext.changed_route_security).toEqual([expect.objectContaining({
       route_id: "route:apps/web/app/api/users/route.ts:GET",
       file_path: "apps/web/app/api/users/route.ts",
@@ -2315,6 +2769,72 @@ describe("read-only MCP handlers", () => {
       `drift repo map --repo ${repoId} --json`,
       `drift scan status --repo ${repoId} --json`
     ]);
+  });
+
+  it("MCP preflight derives semantic coverage from scan capability vocabulary", async () => {
+    const { databasePath, repoId } = await seedMcpNoContractDatabase();
+    const storage = openDriftStorage({ databasePath });
+    storage.migrate();
+    storage.upsertFactGraphArtifact(buildFactGraphArtifactFromParts({
+      repo: {
+        repo_id: repoId,
+        scan_id: "scan_no_contract",
+        root_hash: "repo-no-contract-fp",
+        branch: "unknown",
+        commit: "abc123",
+        dirty: false
+      },
+      snapshots: storage.listFileSnapshots(repoId, "scan_no_contract"),
+      nodes: [],
+      edges: [],
+      evidence: [],
+      createdAt: "2026-05-10T00:00:08.000Z"
+    }));
+    storage.upsertScanCapabilityReport({
+      schema_version: "drift.scan_capability_report.v1",
+      repo_id: repoId,
+      scan_id: "scan_no_contract",
+      engine_source: "rust",
+      engine_version: null,
+      scanner_version: "0.1.0",
+      adapter_versions: { typescript: "0.1.0", resolver: "0.1.0" },
+      certified_capabilities: ["fact_graph", "syntax_facts", "file_discovery", "ts.route_flow.v1"],
+      required_capabilities: ["fact_graph", "syntax_facts", "file_discovery", "unknown_capability"],
+      missing_capabilities: [],
+      completeness: [],
+      parser_gap_count: 0,
+      parser_gap_kinds: {},
+      fallback_used: false,
+      enforcement_degraded: false,
+      created_at: "2026-05-10T00:00:45.000Z"
+    });
+    storage.close();
+
+    const preflight = createReadOnlyMcpHandlers({ databasePath }).get_task_preflight({
+      repo_id: repoId,
+      task: "change users api route",
+      path: "apps/web/app/api/users/route.ts",
+      now: "2026-05-10T00:01:00.000Z"
+    }) as {
+      semantic_coverage: Record<string, unknown>;
+    };
+
+    expect(preflight.semantic_coverage).toMatchObject({
+      required_capabilities: [
+        "ts.file_discovery.v1",
+        "ts.route_flow.v1",
+        "ts.syntax_facts.v1",
+        "unknown_capability"
+      ],
+      complete_capabilities: [
+        "ts.file_discovery.v1",
+        "ts.route_flow.v1",
+        "ts.syntax_facts.v1"
+      ],
+      missing_capabilities: ["unknown_capability"],
+      unsupported_capabilities: ["unknown_capability"],
+      decision: "refuse"
+    });
   });
 
   it("returns MCP repo map before a contract exists using the default local policy", async () => {

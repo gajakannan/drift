@@ -5,6 +5,7 @@ use std::{
     time::Instant,
 };
 
+use drift_engine::next_routes::next_api_route_identity;
 use drift_engine::{
     AcceptedAuthHelper, AcceptedAuthorizationHelper, AcceptedHelperImport,
     AcceptedRequestValidator, AcceptedSecurityHelper, AcceptedTenantHelper, AuthGuardBehavior,
@@ -1190,16 +1191,7 @@ fn phase6_finding_text(kind: &str) -> (&'static str, &'static str, &'static str)
 }
 
 fn route_path_from_file(file_path: &str) -> Option<String> {
-    if let Some(path) = next_route_path(file_path) {
-        return Some(path);
-    }
-    if let Some(rest) = file_path
-        .strip_prefix("pages")
-        .and_then(|path| path.strip_suffix(".ts"))
-    {
-        return Some(rest.to_string());
-    }
-    None
+    next_api_route_identity(file_path).map(|identity| identity.route_path)
 }
 
 fn path_matches_globs(file_path: &str, globs: Option<&[String]>) -> bool {
@@ -2052,10 +2044,7 @@ fn phase5_file_scope_matches(file_path: &str, path_globs: &[String]) -> bool {
 }
 
 fn phase5_route_path_from_file(file_path: &str) -> Option<String> {
-    let rest = file_path
-        .strip_prefix("app/")
-        .and_then(|path| path.strip_suffix("/route.ts"))?;
-    Some(format!("/{}", rest.trim_end_matches('/')))
+    next_api_route_identity(file_path).map(|identity| identity.route_path)
 }
 
 fn path_glob_matches(pattern: &str, file_path: &str) -> bool {
@@ -2271,13 +2260,7 @@ fn phase5_proof_json(
     json!({
         "proof_id": format!("proof:{route_id}:phase5"),
         "proof_version": "security-boundary-proof/v1",
-        "route": {
-            "route_id": route_id,
-            "file_path": file_path,
-            "file_role": "api_route",
-            "endpoint": route_endpoint(file_path, handler_symbol),
-            "handler_symbol": handler_symbol
-        },
+        "route": route_json(route_id, file_path, handler_symbol),
         "contracts": [{
             "contract_id": convention.id,
             "kind": convention.kind,
@@ -2421,13 +2404,7 @@ fn route_security_proof_json(
     json!({
         "proof_id": format!("proof:{}:auth", proof.route_id),
         "proof_version": "security-boundary-proof/v1",
-        "route": {
-            "route_id": proof.route_id,
-            "file_path": proof.file_path,
-            "file_role": "api_route",
-            "endpoint": route_endpoint(&proof.file_path, &proof.handler_symbol),
-            "handler_symbol": proof.handler_symbol
-        },
+        "route": route_json(&proof.route_id, &proof.file_path, &proof.handler_symbol),
         "contracts": [{
             "contract_id": convention.id,
             "kind": "api_route_requires_auth_helper",
@@ -2617,13 +2594,7 @@ fn request_validation_proof_json(
     json!({
         "proof_id": format!("proof:{route_id}:request_validation"),
         "proof_version": "security-boundary-proof/v1",
-        "route": {
-            "route_id": route_id,
-            "file_path": file_path,
-            "file_role": "api_route",
-            "endpoint": route_endpoint(file_path, handler_symbol),
-            "handler_symbol": handler_symbol
-        },
+        "route": route_json(route_id, file_path, handler_symbol),
         "contracts": [{
             "contract_id": convention.id,
             "kind": "api_route_requires_request_validation",
@@ -2861,13 +2832,7 @@ fn phase4_proof_json(
     json!({
         "proof_id": format!("proof:{route_id}:phase4"),
         "proof_version": "security-boundary-proof/v1",
-        "route": {
-            "route_id": route_id,
-            "file_path": file_path,
-            "file_role": "api_route",
-            "endpoint": route_endpoint(file_path, handler_symbol),
-            "handler_symbol": handler_symbol
-        },
+        "route": route_json(route_id, file_path, handler_symbol),
         "contracts": [{
             "contract_id": convention.id,
             "kind": convention.kind,
@@ -2978,47 +2943,44 @@ fn security_proof_status(status: &SecurityProofStatus) -> &'static str {
 }
 
 fn route_endpoint(file_path: &str, handler_symbol: &str) -> serde_json::Value {
-    let Some(path) = next_route_path(file_path) else {
+    let Some(identity) = next_api_route_identity(file_path) else {
         return json!({ "method": handler_symbol });
     };
     json!({
-        "path": path,
+        "path": identity.route_path,
         "method": handler_symbol,
-        "framework": "next"
+        "framework": identity.framework
     })
 }
 
-fn next_route_path(file_path: &str) -> Option<String> {
-    let normalized = file_path.replace('\\', "/");
-    let route = normalized
-        .strip_prefix("app/api/")?
-        .strip_suffix("/route.ts")
-        .or_else(|| {
-            normalized
-                .strip_prefix("app/api/")?
-                .strip_suffix("/route.tsx")
-        })
-        .or_else(|| {
-            normalized
-                .strip_prefix("app/api/")?
-                .strip_suffix("/route.js")
-        })
-        .or_else(|| {
-            normalized
-                .strip_prefix("app/api/")?
-                .strip_suffix("/route.jsx")
-        })?;
-    let segments = route
-        .split('/')
-        .filter(|segment| !(segment.starts_with('(') && segment.ends_with(')')))
-        .collect::<Vec<_>>();
-    if segments.is_empty() {
-        return Some("/api".to_string());
+fn route_json(route_id: &str, file_path: &str, handler_symbol: &str) -> serde_json::Value {
+    let mut route = serde_json::Map::new();
+    route.insert("route_id".to_string(), json!(route_id));
+    if let Some(entrypoint_id) = normalized_entrypoint_id(file_path, handler_symbol) {
+        route.insert("normalized_entrypoint_id".to_string(), json!(entrypoint_id));
     }
-    Some(format!(
-        "/api/{}",
-        segments.join("/").replace("[", ":").replace("]", "")
-    ))
+    route.insert("file_path".to_string(), json!(file_path));
+    route.insert("file_role".to_string(), json!("api_route"));
+    route.insert(
+        "endpoint".to_string(),
+        route_endpoint(file_path, handler_symbol),
+    );
+    route.insert("handler_symbol".to_string(), json!(handler_symbol));
+    serde_json::Value::Object(route)
+}
+
+fn normalized_entrypoint_id(file_path: &str, handler_symbol: &str) -> Option<String> {
+    next_api_route_identity(file_path).map(|identity| {
+        let framework = if identity.framework == "next_pages_api" {
+            "next_pages"
+        } else {
+            "next_app"
+        };
+        format!(
+            "entrypoint:{framework}:{}:{handler_symbol}",
+            identity.file_path
+        )
+    })
 }
 
 fn security_auth_files(

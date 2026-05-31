@@ -1,6 +1,11 @@
 import { nextApiRouteIdentity, type AcceptedConvention, type FactRecord, type ParserGap, type RepoContract, type ScanManifest } from "@drift/core";
 import type { openDriftStorage } from "@drift/storage";
-import { buildSecurityBoundaryProofReadModel, buildSecurityPhase8ReadModel } from "@drift/query";
+import {
+  buildCanonicalRouteReadModel,
+  buildSecurityBoundaryProofReadModel,
+  buildSecurityPhase8ReadModel,
+  type CanonicalFactRouteInput
+} from "@drift/query";
 
 type DriftStorage = ReturnType<typeof openDriftStorage>;
 
@@ -76,11 +81,30 @@ export function buildSecurityContextPayload(
         .filter((proof) => !options.path || proof.route.file_path === options.path)
     : [];
   const proofs = proofRuns.length > 0 ? proofRuns.map((run) => run.proof) : fallbackProofs;
+  const normalizedEntrypoints = latestScan
+    ? storage.listNormalizedEntrypoints(repoId, latestScan.id)
+    : [];
+  const proofScanId = proofRuns[0]?.scan_id ?? (fallbackProofs.length > 0 ? latestScan?.id ?? null : null);
+  const canonicalRoutes = buildCanonicalRouteReadModel({
+    repo_id: repoId,
+    scan_id: latestScan?.id ?? null,
+    entrypoints: normalizedEntrypoints,
+    proofs: proofs.map((proof) => ({
+      proof_scan_id: proofScanId,
+      route_id: proof.route.route_id,
+      ...(proof.route.normalized_entrypoint_id ? { normalized_entrypoint_id: proof.route.normalized_entrypoint_id } : {}),
+      file_path: proof.route.file_path,
+      path: proof.route.endpoint?.path ?? null,
+      method: proof.route.endpoint?.method ?? proof.route.handler_symbol ?? null
+    })),
+    fallback_fact_routes: latestScan ? fallbackFactRoutesFromFacts(storage.listFacts(latestScan.id)) : []
+  });
   const changedFiles = options.changed_files ?? (options.path ? [options.path] : undefined);
   const phase8 = buildSecurityPhase8ReadModel({
     repo_id: repoId,
-    scan_id: proofRuns[0]?.scan_id ?? latestScan?.id ?? null,
+    scan_id: latestScan?.id ?? null,
     check_id: options.check_id ?? proofRuns[0]?.check_id ?? null,
+    proof_scan_id: proofScanId,
     proofs,
     findings: storage.listFindings(repoId).map((finding) => ({
       finding_id: finding.id,
@@ -89,7 +113,9 @@ export function buildSecurityContextPayload(
     })),
     accepted_conventions: contract.conventions,
     changed_files: changedFiles,
-    known_routes: latestScan ? knownRoutesFromFacts(storage.listFacts(latestScan.id)) : []
+    known_routes: canonicalRoutes.routes.filter((route) => !options.path || route.file_path === options.path),
+    route_source_summary: canonicalRoutes.route_source_summary,
+    canonical_route_fallback: canonicalRoutes.fallback
   });
   return {
     response_schema: "drift.security.context.v2",
@@ -104,6 +130,9 @@ export function buildSecurityContextPayload(
     missing_proof_summaries: phase8.missing_proof_summaries,
     parser_gap_summaries: phase8.parser_gap_summaries,
     security_capabilities: phase8.security_capabilities,
+    route_source_summary: phase8.route_source_summary,
+    canonical_route_fallback: phase8.canonical_route_fallback,
+    proof_freshness: phase8.proof_freshness,
     do_not_include: phase8.do_not_include,
     redactions: {
       snippets_included: false,
@@ -123,7 +152,7 @@ export function buildSecurityContextPayload(
   };
 }
 
-function knownRoutesFromFacts(facts: FactRecord[]) {
+function fallbackFactRoutesFromFacts(facts: FactRecord[]): CanonicalFactRouteInput[] {
   const apiFiles = new Set(facts
     .filter((fact) => fact.kind === "file_role_detected" && fact.name === "api_route")
     .map((fact) => fact.file_path));
@@ -132,14 +161,9 @@ function knownRoutesFromFacts(facts: FactRecord[]) {
     .map((fact) => ({
       route_id: `route:${fact.file_path}:${fact.name}`,
       file_path: fact.file_path,
-      path: routePathForFile(fact.file_path),
       method: fact.name,
       file_role: "api_route"
     }));
-}
-
-function routePathForFile(filePath: string): string | undefined {
-  return nextApiRouteIdentity(filePath)?.route_path;
 }
 
 export function buildLegacySecurityContextPayload(storage: DriftStorage, repoId: string, contract: RepoContract) {

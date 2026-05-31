@@ -504,6 +504,7 @@ export const SecurityBoundaryProofSchema = z.object({
   proof_version: z.literal("security-boundary-proof/v1"),
   route: z.object({
     route_id: z.string().min(1),
+    normalized_entrypoint_id: z.string().min(1).optional(),
     file_path: z.string().min(1),
     file_role: z.literal("api_route"),
     endpoint: z.object({

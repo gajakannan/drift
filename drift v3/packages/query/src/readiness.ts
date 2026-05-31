@@ -40,6 +40,23 @@ export interface BuildReadinessInput {
 
 export type ParserGapLike = ParserGap | ParserGapV2;
 
+export interface BuildStoredScanReadinessInput {
+  repo_id: string;
+  scan_id: string | null;
+  surface: DriftReadinessSurface;
+  graph_available: boolean;
+  graph_complete?: boolean;
+  parser_gaps?: ParserGapLike[];
+}
+
+export interface ParserGapSummary {
+  total_count: number;
+  by_kind: Record<string, number>;
+  confidence_impact: Record<string, number>;
+  by_capability: Record<string, number>;
+  by_contract_kind: Record<string, number>;
+}
+
 export function buildReadiness(input: BuildReadinessInput): DriftReadiness {
   const parserGaps = input.parser_gaps ?? [];
   const parserGapsByKind = countBy(parserGaps, (gap) => gap.kind);
@@ -82,6 +99,40 @@ export function buildReadiness(input: BuildReadinessInput): DriftReadiness {
     reasons,
     required_capabilities: uniqueSorted(input.required_capabilities ?? []),
     missing_capabilities: uniqueSorted(input.missing_capabilities ?? [])
+  };
+}
+
+export function buildStoredScanReadiness(input: BuildStoredScanReadinessInput): DriftReadiness {
+  const requiredCapabilities = input.scan_id ? ["fact_graph"] : ["fact_graph", "scan_manifest"];
+  const missingCapabilities = input.graph_available ? [] : requiredCapabilities;
+  return buildReadiness({
+    repo_id: input.repo_id,
+    scan_id: input.scan_id,
+    surface: input.surface,
+    graph_available: input.graph_available,
+    graph_complete: input.graph_complete ?? input.graph_available,
+    parser_gaps: input.parser_gaps ?? [],
+    completeness_reasons: input.graph_available
+      ? []
+      : input.scan_id
+        ? ["graph_missing"]
+        : ["scan_missing", "graph_missing"],
+    required_capabilities: requiredCapabilities,
+    missing_capabilities: missingCapabilities
+  });
+}
+
+export function buildParserGapSummary(gaps: ParserGapLike[]): ParserGapSummary {
+  return {
+    total_count: gaps.length,
+    by_kind: countBy(gaps, (gap) => gap.kind),
+    confidence_impact: countBy(gaps, (gap) => gap.confidence_impact),
+    by_capability: countBy(gaps.flatMap((gap) =>
+      "affected_capabilities" in gap ? gap.affected_capabilities : []
+    ), (capability) => capability),
+    by_contract_kind: countBy(gaps.flatMap((gap) =>
+      "affected_contract_kinds" in gap ? gap.affected_contract_kinds : []
+    ), (contractKind) => contractKind)
   };
 }
 

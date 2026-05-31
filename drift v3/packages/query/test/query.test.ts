@@ -10,11 +10,14 @@ import {
   buildEntrypointFlowProof,
   buildChangeImpact,
   buildFindingsReadModel,
+  buildParserGapSummary,
   buildReadiness,
   buildRepoContractReadModel,
   buildRepoMapReadModel,
   buildRepoTopology,
   buildSemanticCoverage,
+  buildSemanticCoverageFromCapabilityReport,
+  buildStoredScanReadiness,
   buildSymbolIdentity,
   classifyAgentTask,
   classifyDataOperationRisk,
@@ -1463,6 +1466,74 @@ describe("GraphQueryService", () => {
     });
   });
 
+  it("builds stored-scan readiness for missing scans and missing graphs", () => {
+    const missingScan = buildStoredScanReadiness({
+      repo_id: "repo_abc",
+      scan_id: null,
+      surface: "scan_status",
+      graph_available: false,
+      parser_gaps: []
+    });
+    const missingGraph = buildStoredScanReadiness({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      surface: "repo_map",
+      graph_available: false,
+      parser_gaps: []
+    });
+
+    expect(missingScan).toMatchObject({
+      decision: "refuse",
+      required_capabilities: ["fact_graph", "scan_manifest"],
+      missing_capabilities: ["fact_graph", "scan_manifest"]
+    });
+    expect(missingScan.reasons).toEqual(expect.arrayContaining([
+      "scan_missing",
+      "graph_missing",
+      "missing_capability:fact_graph",
+      "missing_capability:scan_manifest"
+    ]));
+    expect(missingGraph).toMatchObject({
+      decision: "refuse",
+      required_capabilities: ["fact_graph"],
+      missing_capabilities: ["fact_graph"]
+    });
+    expect(missingGraph.reasons).toEqual(expect.arrayContaining([
+      "graph_missing",
+      "missing_capability:fact_graph"
+    ]));
+  });
+
+  it("summarizes parser gaps with v2 capability and contract impact", () => {
+    const summary = buildParserGapSummary([{
+      schema_version: "drift.parser_gap.v2",
+      parser_gap_id: "parser_gap_dynamic_route",
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      kind: "dynamic_import_unresolved",
+      file_path: "apps/web/app/api/users/route.ts",
+      start_line: 4,
+      end_line: 4,
+      confidence_impact: "blocks_enforcement",
+      message: "Dynamic import target is not statically resolvable.",
+      affected_capabilities: ["ts.dynamic_imports.v1", "ts.route_flow.v1"],
+      affected_contract_kinds: ["api_route_no_direct_data_access"],
+      suggested_action: "rewrite_static",
+      evidence_refs: ["diagnostic_dynamic_import"]
+    }]);
+
+    expect(summary).toEqual({
+      total_count: 1,
+      by_kind: { dynamic_import_unresolved: 1 },
+      confidence_impact: { blocks_enforcement: 1 },
+      by_capability: {
+        "ts.dynamic_imports.v1": 1,
+        "ts.route_flow.v1": 1
+      },
+      by_contract_kind: { api_route_no_direct_data_access: 1 }
+    });
+  });
+
   it("builds semantic coverage from readiness and parser gap v2 capability impact", () => {
     const parserGap = {
       schema_version: "drift.parser_gap.v2" as const,
@@ -1515,6 +1586,93 @@ describe("GraphQueryService", () => {
       decision: "refuse",
       reasons: ["parser_gap_blocks_enforcement", "parser_gaps_present"]
     });
+  });
+
+  it("builds semantic coverage from mixed scan capability vocabulary and fails closed on unknown requirements", () => {
+    const readiness = buildReadiness({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      surface: "prepare",
+      graph_available: true,
+      graph_complete: true,
+      parser_gaps: [],
+      completeness_reasons: [],
+      required_capabilities: ["ts.route_flow.v1"],
+      missing_capabilities: []
+    });
+
+    const coverage = buildSemanticCoverageFromCapabilityReport({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      scope: "preflight",
+      scope_id: "task_users_route",
+      capability_report: {
+        certified_capabilities: ["fact_graph", "syntax_facts", "file_discovery", "ts.route_flow.v1"],
+        required_capabilities: ["fact_graph", "syntax_facts", "file_discovery", "unknown_capability"],
+        missing_capabilities: []
+      },
+      readiness,
+      parser_gaps: [],
+      generated_at: "2026-05-28T00:00:00.000Z"
+    });
+
+    expect(coverage).toMatchObject({
+      required_capabilities: [
+        "ts.file_discovery.v1",
+        "ts.route_flow.v1",
+        "ts.syntax_facts.v1",
+        "unknown_capability"
+      ],
+      complete_capabilities: [
+        "ts.file_discovery.v1",
+        "ts.route_flow.v1",
+        "ts.syntax_facts.v1"
+      ],
+      missing_capabilities: ["unknown_capability"],
+      unsupported_capabilities: ["unknown_capability"],
+      decision: "refuse"
+    });
+    expect(coverage.reasons).toEqual(expect.arrayContaining([
+      "missing_capability:unknown_capability",
+      "unsupported_capability:unknown_capability"
+    ]));
+  });
+
+  it("fails closed when required scan capabilities are not certified", () => {
+    const readiness = buildReadiness({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      surface: "prepare",
+      graph_available: true,
+      graph_complete: true,
+      parser_gaps: [],
+      completeness_reasons: [],
+      required_capabilities: ["ts.route_flow.v1"],
+      missing_capabilities: []
+    });
+
+    const coverage = buildSemanticCoverageFromCapabilityReport({
+      repo_id: "repo_abc",
+      scan_id: "scan_abc",
+      scope: "preflight",
+      scope_id: "task_users_route",
+      capability_report: {
+        certified_capabilities: ["fact_graph"],
+        required_capabilities: ["fact_graph", "import_resolution"],
+        missing_capabilities: []
+      },
+      readiness,
+      parser_gaps: [],
+      generated_at: "2026-05-28T00:00:00.000Z"
+    });
+
+    expect(coverage).toMatchObject({
+      required_capabilities: ["ts.import_resolution.v1", "ts.route_flow.v1"],
+      complete_capabilities: ["ts.route_flow.v1"],
+      missing_capabilities: ["ts.import_resolution.v1"],
+      decision: "refuse"
+    });
+    expect(coverage.reasons).toContain("missing_capability:ts.import_resolution.v1");
   });
 
   it("allows blocking readiness when graph and parser evidence are complete", () => {

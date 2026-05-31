@@ -1,5 +1,6 @@
 import { authorizeContextExport,type FileRole,type PolicyDecision,type RepoContract } from "@drift/core";
 import {
+  buildCanonicalRouteReadModel,
   buildFrameworkEntrypointReadModel,
   buildRepoMapReadModel,
   buildSecurityPhase8ReadModel,
@@ -8,6 +9,7 @@ import {
   repoMapConventionIds,
   repoMapOpenFindingIds,
   repoMapRiskyAreaIds,
+  type CanonicalFactRouteInput,
   type RepoMapFile
 } from "@drift/query";
 import type { SqliteDriftStorage } from "@drift/storage";
@@ -90,13 +92,22 @@ export function repoMapPayload(
   const facts = latestScan ? storage.listFacts(latestScan.id) : [];
   const findings = storage.listFindings(repoId);
   const graphMap = latestScan ? createGraphQueryService(storage).repoMap({ repoId, scanId: latestScan.id }) : null;
+  const normalizedEntrypoints = latestScan
+    ? storage.listNormalizedEntrypoints(repoId, latestScan.id)
+    : [];
+  const frameworkParserGaps = latestScan
+    ? storage.listFrameworkParserGaps(repoId, latestScan.id)
+    : [];
+  const frameworkCapabilities = latestScan
+    ? storage.listFrameworkCapabilities(repoId, latestScan.id)
+    : [];
   const frameworkEntryPoints = latestScan
     ? buildFrameworkEntrypointReadModel({
         repo_id: repoId,
         scan_id: latestScan.id,
-        entrypoints: storage.listNormalizedEntrypoints(repoId, latestScan.id),
-        parser_gaps: storage.listFrameworkParserGaps(repoId, latestScan.id),
-        capabilities: storage.listFrameworkCapabilities(repoId, latestScan.id)
+        entrypoints: normalizedEntrypoints,
+        parser_gaps: frameworkParserGaps,
+        capabilities: frameworkCapabilities
       })
     : null;
   const readModel = buildRepoMapReadModel({
@@ -128,10 +139,28 @@ export function repoMapPayload(
         .filter((proof) => !options.path || proof.route.file_path === options.path)
     : [];
   const proofs = proofRuns.length > 0 ? proofRuns.map((run) => run.proof) : fallbackProofs;
+  const proofScanId = proofRuns[0]?.scan_id ?? (fallbackProofs.length > 0 ? latestScan?.id ?? null : null);
+  const canonicalRoutes = buildCanonicalRouteReadModel({
+    repo_id: repoId,
+    scan_id: latestScan?.id ?? null,
+    entrypoints: normalizedEntrypoints,
+    proofs: proofs.map((proof) => ({
+      proof_scan_id: proofScanId,
+      route_id: proof.route.route_id,
+      ...(proof.route.normalized_entrypoint_id ? { normalized_entrypoint_id: proof.route.normalized_entrypoint_id } : {}),
+      file_path: proof.route.file_path,
+      path: proof.route.endpoint?.path ?? null,
+      method: proof.route.endpoint?.method ?? proof.route.handler_symbol ?? null
+    })),
+    fallback_fact_routes: fallbackFactRoutes(readModel.all_files)
+  });
+  const canonicalKnownRoutes = canonicalRoutes.routes
+    .filter((route) => !options.path || route.file_path === options.path);
   const phase8Security = buildSecurityPhase8ReadModel({
     repo_id: repoId,
-    scan_id: proofRuns[0]?.scan_id ?? latestScan?.id ?? null,
+    scan_id: latestScan?.id ?? null,
     check_id: proofRuns[0]?.check_id ?? null,
+    proof_scan_id: proofScanId,
     proofs,
     findings: findings.map((finding) => ({
       finding_id: finding.id,
@@ -140,7 +169,9 @@ export function repoMapPayload(
     })),
     accepted_conventions: contract.conventions,
     changed_files: options.path ? [options.path] : undefined,
-    known_routes: knownPhase8Routes(readModel.all_files)
+    known_routes: canonicalKnownRoutes,
+    route_source_summary: canonicalRoutes.route_source_summary,
+    canonical_route_fallback: canonicalRoutes.fallback
   });
   return {
     response_schema: "drift.repo.map.v1",
@@ -187,45 +218,18 @@ export function repoMapPayload(
 
 export type { RepoMapFile };
 
-function knownPhase8Routes(files: RepoMapFile[]) {
+function fallbackFactRoutes(files: RepoMapFile[]): CanonicalFactRouteInput[] {
   return files
     .filter((file) => file.roles.includes("api_route"))
     .flatMap((file) => {
       const methods = file.exported_symbols.filter((symbol) =>
         ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(symbol)
       );
-      const routePath = routePathForFile(file.path);
       return (methods.length > 0 ? methods : ["unknown"]).map((method) => ({
         route_id: `route:${file.path}:${method}`,
         file_path: file.path,
-        path: routePath,
         method,
         file_role: "api_route"
       }));
     });
-}
-
-function routePathForFile(filePath: string): string | undefined {
-  const normalized = filePath.replaceAll("\\", "/");
-  const suffix = ["/route.ts", "/route.tsx", "/route.js", "/route.jsx"]
-    .find((candidate) => normalized.endsWith(candidate));
-  if (!suffix) {
-    return undefined;
-  }
-  const withoutSuffix = normalized.slice(0, -suffix.length);
-  const segments = withoutSuffix.split("/");
-  const appIndex = segments.lastIndexOf("app");
-  if (appIndex === -1) {
-    return undefined;
-  }
-  const apiIndex = segments.indexOf("api", appIndex + 1);
-  if (apiIndex === -1) {
-    return undefined;
-  }
-  const routeSegments = segments
-    .slice(apiIndex + 1)
-    .filter((segment) => !(segment.startsWith("(") && segment.endsWith(")")));
-  return routeSegments.length === 0
-    ? "/api"
-    : `/api/${routeSegments.join("/").replaceAll("[", ":").replaceAll("]", "")}`;
 }

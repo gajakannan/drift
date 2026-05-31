@@ -5,6 +5,7 @@ use serde_json::json;
 use crate::{
     AcceptedSecurityHelper, Fact, FactExtractError, FactKind, SecurityParserGap,
     SecurityProofResult, SecurityProofStatus, extract_typescript_facts,
+    next_routes::next_api_route_identity,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1065,13 +1066,7 @@ pub fn phase6_proof_to_json(
     json!({
         "proof_id": format!("proof:{}:{contract_kind}", proof.route_id),
         "proof_version": "security-boundary-proof/v1",
-        "route": {
-            "route_id": proof.route_id,
-            "file_path": proof.file_path,
-            "file_role": "api_route",
-            "endpoint": route_endpoint(&proof.file_path, &proof.handler_symbol),
-            "handler_symbol": proof.handler_symbol
-        },
+        "route": route_json(&proof.route_id, &proof.file_path, &proof.handler_symbol),
         "contracts": [{
             "contract_id": contract_id,
             "kind": contract_kind,
@@ -1323,46 +1318,42 @@ fn phase6_capability(kind: &str) -> &'static str {
 }
 
 fn route_endpoint(file_path: &str, handler_symbol: &str) -> serde_json::Value {
-    let Some(path) = next_route_path(file_path) else {
+    let Some(identity) = next_api_route_identity(file_path) else {
         return json!({ "method": handler_symbol });
     };
     json!({
-        "path": path,
+        "path": identity.route_path,
         "method": handler_symbol,
-        "framework": "next"
+        "framework": identity.framework
     })
 }
 
-fn next_route_path(file_path: &str) -> Option<String> {
-    let normalized = file_path.replace('\\', "/");
-    let route = normalized
-        .strip_prefix("app/api/")?
-        .strip_suffix("/route.ts")
-        .or_else(|| {
-            normalized
-                .strip_prefix("app/api/")?
-                .strip_suffix("/route.tsx")
-        })
-        .or_else(|| {
-            normalized
-                .strip_prefix("app/api/")?
-                .strip_suffix("/route.js")
-        })
-        .or_else(|| {
-            normalized
-                .strip_prefix("app/api/")?
-                .strip_suffix("/route.jsx")
-        })?;
-    let segments = route
-        .split('/')
-        .filter(|segment| !(segment.starts_with('(') && segment.ends_with(')')))
-        .collect::<Vec<_>>();
-    Some(if segments.is_empty() {
-        "/api".to_string()
-    } else {
+fn route_json(route_id: &str, file_path: &str, handler_symbol: &str) -> serde_json::Value {
+    let mut route = serde_json::Map::new();
+    route.insert("route_id".to_string(), json!(route_id));
+    if let Some(entrypoint_id) = normalized_entrypoint_id(file_path, handler_symbol) {
+        route.insert("normalized_entrypoint_id".to_string(), json!(entrypoint_id));
+    }
+    route.insert("file_path".to_string(), json!(file_path));
+    route.insert("file_role".to_string(), json!("api_route"));
+    route.insert(
+        "endpoint".to_string(),
+        route_endpoint(file_path, handler_symbol),
+    );
+    route.insert("handler_symbol".to_string(), json!(handler_symbol));
+    serde_json::Value::Object(route)
+}
+
+fn normalized_entrypoint_id(file_path: &str, handler_symbol: &str) -> Option<String> {
+    next_api_route_identity(file_path).map(|identity| {
+        let framework = if identity.framework == "next_pages_api" {
+            "next_pages"
+        } else {
+            "next_app"
+        };
         format!(
-            "/api/{}",
-            segments.join("/").replace("[", ":").replace("]", "")
+            "entrypoint:{framework}:{}:{handler_symbol}",
+            identity.file_path
         )
     })
 }

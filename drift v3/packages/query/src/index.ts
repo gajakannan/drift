@@ -29,8 +29,9 @@ export { classifyAgentTask } from "./task-intent.js";
 export { evaluateRoleEdge } from "./role-ontology.js";
 export { scoreHelperSimilarity } from "./helper-similarity.js";
 export { buildRepoTopology } from "./repo-topology.js";
-export { buildReadiness } from "./readiness.js";
-export { buildSemanticCoverage } from "./semantic-coverage.js";
+export { buildParserGapSummary, buildReadiness, buildStoredScanReadiness } from "./readiness.js";
+export { buildSemanticCoverage, buildSemanticCoverageFromCapabilityReport } from "./semantic-coverage.js";
+export { buildCanonicalRouteReadModel } from "./canonical-routes.js";
 export { buildSecurityBoundaryProofReadModel, buildSecurityPhase8ReadModel } from "./security-boundary-proof.js";
 export { buildSecurityArchitectureAudit } from "./security-architecture-audit.js";
 export { buildFrameworkEntrypointReadModel } from "./framework-entrypoints.js";
@@ -39,11 +40,25 @@ export type { BuildChangeImpactInput, ChangeImpactRouteFlow } from "./change-imp
 export type { ClassifyDataOperationRiskInput } from "./data-operation-risk.js";
 export type {
   BuildReadinessInput,
+  BuildStoredScanReadinessInput,
   DriftReadiness,
   DriftReadinessDecision,
-  DriftReadinessSurface
+  DriftReadinessSurface,
+  ParserGapSummary
 } from "./readiness.js";
-export type { BuildSemanticCoverageInput } from "./semantic-coverage.js";
+export type {
+  BuildSemanticCoverageFromCapabilityReportInput,
+  BuildSemanticCoverageInput
+} from "./semantic-coverage.js";
+export type {
+  BuildCanonicalRouteReadModelInput,
+  CanonicalFactRouteInput,
+  CanonicalProofRouteInput,
+  CanonicalRouteFreshness,
+  CanonicalRouteReadModel,
+  CanonicalRouteSource,
+  CanonicalRouteSummary
+} from "./canonical-routes.js";
 export type {
   BuildLayerArchitectureProofInput,
   LayerArchitectureObservedEdge,
