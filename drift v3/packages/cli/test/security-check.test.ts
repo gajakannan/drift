@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach } from "vitest";
 import { openDriftStorage } from "@drift/storage";
+import { SecurityBoundaryProofSchema } from "@drift/core";
 import { runCheck } from "../src/check/run-check.js";
 import { engineCheckRequest, runEngineCheck } from "../src/engine/engine-check.js";
 import { buildSecurityCheckJson } from "../src/check/security-check.js";
@@ -47,6 +48,39 @@ describe("security check bridge", () => {
     }]);
     expect(payload.summary.security_blocking_count).toBe(1);
     expect(JSON.stringify(payload)).not.toContain("requireUser()");
+  });
+
+  it("preserves proof route normalized entrypoint ids through CLI check parsing", () => {
+    const proof = SecurityBoundaryProofSchema.parse(securityProof(
+      "proof_projects_get",
+      "app/api/projects/route.ts",
+      "finding_projects",
+      {
+        route: {
+          route_id: "route:app/api/projects/route.ts:GET",
+          normalized_entrypoint_id: "entrypoint:next_app:app/api/projects/route.ts:GET",
+          file_path: "app/api/projects/route.ts",
+          file_role: "api_route",
+          handler_symbol: "GET"
+        }
+      }
+    ));
+    const payload = buildSecurityCheckJson({
+      repo_id: "repo_abc",
+      scope: "changed-files",
+      changed_files: ["app/api/projects/route.ts"],
+      proofs: [proof],
+      findings: [{
+        finding_id: "finding_projects",
+        title: "API route missing required auth proof",
+        file_path: "app/api/projects/route.ts",
+        enforcement_result: "block"
+      }]
+    });
+
+    expect(payload.security_boundary_proofs[0]?.route.normalized_entrypoint_id).toBe(
+      "entrypoint:next_app:app/api/projects/route.ts:GET"
+    );
   });
 
   it("returns request validation proof in drift check JSON output", () => {

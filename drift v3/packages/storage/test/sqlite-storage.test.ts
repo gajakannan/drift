@@ -657,7 +657,7 @@ describe("SQLite Drift storage", () => {
     storage.close();
   });
 
-  it("persists trusted security boundary proofs for query and MCP reads", async () => {
+  it("persists security boundary proofs with normalized entrypoint ids", async () => {
     const storage = openDriftStorage({ databasePath: await tempDatabasePath() });
     storage.migrate();
     storage.upsertRepo({
@@ -693,6 +693,7 @@ describe("SQLite Drift storage", () => {
         proof_version: "security-boundary-proof/v1",
         route: {
           route_id: "route:app/api/users/route.ts:GET",
+          normalized_entrypoint_id: "entrypoint:next_app:app/api/users/route.ts:GET",
           file_path: "app/api/users/route.ts",
           file_role: "api_route",
           handler_symbol: "GET"
@@ -749,6 +750,9 @@ describe("SQLite Drift storage", () => {
 
     expect(storage.listSecurityBoundaryProofs("repo_abc", "scan_abc")[0]).toMatchObject({
       proof_id: "proof:route:app/api/users/route.ts:GET:phase5",
+      route: {
+        normalized_entrypoint_id: "entrypoint:next_app:app/api/users/route.ts:GET"
+      },
       response_shape: {
         required: true,
         sensitive_leaks: [{

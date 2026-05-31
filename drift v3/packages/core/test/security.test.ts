@@ -252,10 +252,11 @@ describe("security domain schemas", () => {
     expect(proof.auth.required).toBe(true);
   });
 
-  it("accepts Phase 8 proof route metadata and sanitized evidence refs", () => {
+  it("preserves normalized entrypoint ids in Phase 8 proof route metadata", () => {
     const proof = validSecurityBoundaryProof({
       route: {
         route_id: "route_users_get",
+        normalized_entrypoint_id: "entrypoint:next_app:app/api/users/route.ts:GET",
         file_path: "app/api/users/route.ts",
         file_role: "api_route",
         endpoint: { path: "/api/users", method: "GET", framework: "next" },
@@ -273,7 +274,9 @@ describe("security domain schemas", () => {
       }]
     });
 
-    expect(SecurityBoundaryProofSchema.parse(proof).evidence_refs).toHaveLength(1);
+    const parsed = SecurityBoundaryProofSchema.parse(proof);
+    expect(parsed.route.normalized_entrypoint_id).toBe("entrypoint:next_app:app/api/users/route.ts:GET");
+    expect(parsed.evidence_refs).toHaveLength(1);
   });
 
   it("rejects Phase 8 proof evidence refs that carry source or secret values", () => {
