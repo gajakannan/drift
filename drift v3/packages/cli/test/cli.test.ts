@@ -2864,6 +2864,10 @@ supported_sqlite_schema_version: 27,
 
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout);
+    expect(payload.response_schema).toBe("drift.start.result.v1");
+    expect(payload.machine_contract_versions.schema_version).toBe("drift.machine_contract_versions.v1");
+    expect(payload.engine).toBeDefined();
+    expect(payload.v1_scope.primary_wedge).toBe("typescript_api_route_layering");
     expect(payload.onboarding).toMatchObject({
       status: "ready",
       accepted_default: true,
@@ -3321,6 +3325,10 @@ supported_schema_version: 27
 
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout);
+    expect(payload.response_schema).toBe("drift.doctor.result.v1");
+    expect(payload.machine_contract_versions.schema_version).toBe("drift.machine_contract_versions.v1");
+    expect(payload.engine).toBeDefined();
+    expect(payload.v1_scope.primary_wedge).toBe("typescript_api_route_layering");
     expect(payload.status).toBe("warn");
     expect(payload.database_path).toContain("drift.sqlite");
     expect(payload.checks.map((check: { id: string }) => check.id)).toContain("local_state");
