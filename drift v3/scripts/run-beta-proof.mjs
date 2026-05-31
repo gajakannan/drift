@@ -22,6 +22,28 @@ const [{ runCli }, { createReadOnlyMcpHandlers }, { openDriftStorage }, { BUILTI
 ]);
 
 const tempRoot = await mkdtemp(join(tmpdir(), "drift-beta-proof-"));
+const expectedCanonicalRouteFixtures = [
+  {
+    file_path: "apps/web/app/api/users/route.ts",
+    route_pattern: "/api/users",
+    method: "GET"
+  },
+  {
+    file_path: "apps/web/app/(admin)/api/projects/route.ts",
+    route_pattern: "/api/projects",
+    method: "GET"
+  },
+  {
+    file_path: "apps/web/src/app/api/users/[id]/route.ts",
+    route_pattern: "/api/users/:id",
+    method: "GET"
+  },
+  {
+    file_path: "apps/web/src/pages/api/projects/[projectId].ts",
+    route_pattern: "/api/projects/:projectId",
+    method: "default"
+  }
+];
 
 try {
   const fixture = await createFixture(tempRoot);
@@ -115,6 +137,8 @@ try {
   ], { exitCodes: [1] });
 
   const parity = await mcpCliParity({ databasePath, repoId });
+  const securityContext = createReadOnlyMcpHandlers({ databasePath })
+    .get_security_context({ repo_id: repoId, check_id: badCheck.check?.id });
   const contractParity = createContractParityLedger();
   const contractParityVerified = contractParity.summary.missing_count === 0 &&
     contractParity.summary.partial_beta_required_count === 0;
@@ -151,6 +175,13 @@ try {
   );
   const fallbackUsed = badCheck.check?.fallback_status?.fallback_used ?? badCheck.summary?.engine_source !== "rust";
   const latestScanId = scanStatus.latest_scan?.id ?? started.scan?.id ?? null;
+  const canonicalRouteProof = canonicalRouteProofFor({
+    databasePath,
+    repoId,
+    scanId: latestScanId,
+    parity,
+    securityContext
+  });
   const graphProof = await graphProofForScan(databasePath, repoId, latestScanId);
   const capabilityReport = scanStatus.capability_report ?? null;
   const machineContractVersions = badCheck.machine_contract_versions ?? badCheck.check?.machine_contract_versions ?? null;
@@ -281,6 +312,11 @@ try {
       semanticBetaProof.claim_gate_verified &&
       semanticBetaProof.partial_beta_required_count === 0 &&
       semanticBetaProof.unsupported_beta_required_count === 0,
+    canonical_routes_verified: canonicalRouteProof.canonical_routes_verified,
+    canonical_route_fallback_absent: canonicalRouteProof.canonical_route_fallback_absent,
+    cli_mcp_route_parity_verified: canonicalRouteProof.cli_mcp_route_parity_verified,
+    security_context_canonical_verified: canonicalRouteProof.security_context_canonical_verified,
+    canonical_proof_freshness_verified: canonicalRouteProof.canonical_proof_freshness_verified,
     contract_parity_verified: contractParityVerified,
     mcp_cli_parity_hash: parity.hash,
     mcp_cli_parity_verified: parity.verified,
@@ -329,6 +365,7 @@ try {
         mcp_summary: mcpRequiredCheckExecutions.summary ?? null
       },
       semantic_beta_proof: semanticBetaProof,
+      canonical_route_proof: canonicalRouteProof,
       contract_parity: contractParity,
       mcp_cli_parity: parity.bundle,
       audit_verification: audit.verification
@@ -369,7 +406,44 @@ async function createFixture(dir) {
     "};",
     ""
   ].join("\n"));
+  await writeCanonicalRouteFixtures(repoRoot);
   return { repoRoot, stateRoot };
+}
+
+async function writeCanonicalRouteFixtures(repoRoot) {
+  const fixtures = [
+    {
+      path: "apps/web/app/(admin)/api/projects/route.ts",
+      source: [
+        "export async function GET() {",
+        "  return Response.json({ projects: [] });",
+        "}",
+        ""
+      ].join("\n")
+    },
+    {
+      path: "apps/web/src/app/api/users/[id]/route.ts",
+      source: [
+        "export async function GET(_request, { params }) {",
+        "  return Response.json({ id: params.id });",
+        "}",
+        ""
+      ].join("\n")
+    },
+    {
+      path: "apps/web/src/pages/api/projects/[projectId].ts",
+      source: [
+        "export default function handler(req, res) {",
+        "  res.status(200).json({ projectId: req.query.projectId });",
+        "}",
+        ""
+      ].join("\n")
+    }
+  ];
+  for (const fixture of fixtures) {
+    await mkdir(dirname(join(repoRoot, fixture.path)), { recursive: true });
+    await writeFile(join(repoRoot, fixture.path), fixture.source);
+  }
 }
 
 function promoteDirectDataAccessConventionToBlock({ databasePath, repoId }) {
@@ -622,6 +696,92 @@ function responseSchemasVerified(bundle) {
   );
 }
 
+function canonicalRouteProofFor({ databasePath, repoId, scanId, parity, securityContext }) {
+  const storage = openDriftStorage({ databasePath });
+  try {
+    const entrypoints = scanId ? storage.listNormalizedEntrypoints(repoId, scanId) : [];
+    const entrypointsByFile = new Map(entrypoints.map((entrypoint) => [entrypoint.file_path, entrypoint]));
+    const expectedEntrypoints = expectedCanonicalRouteFixtures.map((fixture) => {
+      const entrypoint = entrypointsByFile.get(fixture.file_path) ?? null;
+      return {
+        ...fixture,
+        found: Boolean(entrypoint),
+        entrypoint_id: entrypoint?.entrypoint_id ?? null,
+        actual_route_pattern: entrypoint?.route_pattern ?? null,
+        actual_method: entrypoint?.method ?? entrypoint?.handler_symbol ?? null,
+        framework: entrypoint?.framework ?? null
+      };
+    });
+    const cliRoutes = canonicalRouteProjection(parity.bundle.repo_map.cli.routes ?? []);
+    const mcpRoutes = canonicalRouteProjection(parity.bundle.repo_map.mcp.routes ?? []);
+    const securityContextRoutes = canonicalRouteProjection(securityContext.routes ?? []);
+    const cliRouteHash = sha256(canonicalJson(cliRoutes));
+    const mcpRouteHash = sha256(canonicalJson(mcpRoutes));
+    const allProductRoutes = [...cliRoutes, ...mcpRoutes, ...securityContextRoutes];
+    const expectedRouteIds = new Set(expectedEntrypoints.map((entrypoint) =>
+      `route:${entrypoint.file_path}:${entrypoint.method}`
+    ));
+    const productRoutesById = new Map(allProductRoutes.map((route) => [route.route_id, route]));
+    const expectedProductRoutesPresent = [...expectedRouteIds].every((routeId) =>
+      productRoutesById.get(routeId)?.normalized_entrypoint_id
+    );
+    const routeFallbackAbsent = allProductRoutes.every((route) => route.source !== "legacy_fact_fallback") &&
+      securityContext.canonical_route_fallback?.used === false &&
+      (securityContext.route_source_summary?.legacy_fact_fallback ?? 0) === 0;
+
+    return {
+      expected_entrypoints: expectedEntrypoints,
+      normalized_entrypoint_count: entrypoints.length,
+      cli_route_hash: cliRouteHash,
+      mcp_route_hash: mcpRouteHash,
+      security_context_route_count: securityContextRoutes.length,
+      repo_map_route_freshness: [...new Set([...cliRoutes, ...mcpRoutes].map((route) => route.freshness))].sort(),
+      security_context_proof_freshness: securityContext.proof_freshness ?? null,
+      canonical_routes_verified: expectedEntrypoints.every((entrypoint) =>
+        entrypoint.found &&
+        entrypoint.actual_route_pattern === entrypoint.route_pattern &&
+        entrypoint.actual_method === entrypoint.method &&
+        typeof entrypoint.entrypoint_id === "string" &&
+        entrypoint.entrypoint_id.length > 0
+      ) && expectedProductRoutesPresent,
+      canonical_route_fallback_absent: routeFallbackAbsent,
+      cli_mcp_route_parity_verified: cliRoutes.length > 0 &&
+        cliRouteHash === mcpRouteHash &&
+        cliRoutes.every((route) => typeof route.normalized_entrypoint_id === "string" && route.normalized_entrypoint_id.length > 0),
+      security_context_canonical_verified: securityContext.response_schema === "drift.security.context.v2" &&
+        securityContext.canonical_route_fallback?.used === false &&
+        (securityContext.route_source_summary?.legacy_fact_fallback ?? 0) === 0 &&
+        securityContextRoutes.length > 0 &&
+        securityContextRoutes.every((route) =>
+          route.source !== "legacy_fact_fallback" &&
+          typeof route.normalized_entrypoint_id === "string" &&
+          route.normalized_entrypoint_id.length > 0
+        ),
+      canonical_proof_freshness_verified: freshnessIsUsable(securityContext.proof_freshness) &&
+        allProductRoutes.every((route) => route.freshness !== "stale")
+    };
+  } finally {
+    storage.close();
+  }
+}
+
+function canonicalRouteProjection(routes) {
+  return routes
+    .map((route) => ({
+      route_id: route.route_id,
+      path: route.path ?? null,
+      method: route.method ?? null,
+      normalized_entrypoint_id: route.normalized_entrypoint_id ?? null,
+      source: route.source ?? null,
+      freshness: route.freshness ?? null
+    }))
+    .sort((left, right) =>
+      left.route_id.localeCompare(right.route_id) ||
+      (left.path ?? "").localeCompare(right.path ?? "") ||
+      (left.method ?? "").localeCompare(right.method ?? "")
+    );
+}
+
 function stablePayloadForParity(payload) {
   return stripParityVolatileFields(normalizeParityPayload(payload));
 }
@@ -629,6 +789,15 @@ function stablePayloadForParity(payload) {
 function normalizeParityPayload(payload) {
   if (!payload || typeof payload !== "object") {
     return payload;
+  }
+  if (payload.response_schema === "drift.repo.map.v1") {
+    const {
+      route_source_summary: _routeSourceSummary,
+      canonical_route_fallback: _canonicalRouteFallback,
+      proof_freshness: _proofFreshness,
+      ...rest
+    } = payload;
+    return rest;
   }
   if (payload.response_schema !== "drift.findings.list.v1") {
     return payload;
@@ -666,6 +835,10 @@ function normalizeParityPayload(payload) {
         }))
       : payload.findings
   };
+}
+
+function freshnessIsUsable(value) {
+  return value === "fresh" || value === "none";
 }
 
 function stripParityVolatileFields(value) {
@@ -706,6 +879,11 @@ function assertBetaProof(proof) {
     "finding_evidence_confidence_verified",
     "required_check_execution_proof_verified",
     "semantic_beta_proof_verified",
+    "canonical_routes_verified",
+    "canonical_route_fallback_absent",
+    "cli_mcp_route_parity_verified",
+    "security_context_canonical_verified",
+    "canonical_proof_freshness_verified",
     "contract_parity_verified",
     "mcp_cli_parity_verified",
     "audit_verified"
