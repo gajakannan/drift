@@ -189,6 +189,9 @@ try {
       evidenceRefs.some((evidence) =>
         evidence.file_path === badRoute.path &&
         evidence.import_source === "@/lib/prisma" &&
+        Array.isArray(evidence.fact_ids) &&
+        evidence.fact_ids.length > 0 &&
+        evidence.fact_ids.every((factId) => typeof factId === "string" && factId.length > 0) &&
         Number.isInteger(evidence.start_line) &&
         Number.isInteger(evidence.end_line) &&
         evidence.start_line <= evidence.end_line &&

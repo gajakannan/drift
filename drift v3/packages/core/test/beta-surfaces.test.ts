@@ -57,6 +57,45 @@ describe("beta surface schemas", () => {
     }).response_schema).toBe(BETA_START_RESPONSE_SCHEMA);
   });
 
+  it("locks start engine_source to beta contract values", () => {
+    const payload = {
+      response_schema: BETA_START_RESPONSE_SCHEMA,
+      repo: { id: "repo_abc" },
+      scan: { id: "scan_abc" },
+      candidates: [],
+      summary: {
+        files_indexed: 1,
+        facts_count: 2,
+        diagnostics_count: 0,
+        candidates_count: 0,
+        engine_source: "typescript_fallback"
+      },
+      onboarding: {
+        status: "ready",
+        accepted_default: false,
+        contract_ready: true,
+        baselined_count: 0,
+        candidate_count: 0
+      },
+      state: {
+        repo_id: "repo_abc",
+        repo_root: "/tmp/repo",
+        database_path: "/tmp/drift.sqlite"
+      },
+      baselined_count: 0,
+      machine_contract_versions: { schema_version: "drift.machine_contract_versions.v1" },
+      engine: {},
+      v1_scope: {},
+      next_commands: []
+    };
+
+    expect(BetaStartResponseSchema.parse(payload).summary.engine_source).toBe("typescript_fallback");
+    expect(BetaStartResponseSchema.safeParse({
+      ...payload,
+      summary: { ...payload.summary, engine_source: "typescript" }
+    }).success).toBe(false);
+  });
+
   it("requires response_schema on doctor output", () => {
     const result = BetaDoctorResponseSchema.safeParse({
       status: "ok",
