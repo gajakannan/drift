@@ -61,6 +61,10 @@ export async function startRepo(storage: SqliteDriftStorage, parsed: ParsedArgs)
   const onboardingPayload = {
     response_schema: BETA_START_RESPONSE_SCHEMA,
     ...result,
+    summary: {
+      ...result.summary,
+      engine_source: betaStartEngineSource(result.summary.engine_source)
+    },
     accepted,
     baselined_count: baselinedCount,
     machine_contract_versions: currentMachineContractVersions(result.scan.adapter_versions),
@@ -113,4 +117,8 @@ export async function startRepo(storage: SqliteDriftStorage, parsed: ParsedArgs)
   return {
     payload: parsed.flags.has("json") ? betaStartResponse(onboardingPayload) : text
   };
+}
+
+function betaStartEngineSource(engineSource: "rust" | "typescript"): "rust" | "typescript_fallback" {
+  return engineSource === "rust" ? "rust" : "typescript_fallback";
 }

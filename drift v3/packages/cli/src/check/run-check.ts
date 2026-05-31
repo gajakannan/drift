@@ -2616,6 +2616,11 @@ export function runFullRepoCheck(
         const factId = importFactsByKey.get(
           importFactEvidenceKey(filePath, importUsed.line, importUsed.name, importUsed.source)
         );
+        if (!factId) {
+          throw new Error(
+            `Missing import_used fact for deterministic direct-data finding: ${filePath}:${importUsed.line} ${importUsed.name} from ${importUsed.source}`
+          );
+        }
         const finding: Finding = {
           id: `finding_${fingerprint.slice(0, 16)}`,
           repo_id: repoId,
@@ -2635,7 +2640,7 @@ export function runFullRepoCheck(
             end_line: importUsed.end_line,
             symbol: importUsed.name,
             import_source: importUsed.source,
-            fact_ids: factId ? [factId] : [],
+            fact_ids: [factId],
             scan_id: latestScan?.id ?? `scan_check_${hashStable(`${repoId}:${now}`).slice(0, 16)}`,
             file_hash: snapshot?.content_hash ?? fileContentHash(join(repo.root_path, filePath)),
             redaction_state: "none"

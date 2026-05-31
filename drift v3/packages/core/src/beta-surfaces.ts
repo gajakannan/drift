@@ -17,7 +17,7 @@ export const BetaStartResponseSchema = z.object({
     facts_count: z.number().int().nonnegative(),
     diagnostics_count: z.number().int().nonnegative(),
     candidates_count: z.number().int().nonnegative(),
-    engine_source: z.string().min(1)
+    engine_source: z.enum(["rust", "typescript_fallback"])
   }).passthrough(),
   onboarding: z.object({
     status: z.enum(["ready", "needs_convention_review", "needs_more_signal"]),
